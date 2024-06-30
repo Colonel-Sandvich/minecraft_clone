@@ -90,10 +90,10 @@ pub enum Direction {
     Backward, // Probably wrong
 }
 
-impl Into<Vec3> for Direction {
-    fn into(self) -> Vec3 {
+impl From<Direction> for Vec3 {
+    fn from(val: Direction) -> Self {
         use Direction::*;
-        match self {
+        match val {
             Left => Vec3::NEG_X,
             Right => Vec3::X,
             Down => Vec3::NEG_Y,

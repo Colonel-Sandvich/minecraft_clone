@@ -39,7 +39,6 @@ fn check_textures(
     block_texture_folder: Res<BlockTextureFolder>,
     mut events: EventReader<AssetEvent<LoadedFolder>>,
 ) {
-    // Advance the `LoadState` once all block texture handles have been loaded by the `AssetServer`
     for event in events.read() {
         if event.is_loaded_with_dependencies(&block_texture_folder.0) {
             next_state.set(TextureState::Finished);
@@ -67,7 +66,7 @@ fn setup(
         base_color_texture: Some(nearest_texture),
         metallic: 0.,
         reflectance: 0.,
-        alpha_mode: AlphaMode::Mask(0.1),
+        alpha_mode: AlphaMode::Mask(0.5),
         ..default()
     })));
 
@@ -131,11 +130,12 @@ fn create_texture_map(
 
         block_texture_map.insert(
             path.to_string(),
-            tex_rect.normalize(Rect {
-                min: Vec2::ZERO,
-                max: size,
-            }),
+            Rect {
+                min: (tex_rect.min) / size,
+                max: (tex_rect.max) / size,
+            },
         );
     }
+
     block_texture_map
 }

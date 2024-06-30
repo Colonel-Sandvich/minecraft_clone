@@ -1,4 +1,5 @@
 use bevy::{prelude::*, utils::HashMap};
+use rand::Rng;
 use strum::{EnumCount, EnumIter, FromRepr};
 
 use crate::quad::Direction;
@@ -6,10 +7,12 @@ use crate::quad::Direction;
 pub struct BlockPlugin;
 
 impl Plugin for BlockPlugin {
-    fn build(&self, app: &mut App) {}
+    fn build(&self, app: &mut App) {
+        app.add_event::<BlockUpdateEvent>();
+    }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, FromRepr, EnumCount, EnumIter)]
+#[derive(Clone, Copy, Debug, Reflect, PartialEq, FromRepr, EnumCount, EnumIter)]
 pub enum BlockType {
     Air = 0,
     Grass,
@@ -36,8 +39,22 @@ impl BlockType {
         }
     }
 
-    pub fn visible(&self) -> bool {
+    pub fn is_visible(&self) -> bool {
         self.visibility() != Visibility::Empty
+    }
+
+    pub fn is_solid(&self) -> bool {
+        use BlockType::*;
+        match self {
+            Air => false,
+            _ => true,
+        }
+    }
+
+    pub fn random_not_air() -> Self {
+        let mut rng = rand::thread_rng();
+
+        BlockType::from_repr(rng.gen_range(1..BlockType::COUNT)).unwrap()
     }
 }
 
@@ -63,10 +80,10 @@ pub fn block_and_side_to_texture_path(block: BlockType, side: Direction) -> &'st
 
 impl BlockTextureMap {
     pub fn block_to_mesh(&self, block: BlockType, side: Direction) -> Rect {
-        self.0
+        *self
+            .0
             .get(block_and_side_to_texture_path(block, side))
             .unwrap()
-            .clone()
     }
 }
 
@@ -82,4 +99,44 @@ pub fn block_to_colour(block: BlockType, side: Direction) -> Vec4 {
         _ => Color::WHITE,
     }
     .rgba_to_vec4()
+}
+
+#[derive(Debug, Component, Deref, PartialEq)]
+pub struct LocalBlockPos(pub UVec3);
+
+impl LocalBlockPos {
+    pub fn new(x: usize, y: usize, z: usize) -> Self {
+        Self(UVec3::new(x as u32, y as u32, z as u32))
+    }
+}
+
+impl Into<LocalBlockPos> for UVec3 {
+    fn into(self) -> LocalBlockPos {
+        LocalBlockPos(self)
+    }
+}
+
+#[derive(Debug)]
+pub struct Block {
+    pub kind: BlockType,
+    pub pos: LocalBlockPos,
+}
+
+impl Block {
+    pub fn new(block: BlockType, pos: LocalBlockPos) -> Self {
+        Self { kind: block, pos }
+    }
+}
+
+pub enum BlockUpdateKind {
+    Break,
+    Place(BlockType),
+    // Replace(BlockType, BlockType), // (old, new) ?
+}
+
+#[derive(Event)]
+pub struct BlockUpdateEvent {
+    pub chunk: Entity,
+    pub pos: LocalBlockPos,
+    pub kind: BlockUpdateKind,
 }

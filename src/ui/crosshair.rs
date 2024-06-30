@@ -31,7 +31,7 @@ fn spawn_crosshair(mut commands: Commands, primary_window: Query<&Window, With<P
 
     commands.spawn((
         TextBundle::from_section(
-            "+".to_string(),
+            "+",
             TextStyle {
                 font_size: CROSSHAIR_SIZE,
                 color: Color::WHITE,
