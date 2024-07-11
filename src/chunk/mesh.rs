@@ -15,7 +15,7 @@ use crate::textures::{BlockStandardMaterial, TextureState};
 use crate::{
     block::{block_to_colour, BlockTextureMap, BlockType},
     chunk::{Chunk, CHUNK_ISIZE},
-    quad::{get_indices, get_normals, get_positions, rect_to_uvs, Direction, Quad, QuadGroups},
+    quad::{get_indices, get_normals, get_positions, urect_to_uvs, Direction, Quad, QuadGroups},
 };
 
 pub struct ChunkMeshPlugin;
@@ -153,7 +153,7 @@ pub fn make_mesh_from_quad_groups(quad_groups: &QuadGroups) -> Option<Mesh> {
             indices.extend_from_slice(&get_indices(positions.len() as u32));
             positions.extend_from_slice(&get_positions(quad, &side, 1.0));
             normals.extend_from_slice(&get_normals(side.into()));
-            uvs.extend_from_slice(&rect_to_uvs(&quad.uv));
+            uvs.extend_from_slice(&urect_to_uvs(&quad.uv));
             colours.extend_from_slice(&[quad.color; 4]);
         }
     }

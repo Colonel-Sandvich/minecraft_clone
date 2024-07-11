@@ -1,3 +1,4 @@
+use bevy::color::palettes::css;
 use bevy::{
     diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin},
     prelude::*,
@@ -22,7 +23,7 @@ fn setup(mut commands: Commands) {
             TextStyle {
                 font: default(),
                 font_size: 20.0,
-                color: Color::TOMATO,
+                color: css::TOMATO.into(),
             },
         )
         .with_style(Style {

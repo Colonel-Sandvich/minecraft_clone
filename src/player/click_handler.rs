@@ -1,8 +1,9 @@
 use bevy::prelude::*;
+use bevy_rapier3d::prelude::*;
 
 use crate::{
-    block::{BlockType, BlockUpdateEvent, BlockUpdateKind, LocalBlockPos},
-    chunk::{global_pos_to_chunk_pos, Chunk, CHUNK_ISIZE},
+    block::{BlockType, BlockUpdateEvent, BlockUpdateKind},
+    chunk::Chunk,
     dimension::Dimension,
 };
 
@@ -21,6 +22,8 @@ fn process_clicks(
     dimension: Query<&Dimension>,
     mut chunks: Query<&mut Chunk>,
     mut block_events: EventWriter<BlockUpdateEvent>,
+    mut picked_block: Local<BlockType>,
+    rapier_context: Res<RapierContext>,
 ) {
     for click in click_events.read() {
         // let dim = dimension.get(click.dimension);
@@ -28,9 +31,9 @@ fn process_clicks(
         // Single struct?
         let dim = dimension.single();
 
-        let chunk_pos = global_pos_to_chunk_pos(click.pos);
+        let pos = click.pos;
 
-        let Some(chunk_entity) = dim.chunks.get(&chunk_pos) else {
+        let Some(chunk_entity) = dim.chunks.get(&pos.chunk) else {
             warn!("Clicked into missing chunk");
             continue;
         };
@@ -39,11 +42,9 @@ fn process_clicks(
             continue;
         };
 
-        let pos: LocalBlockPos = (click.pos - chunk_pos * CHUNK_ISIZE).as_uvec3().into();
-
         match click.button {
             MouseButtonForBlock::Left => {
-                if !chunk.break_block(&pos) {
+                if !chunk.break_block(pos.block) {
                     continue;
                 };
 
@@ -54,18 +55,29 @@ fn process_clicks(
                 });
             }
             MouseButtonForBlock::Right => {
-                let block = BlockType::Grass;
-                if !chunk.place_block(&pos, block.clone()) {
+                if rapier_context.intersection_with_shape(
+                    pos.to_global().as_vec3() + 0.5,
+                    Rot::IDENTITY,
+                    &Collider::cuboid(0.5, 0.5, 0.5),
+                    QueryFilter::exclude_fixed(),
+                ) != None
+                {
+                    continue;
+                };
+
+                if !chunk.place_block(pos.block, picked_block.clone()) {
                     continue;
                 };
 
                 block_events.send(BlockUpdateEvent {
                     chunk: *chunk_entity,
                     pos,
-                    kind: BlockUpdateKind::Place(block),
+                    kind: BlockUpdateKind::Place(*picked_block),
                 });
             }
-            _ => {} // Move into hand
+            MouseButtonForBlock::Middle => {
+                *picked_block = chunk.get(pos.block);
+            }
         }
     }
 }

@@ -3,23 +3,18 @@ use std::f32::consts::PI;
 use bevy::ecs::event::{Events, ManualEventReader};
 use bevy::input::mouse::MouseMotion;
 use bevy::prelude::*;
+use bevy::render::view::{GpuCulling, NoCpuCulling};
 use bevy::window::{CursorGrabMode, PrimaryWindow};
-
-use super::control::KeyBindings;
 
 pub struct PlayerCamPlugin;
 
 impl Plugin for PlayerCamPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<InputState>()
-            .insert_resource(MouseGrabbed(false))
-            .add_systems(Startup, initial_grab_cursor)
-            .add_systems(Startup, initial_grab_on_mousecam_spawn)
-            .add_systems(
-                Update,
-                player_look.run_if(resource_equals(MouseGrabbed(true))),
-            )
-            .add_systems(Update, cursor_grab);
+            .init_state::<MouseState>()
+            .add_systems(Update, player_look.run_if(in_state(MouseState::Grabbed)))
+            .add_systems(OnEnter(MouseState::Grabbed), grab_cursor)
+            .add_systems(OnEnter(MouseState::Free), free_cursor);
     }
 }
 
@@ -52,6 +47,8 @@ pub struct MouseCamBundle {
     pub camera: Camera3dBundle,
     pub mouse_cam: MouseCam,
     pub is_default_ui_camera: IsDefaultUiCamera,
+    pub no_cpu_culling: NoCpuCulling,
+    pub gpu_culling: GpuCulling,
 }
 
 impl Default for MouseCamBundle {
@@ -67,71 +64,34 @@ impl Default for MouseCamBundle {
             },
             mouse_cam: MouseCam,
             is_default_ui_camera: IsDefaultUiCamera,
+            no_cpu_culling: NoCpuCulling,
+            gpu_culling: GpuCulling,
         }
     }
 }
 
-#[derive(Debug, Resource, PartialEq, Default, Deref, DerefMut)]
-pub struct MouseGrabbed(pub bool);
-
-pub fn toggle_grab_cursor(window: &mut Window, mut grabbed: ResMut<MouseGrabbed>) {
-    match window.cursor.grab_mode {
-        CursorGrabMode::None => {
-            window.cursor.grab_mode = CursorGrabMode::Confined;
-            window.cursor.visible = false;
-            grabbed.0 = true;
-        }
-        _ => {
-            window.cursor.grab_mode = CursorGrabMode::None;
-            window.cursor.visible = true;
-            grabbed.0 = false;
-        }
-    }
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, States)]
+pub enum MouseState {
+    #[default]
+    Free,
+    Grabbed,
 }
 
-pub fn initial_grab_cursor(
-    mut primary_window: Query<&mut Window, With<PrimaryWindow>>,
-    grabbed: ResMut<MouseGrabbed>,
-) {
-    if let Ok(mut window) = primary_window.get_single_mut() {
-        toggle_grab_cursor(&mut window, grabbed);
-    } else {
-        warn!("Primary window not found for `initial_grab_cursor`!");
-    }
+fn grab_cursor(mut primary_window: Query<&mut Window, With<PrimaryWindow>>) {
+    let window = &mut primary_window.single_mut();
+
+    window.cursor.grab_mode = CursorGrabMode::Locked;
+    window.cursor.visible = false;
 }
 
-pub fn initial_grab_on_mousecam_spawn(
-    mut primary_window: Query<&mut Window, With<PrimaryWindow>>,
-    query_added: Query<Entity, Added<MouseCam>>,
-    grabbed: ResMut<MouseGrabbed>,
-) {
-    if query_added.is_empty() {
-        return;
-    }
+fn free_cursor(mut primary_window: Query<&mut Window, With<PrimaryWindow>>) {
+    let window = &mut primary_window.single_mut();
 
-    if let Ok(window) = &mut primary_window.get_single_mut() {
-        toggle_grab_cursor(window, grabbed);
-    } else {
-        warn!("Primary window not found for `initial_grab_cursor`!");
-    }
+    window.cursor.grab_mode = CursorGrabMode::None;
+    window.cursor.visible = true;
 }
 
-pub fn cursor_grab(
-    keys: Res<ButtonInput<KeyCode>>,
-    key_bindings: Res<KeyBindings>,
-    mut primary_window: Query<&mut Window, With<PrimaryWindow>>,
-    grabbed: ResMut<MouseGrabbed>,
-) {
-    if let Ok(mut window) = primary_window.get_single_mut() {
-        if keys.just_pressed(key_bindings.toggle_grab_cursor) {
-            toggle_grab_cursor(&mut window, grabbed);
-        }
-    } else {
-        warn!("Primary window not found for `cursor_grab`!");
-    }
-}
-
-pub fn player_look(
+fn player_look(
     settings: Res<MouseSettings>,
     primary_window: Query<&Window, With<PrimaryWindow>>,
     mut state: ResMut<InputState>,

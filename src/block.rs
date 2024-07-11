@@ -2,7 +2,10 @@ use bevy::{prelude::*, utils::HashMap};
 use rand::Rng;
 use strum::{EnumCount, EnumIter, FromRepr};
 
-use crate::quad::Direction;
+use crate::{
+    chunk::{CHUNK_ISIZE, CHUNK_SIZE},
+    quad::Direction,
+};
 
 pub struct BlockPlugin;
 
@@ -12,8 +15,9 @@ impl Plugin for BlockPlugin {
     }
 }
 
-#[derive(Clone, Copy, Debug, Reflect, PartialEq, FromRepr, EnumCount, EnumIter)]
+#[derive(Default, Clone, Copy, Debug, Reflect, PartialEq, FromRepr, EnumCount, EnumIter)]
 pub enum BlockType {
+    #[default]
     Air = 0,
     Grass,
     Dirt,
@@ -91,40 +95,33 @@ pub fn block_to_colour(block: BlockType, side: Direction) -> Vec4 {
     use BlockType::*;
     use Direction::*;
 
-    match block {
+    let color = match block {
         Grass => match side {
-            Up => Color::hex("5E9D34").unwrap(),
-            _ => Color::WHITE,
+            Up => Srgba::hex("5E9D34").unwrap(),
+            _ => Srgba::WHITE,
         },
-        _ => Color::WHITE,
+        _ => Srgba::WHITE,
+    };
+
+    Vec4::new(color.red, color.green, color.blue, color.alpha)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BlockPos {
+    pub chunk: IVec3,
+    pub block: UVec3,
+}
+
+impl BlockPos {
+    pub fn from_global(pos: IVec3) -> Self {
+        let chunk = (pos.as_vec3() / CHUNK_ISIZE as f32).floor().as_ivec3();
+        let block = (pos - chunk * CHUNK_ISIZE).as_uvec3();
+
+        Self { chunk, block }
     }
-    .rgba_to_vec4()
-}
 
-#[derive(Debug, Component, Deref, PartialEq)]
-pub struct LocalBlockPos(pub UVec3);
-
-impl LocalBlockPos {
-    pub fn new(x: usize, y: usize, z: usize) -> Self {
-        Self(UVec3::new(x as u32, y as u32, z as u32))
-    }
-}
-
-impl Into<LocalBlockPos> for UVec3 {
-    fn into(self) -> LocalBlockPos {
-        LocalBlockPos(self)
-    }
-}
-
-#[derive(Debug)]
-pub struct Block {
-    pub kind: BlockType,
-    pub pos: LocalBlockPos,
-}
-
-impl Block {
-    pub fn new(block: BlockType, pos: LocalBlockPos) -> Self {
-        Self { kind: block, pos }
+    pub fn to_global(&self) -> IVec3 {
+        self.chunk * CHUNK_ISIZE + self.block.as_ivec3()
     }
 }
 
@@ -137,6 +134,6 @@ pub enum BlockUpdateKind {
 #[derive(Event)]
 pub struct BlockUpdateEvent {
     pub chunk: Entity,
-    pub pos: LocalBlockPos,
+    pub pos: BlockPos,
     pub kind: BlockUpdateKind,
 }

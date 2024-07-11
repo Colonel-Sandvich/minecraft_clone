@@ -1,4 +1,4 @@
-use super::{fly_controller::Flying, make_collider, GameMode, Player};
+use super::{cam::MouseState, fly_controller::Flying, GameMode, Player};
 use bevy::prelude::*;
 use bevy_rapier3d::prelude::*;
 
@@ -11,6 +11,7 @@ impl Plugin for ControlPlayerPlugin {
         app.add_systems(PreUpdate, change_gamemode);
         app.add_systems(PreUpdate, toggle_fly);
         app.add_systems(PreUpdate, debug_toggle_colliders);
+        app.add_systems(PreUpdate, toggle_grab_cursor);
     }
 }
 
@@ -47,7 +48,7 @@ impl Default for KeyBindings {
     }
 }
 
-pub fn change_gamemode(
+fn change_gamemode(
     mut commands: Commands,
     keys: Res<ButtonInput<KeyCode>>,
     key_bindings: Res<KeyBindings>,
@@ -72,7 +73,7 @@ pub fn change_gamemode(
     }
 }
 
-pub fn toggle_fly(
+fn toggle_fly(
     mut commands: Commands,
     keys: Res<ButtonInput<KeyCode>>,
     key_bindings: Res<KeyBindings>,
@@ -89,12 +90,30 @@ pub fn toggle_fly(
     }
 }
 
-pub fn debug_toggle_colliders(
+fn debug_toggle_colliders(
     keys: Res<ButtonInput<KeyCode>>,
     key_bindings: Res<KeyBindings>,
     mut rapier_render_context: ResMut<DebugRenderContext>,
 ) {
     if keys.just_pressed(key_bindings.debug_toggle_rapier_render) {
         rapier_render_context.enabled = !rapier_render_context.enabled;
+    }
+}
+
+fn toggle_grab_cursor(
+    pressed_keys: Res<ButtonInput<KeyCode>>,
+    key_bindings: Res<KeyBindings>,
+    mouse_state: ResMut<State<MouseState>>,
+    mut next_mouse_state: ResMut<NextState<MouseState>>,
+) {
+    if pressed_keys.just_pressed(key_bindings.toggle_grab_cursor) {
+        match mouse_state.get() {
+            MouseState::Free => {
+                next_mouse_state.set(MouseState::Grabbed);
+            }
+            MouseState::Grabbed => {
+                next_mouse_state.set(MouseState::Free);
+            }
+        };
     }
 }

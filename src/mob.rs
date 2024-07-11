@@ -46,9 +46,11 @@ fn spawn_creeper(
             Creeper,
         ))
         .with_children(|p| {
+            let color: Color = bevy::color::palettes::css::LIME.into();
+            let material: StandardMaterial = color.into();
             p.spawn(PbrBundle {
                 mesh: meshes.add(Cuboid::new(PLAYER_WIDTH, PLAYER_HEIGHT, PLAYER_LENGTH)),
-                material: materials.add(Color::GREEN),
+                material: materials.add(material),
                 ..default()
             });
         });

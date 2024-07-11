@@ -1,6 +1,6 @@
 use bevy::math::vec3;
 use bevy::prelude::*;
-use bevy_rapier3d::geometry::Collider;
+use bevy_rapier3d::prelude::*;
 use itertools::Itertools;
 
 use crate::{block::BlockUpdateEvent, chunk::Chunk};
@@ -12,7 +12,7 @@ pub struct ChunkColliderPlugin;
 impl Plugin for ChunkColliderPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Update, insert_colliders_naive);
-        app.add_systems(FixedUpdate, update_collider_naive);
+        app.add_systems(FixedPostUpdate, update_collider_naive);
     }
 }
 
@@ -41,7 +41,11 @@ fn insert_one(commands: &mut Commands, chunk: &Chunk, chunk_entity: Entity) {
     }
 
     commands
-        .spawn((SpatialBundle::default(), Collider::compound(cubes)))
+        .spawn((
+            SpatialBundle::default(),
+            Collider::compound(cubes),
+            RigidBody::Fixed,
+        ))
         .set_parent(chunk_entity);
 }
 

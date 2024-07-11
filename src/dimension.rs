@@ -3,7 +3,7 @@ use std::ops::Mul;
 use bevy::{prelude::*, utils::HashMap};
 
 use crate::{
-    block::{BlockUpdateEvent, BlockUpdateKind},
+    block::{BlockPos, BlockUpdateEvent, BlockUpdateKind},
     chunk::{
         util::{generate_flat_chunk_data, generate_full_chunk_data},
         Chunk, ChunkBundle, CHUNK_SIZE,
@@ -21,7 +21,6 @@ impl Plugin for DimensionPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Startup, (setup, spawn_chunks).chain());
         // app.add_systems(Update, (place_block_in_chunks).chain());
-        app.add_event::<BlockUpdateEvent>();
     }
 }
 
@@ -92,11 +91,15 @@ fn place_block_in_chunks(
                 continue;
             };
 
-            block_events.send(BlockUpdateEvent {
-                chunk: *chunk_entity,
-                pos: block.pos,
-                kind: BlockUpdateKind::Place(block.kind),
-            });
+            // block_events.send(BlockUpdateEvent {
+            //     chunk: *chunk_entity,
+            //     pos: BlockPos {
+            //         // chunk: chunk_pos, ???
+            //         chunk: IVec3::ZERO,
+            //         block: block.pos.0,
+            //     },
+            //     kind: BlockUpdateKind::Place(block.kind),
+            // });
         }
     }
 }
@@ -107,7 +110,7 @@ fn place_block_in_chunks_2(
     mut block_events: EventWriter<BlockUpdateEvent>,
 ) {
     for dim in dimension.iter() {
-        for (_, chunk_entity) in dim.chunks.iter() {
+        for (chunk_pos, chunk_entity) in dim.chunks.iter() {
             let Some(mut chunk) = chunks.get_mut(*chunk_entity).ok() else {
                 continue;
             };
@@ -118,8 +121,11 @@ fn place_block_in_chunks_2(
 
             block_events.send(BlockUpdateEvent {
                 chunk: *chunk_entity,
-                pos: block.pos,
-                kind: BlockUpdateKind::Place(block.kind),
+                pos: BlockPos {
+                    chunk: chunk_pos.clone(),
+                    block: block.1,
+                },
+                kind: BlockUpdateKind::Place(block.0),
             });
         }
     }

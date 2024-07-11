@@ -42,7 +42,7 @@ fn check_textures(
     for event in events.read() {
         if event.is_loaded_with_dependencies(&block_texture_folder.0) {
             next_state.set(TextureState::Finished);
-            info!("Textures loaded.")
+            info!("Textures loaded.");
         }
     }
 }
@@ -87,8 +87,8 @@ fn create_texture_atlas(
     textures: &mut ResMut<Assets<Image>>,
 ) -> (TextureAtlasLayout, Handle<Image>) {
     // Build a texture atlas using the individual texture pngs
-    let mut texture_atlas_builder =
-        TextureAtlasBuilder::default().padding(padding.unwrap_or_default());
+    let mut texture_atlas_builder = TextureAtlasBuilder::default();
+    texture_atlas_builder.padding(padding.unwrap_or_default());
     for handle in folder.handles.iter() {
         let id = handle.id().typed_debug_checked::<Image>();
         let Some(texture) = textures.get(id) else {
@@ -102,7 +102,7 @@ fn create_texture_atlas(
         texture_atlas_builder.add_texture(Some(id), texture);
     }
 
-    let (texture_atlas_layout, mut texture) = texture_atlas_builder.finish().unwrap();
+    let (texture_atlas_layout, mut texture) = texture_atlas_builder.build().unwrap();
     texture.sampler = sampling;
 
     let texture_handle = textures.add(texture);
@@ -115,7 +115,7 @@ fn create_texture_map(
     asset_server: Res<AssetServer>,
     texture_atlas_nearest: TextureAtlasLayout,
 ) -> HashMap<String, Rect> {
-    let size = texture_atlas_nearest.size;
+    let size = texture_atlas_nearest.size.as_vec2();
 
     let mut block_texture_map = HashMap::with_capacity(loaded_folder.handles.len());
 
@@ -131,8 +131,8 @@ fn create_texture_map(
         block_texture_map.insert(
             path.to_string(),
             Rect {
-                min: (tex_rect.min) / size,
-                max: (tex_rect.max) / size,
+                min: (tex_rect.min.as_vec2()) / size,
+                max: (tex_rect.max.as_vec2()) / size,
             },
         );
     }

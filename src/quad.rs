@@ -73,7 +73,7 @@ pub fn get_normals(side: Vec3) -> Normals {
 
 pub type UVs = [Vec2; 4];
 
-pub fn rect_to_uvs(rect: &Rect) -> UVs {
+pub fn urect_to_uvs(rect: &Rect) -> UVs {
     let Rect { min, max } = *rect;
     let Vec2 { x: x0, y: y0 } = min;
     let Vec2 { x: x1, y: y1 } = max;

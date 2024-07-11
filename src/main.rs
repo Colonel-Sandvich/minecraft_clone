@@ -11,6 +11,7 @@ mod util;
 
 use bevy::{diagnostic::FrameTimeDiagnosticsPlugin, prelude::*};
 use bevy_editor_pls::prelude::*;
+use bevy_framepace::{FramepacePlugin, FramepaceSettings, Limiter};
 use bevy_rapier3d::prelude::*;
 use block::BlockPlugin;
 use chunk::ChunkPlugin;
@@ -30,8 +31,8 @@ fn main() {
             }),
             ..default()
         }))
-        .add_plugins(EditorPlugin::default())
-        .insert_resource(ClearColor(Color::hex("74b3ff").unwrap()))
+        // .add_plugins(EditorPlugin::default())
+        .insert_resource(ClearColor(Srgba::hex("74b3ff").unwrap().into()))
         .add_plugins(LightPlugin)
         .add_plugins(MobPlugin)
         .add_plugins(PlayerPlugin)
@@ -52,5 +53,11 @@ fn main() {
             bevy::diagnostic::SystemInformationDiagnosticsPlugin,
         ))
         .insert_resource(Msaa::Off)
+        .add_plugins(FramepacePlugin)
+        // .insert_resource(FramepaceSettings {
+        //     limiter: Limiter::from_framerate(60.0),
+        // })
+        // .insert_resource(Time::<Fixed>::from_hz(20.0))
+        // ????
         .run();
 }

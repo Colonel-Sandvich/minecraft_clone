@@ -8,7 +8,7 @@ use mesh::ChunkMeshPlugin;
 use rand::Rng;
 use strum::EnumCount;
 
-use crate::block::{Block, BlockType, LocalBlockPos};
+use crate::block::BlockType;
 
 pub struct ChunkPlugin;
 
@@ -44,6 +44,10 @@ pub struct ChunkBundle {
 }
 
 impl Chunk {
+    pub fn get(&self, pos: UVec3) -> BlockType {
+        self.blocks[pos.x as usize][pos.z as usize][pos.y as usize]
+    }
+
     pub fn get_i(&self, x: i32, y: i32, z: i32) -> Option<BlockType> {
         let outside = |a: i32| !(0..CHUNK_ISIZE).contains(&a);
         if outside(x) || outside(y) || outside(z) {
@@ -53,23 +57,21 @@ impl Chunk {
         Some(self.blocks[x as usize][z as usize][y as usize])
     }
 
-    pub fn get_mut(&mut self, x: usize, y: usize, z: usize) -> Option<&mut BlockType> {
-        let outside = |a: usize| !(0..CHUNK_SIZE).contains(&a);
+    pub fn get_mut(&mut self, x: u32, y: u32, z: u32) -> Option<&mut BlockType> {
+        let outside = |a: u32| !(0..CHUNK_SIZE).contains(&(a as usize));
         if outside(x) || outside(y) || outside(z) {
             return None;
         }
 
-        Some(&mut self.blocks[x][z][y])
+        Some(&mut self.blocks[x as usize][z as usize][y as usize])
     }
 
-    pub fn get_mut_uvec(&mut self, pos: UVec3) -> Option<&mut BlockType> {
-        self.get_mut(pos.x as usize, pos.y as usize, pos.z as usize)
+    pub fn get_mut_uvec(&mut self, pos: UVec3) -> &mut BlockType {
+        self.get_mut(pos.x, pos.y, pos.z).unwrap()
     }
 
-    pub fn place_block(&mut self, pos: &LocalBlockPos, block: BlockType) -> bool {
-        let Some(old_block) = self.get_mut_uvec(pos.0) else {
-            return false;
-        };
+    pub fn place_block(&mut self, pos: UVec3, block: BlockType) -> bool {
+        let old_block = self.get_mut_uvec(pos);
 
         if old_block.is_solid() {
             return false;
@@ -80,27 +82,25 @@ impl Chunk {
         true
     }
 
-    pub fn place_random_block(&mut self) -> Option<Block> {
+    pub fn place_random_block(&mut self) -> Option<(BlockType, UVec3)> {
         let mut rng = rand::thread_rng();
         let mut get_range = || rng.gen_range(0..CHUNK_SIZE);
 
         let pos = uvec3(get_range() as u32, get_range() as u32, get_range() as u32);
-        let block = self.get_mut_uvec(pos)?;
+        let block = self.get_mut_uvec(pos);
 
         if !block.is_solid() {
             // Assumes Air = 0
             *block = BlockType::from_repr(rng.gen_range(1..BlockType::COUNT)).unwrap();
 
-            return Some(Block::new(block.clone(), pos.into()));
+            return Some((block.clone(), pos));
         }
 
         None
     }
 
-    pub fn break_block(&mut self, pos: &LocalBlockPos) -> bool {
-        let Some(block) = self.get_mut_uvec(pos.0) else {
-            return false;
-        };
+    pub fn break_block(&mut self, pos: UVec3) -> bool {
+        let block = self.get_mut_uvec(pos);
 
         if !block.is_solid() {
             return false;
@@ -151,8 +151,4 @@ impl<'a> Iterator for ChunkIterator<'a> {
 
         Some((block, pos))
     }
-}
-
-pub fn global_pos_to_chunk_pos(pos: IVec3) -> IVec3 {
-    (pos.as_vec3() / CHUNK_ISIZE as f32).floor().as_ivec3()
 }

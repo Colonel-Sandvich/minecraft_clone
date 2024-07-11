@@ -31,6 +31,9 @@ pub struct FlyController;
 #[derive(Component)]
 pub struct Flying;
 
+#[derive(Component)]
+pub struct Velocity;
+
 pub fn player_move(
     keys: Res<ButtonInput<KeyCode>>,
     primary_window: Query<&Window, With<PrimaryWindow>>,
