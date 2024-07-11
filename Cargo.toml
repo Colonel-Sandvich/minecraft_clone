@@ -6,13 +6,9 @@ edition = "2021"
 [dependencies]
 bevy = { version = "0.14", features = ["wayland", "dynamic_linking"] }
 #NOTE: Disabling bevy/dynamic_linking may improve the performance of this linker (mold).
-bevy_editor_pls = { version = "*" }
+bevy-inspector-egui = { version = "0.25" }
 rand = { version = "*" }
 strum = { version = "*", features = ["derive"] }
-bevy_rapier3d = { version = "0.27.0-rc.1", features = [
-    "simd-stable",
-    "debug-render-3d",
-] }
 avian3d = { version = "0.1" }
 itertools = "*"
 bevy_framepace = "0.17"

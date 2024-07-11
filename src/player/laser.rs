@@ -1,10 +1,10 @@
+use avian3d::spatial_query::{SpatialQuery, SpatialQueryFilter};
 use bevy::{color::palettes::basic, input::InputSystem};
 
 use crate::block::BlockPos;
 
 use super::cam::MouseCam;
 use bevy::prelude::*;
-use bevy_rapier3d::prelude::*;
 
 pub struct LaserPlugin;
 
@@ -40,19 +40,19 @@ pub struct BlockEvents {
 
 fn laser(
     click: Res<ButtonInput<MouseButton>>,
-    cameras: Query<&GlobalTransform, With<MouseCam>>,
-    context: Res<RapierContext>,
-    mut gizmos: Gizmos,
+    cameras: Query<(&Parent, &GlobalTransform), With<MouseCam>>,
+    spatial_query: SpatialQuery,
     mut queued_events: ResMut<BlockEvents>,
+    mut gizmos: Gizmos,
 ) {
-    let camera = cameras.single();
+    let (camera_parent, camera) = cameras.single();
 
-    if let Some((_, ray)) = context.cast_ray_and_get_normal(
+    if let Some(ray) = spatial_query.cast_ray(
         camera.translation(),
-        *camera.forward(),
+        Dir3::from(camera.forward()),
         PLAYER_REACH,
         true,
-        QueryFilter::only_fixed(),
+        SpatialQueryFilter::default().with_excluded_entities([camera_parent.get()]),
     ) {
         let block =
             (camera.translation() + camera.forward() * (ray.time_of_impact + 0.001)).floor();

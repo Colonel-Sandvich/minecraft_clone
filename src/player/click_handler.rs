@@ -1,5 +1,8 @@
+use avian3d::{
+    collision::Collider,
+    spatial_query::{SpatialQuery, SpatialQueryFilter},
+};
 use bevy::prelude::*;
-use bevy_rapier3d::prelude::*;
 
 use crate::{
     block::{BlockType, BlockUpdateEvent, BlockUpdateKind},
@@ -23,7 +26,7 @@ fn process_clicks(
     mut chunks: Query<&mut Chunk>,
     mut block_events: EventWriter<BlockUpdateEvent>,
     mut picked_block: Local<BlockType>,
-    rapier_context: Res<RapierContext>,
+    query: SpatialQuery,
 ) {
     for click in click_events.read() {
         // let dim = dimension.get(click.dimension);
@@ -55,15 +58,17 @@ fn process_clicks(
                 });
             }
             MouseButtonForBlock::Right => {
-                if rapier_context.intersection_with_shape(
-                    pos.to_global().as_vec3() + 0.5,
-                    Rot::IDENTITY,
-                    &Collider::cuboid(0.5, 0.5, 0.5),
-                    QueryFilter::exclude_fixed(),
-                ) != None
+                if !query
+                    .shape_intersections(
+                        &Collider::cuboid(0.90, 0.90, 0.90),
+                        pos.to_global().as_vec3() + 0.5,
+                        Quat::IDENTITY,
+                        SpatialQueryFilter::default(),
+                    )
+                    .is_empty()
                 {
                     continue;
-                };
+                }
 
                 if !chunk.place_block(pos.block, picked_block.clone()) {
                     continue;

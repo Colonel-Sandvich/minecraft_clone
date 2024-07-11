@@ -1,5 +1,6 @@
 use std::f32::consts::PI;
 
+use avian3d::collision::ColliderTransform;
 use bevy::ecs::event::{Events, ManualEventReader};
 use bevy::input::mouse::MouseMotion;
 use bevy::prelude::*;
@@ -91,12 +92,15 @@ fn free_cursor(mut primary_window: Query<&mut Window, With<PrimaryWindow>>) {
     window.cursor.visible = true;
 }
 
+const EPSILON: f32 = 0.01;
+
 fn player_look(
     settings: Res<MouseSettings>,
     primary_window: Query<&Window, With<PrimaryWindow>>,
     mut state: ResMut<InputState>,
     motion: Res<Events<MouseMotion>>,
-    mut mouse_cam_q: Query<&mut Transform, With<MouseCam>>,
+    mut mouse_cam_q: Query<(&mut Transform, &Parent), With<MouseCam>>,
+    mut parent_transform_q: Query<&mut ColliderTransform, Without<MouseCam>>,
 ) {
     if mouse_cam_q.is_empty() {
         return;
@@ -107,7 +111,7 @@ fn player_look(
         return;
     };
 
-    for mut transform in mouse_cam_q.iter_mut() {
+    for (mut transform, parent) in mouse_cam_q.iter_mut() {
         for ev in state.reader_motion.read(&motion) {
             let (mut yaw, mut pitch, _) = transform.rotation.to_euler(EulerRot::YXZ);
             // Using smallest of height or width ensures equal vertical and horizontal sensitivity
@@ -115,11 +119,15 @@ fn player_look(
             pitch -= (settings.sensitivity * ev.delta.y * window_scale).to_radians();
             yaw -= (settings.sensitivity * ev.delta.x * window_scale).to_radians();
 
-            pitch = pitch.clamp(-PI / 2.0, PI / 2.0);
+            pitch = pitch.clamp(-PI / 2.0 + EPSILON, PI / 2.0 - EPSILON);
 
             // Order is important to prevent unintended roll
             transform.rotation =
                 Quat::from_axis_angle(Vec3::Y, yaw) * Quat::from_axis_angle(Vec3::X, pitch);
         }
+
+        let mut parent_transform = parent_transform_q.get_mut(parent.get()).unwrap();
+
+        parent_transform.rotation = Quat::from_axis_angle(Vec3::Y, transform.rotation.y).into();
     }
 }

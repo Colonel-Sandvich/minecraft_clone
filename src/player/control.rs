@@ -1,6 +1,12 @@
-use super::{cam::MouseState, fly_controller::Flying, GameMode, Player};
+use super::{
+    cam::MouseState,
+    fly_controller::{FlyController, Flying},
+    make_collider,
+    spawn::SPAWN_POINT,
+    GameMode, Player,
+};
+use avian3d::{collision::Collider, prelude::LinearVelocity};
 use bevy::prelude::*;
-use bevy_rapier3d::prelude::*;
 
 pub struct ControlPlayerPlugin;
 
@@ -10,7 +16,7 @@ impl Plugin for ControlPlayerPlugin {
 
         app.add_systems(PreUpdate, change_gamemode);
         app.add_systems(PreUpdate, toggle_fly);
-        app.add_systems(PreUpdate, debug_toggle_colliders);
+        app.add_systems(PreUpdate, debug_reset_character);
         app.add_systems(PreUpdate, toggle_grab_cursor);
     }
 }
@@ -23,11 +29,12 @@ pub struct KeyBindings {
     pub move_right: KeyCode,
     pub move_ascend: KeyCode,
     pub move_descend: KeyCode,
+    pub jump: KeyCode,
     pub sprint: KeyCode,
     pub toggle_grab_cursor: KeyCode,
     pub toggle_fly: KeyCode,
     pub change_gamemode: KeyCode,
-    pub debug_toggle_rapier_render: KeyCode,
+    pub debug_reset_character: KeyCode,
 }
 
 impl Default for KeyBindings {
@@ -39,11 +46,12 @@ impl Default for KeyBindings {
             move_right: KeyCode::KeyD,
             move_ascend: KeyCode::Space,
             move_descend: KeyCode::ControlLeft,
+            jump: KeyCode::Space,
             sprint: KeyCode::ShiftLeft,
             toggle_grab_cursor: KeyCode::Escape,
             toggle_fly: KeyCode::KeyF,
             change_gamemode: KeyCode::F4,
-            debug_toggle_rapier_render: KeyCode::KeyB,
+            debug_reset_character: KeyCode::KeyR,
         }
     }
 }
@@ -52,21 +60,23 @@ fn change_gamemode(
     mut commands: Commands,
     keys: Res<ButtonInput<KeyCode>>,
     key_bindings: Res<KeyBindings>,
-    mut player_q: Query<(Entity, &mut Player, &mut KinematicCharacterController)>,
+    mut player_q: Query<(Entity, &mut Player)>,
 ) {
-    let (player_entity, mut player, mut controller) = player_q.single_mut();
+    let (player_entity, mut player) = player_q.single_mut();
     let player_entity = &mut commands.get_entity(player_entity).unwrap();
 
     if keys.just_pressed(key_bindings.change_gamemode) {
         match player.gamemode {
             GameMode::Survival => todo!(),
             GameMode::Creative => {
-                controller.filter_flags = QueryFilterFlags::all();
+                // controller.filter_flags = QueryFilterFlags::all();
+                player_entity.remove::<Collider>();
                 player.gamemode = GameMode::Spectator;
             }
             GameMode::Adventure => todo!(),
             GameMode::Spectator => {
-                controller.filter_flags = KinematicCharacterController::default().filter_flags;
+                // controller.filter_flags = KinematicCharacterController::default().filter_flags;
+                player_entity.insert(make_collider());
                 player.gamemode = GameMode::Creative;
             }
         };
@@ -77,26 +87,28 @@ fn toggle_fly(
     mut commands: Commands,
     keys: Res<ButtonInput<KeyCode>>,
     key_bindings: Res<KeyBindings>,
-    player_q: Query<(Entity, Option<&Flying>), With<Player>>,
+    flyer_q: Query<(Entity, Has<Flying>), With<FlyController>>,
 ) {
-    let (player, flying) = player_q.single();
-    let player = &mut commands.get_entity(player).unwrap();
+    let (entity, flying) = flyer_q.single();
+    let entity = &mut commands.get_entity(entity).unwrap();
 
     if keys.just_pressed(key_bindings.toggle_fly) {
         match flying {
-            Some(_) => player.remove::<Flying>(),
-            None => player.insert(Flying),
+            true => entity.remove::<Flying>(),
+            false => entity.insert(Flying),
         };
     }
 }
 
-fn debug_toggle_colliders(
+fn debug_reset_character(
     keys: Res<ButtonInput<KeyCode>>,
     key_bindings: Res<KeyBindings>,
-    mut rapier_render_context: ResMut<DebugRenderContext>,
+    mut player_q: Query<(&mut Transform, &mut LinearVelocity), With<Player>>,
 ) {
-    if keys.just_pressed(key_bindings.debug_toggle_rapier_render) {
-        rapier_render_context.enabled = !rapier_render_context.enabled;
+    if keys.just_pressed(key_bindings.debug_reset_character) {
+        let mut player = player_q.single_mut();
+        *player.1 = LinearVelocity::ZERO;
+        *player.0 = Transform::from_translation(SPAWN_POINT);
     }
 }
 

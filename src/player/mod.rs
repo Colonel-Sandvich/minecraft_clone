@@ -1,16 +1,18 @@
 pub mod cam;
+pub mod classic_controller;
 mod click_handler;
 mod control;
 pub mod fly_controller;
+mod inspector;
 pub mod laser;
 pub mod spawn;
 
+use avian3d::collision::Collider;
 use bevy::prelude::*;
-use bevy_rapier3d::geometry::Collider;
 use cam::{MouseSettings, PlayerCamPlugin};
 use click_handler::ClickHandlerPlugin;
 use control::ControlPlayerPlugin;
-use fly_controller::{FlyControllerPlugin, MovementSettings};
+use inspector::InspectorPlugin;
 use laser::LaserPlugin;
 use spawn::SpawnPlayerPlugin;
 
@@ -21,15 +23,14 @@ impl Plugin for PlayerPlugin {
         app.add_plugins(ControlPlayerPlugin);
         app.add_plugins(PlayerCamPlugin);
         app.add_plugins(SpawnPlayerPlugin);
-        app.add_plugins(FlyControllerPlugin);
         app.add_plugins(LaserPlugin);
         app.add_plugins(ClickHandlerPlugin);
+        app.add_plugins(InspectorPlugin);
 
-        app.insert_resource(MovementSettings { speed: 8.0 })
-            .insert_resource(MouseSettings {
-                sensitivity: 0.00007,
-                fov: 100.0,
-            });
+        app.insert_resource(MouseSettings {
+            sensitivity: 0.00007,
+            fov: 100.0,
+        });
     }
 }
 
@@ -52,5 +53,5 @@ pub enum GameMode {
 }
 
 pub fn make_collider() -> Collider {
-    Collider::cuboid(PLAYER_LENGTH / 2.0, PLAYER_HEIGHT / 2.0, PLAYER_WIDTH / 2.0)
+    Collider::cuboid(PLAYER_LENGTH, PLAYER_HEIGHT, PLAYER_WIDTH)
 }

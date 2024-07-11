@@ -1,6 +1,6 @@
+use avian3d::prelude::*;
 use bevy::math::vec3;
 use bevy::prelude::*;
-use bevy_rapier3d::prelude::*;
 use itertools::Itertools;
 
 use crate::{block::BlockUpdateEvent, chunk::Chunk};
@@ -11,8 +11,8 @@ pub struct ChunkColliderPlugin;
 
 impl Plugin for ChunkColliderPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, insert_colliders_naive);
-        app.add_systems(FixedPostUpdate, update_collider_naive);
+        app.add_systems(PostUpdate, insert_colliders_naive);
+        app.add_systems(PostUpdate, update_collider_naive);
     }
 }
 
@@ -32,7 +32,7 @@ fn insert_one(commands: &mut Commands, chunk: &Chunk, chunk_entity: Entity) {
         cubes.push((
             vec3(x as f32, y as f32, z as f32) + Vec3::splat(0.5),
             Quat::IDENTITY,
-            Collider::cuboid(0.5, 0.5, 0.5),
+            Collider::cuboid(1.0, 1.0, 1.0),
         ));
     }
 
@@ -44,7 +44,7 @@ fn insert_one(commands: &mut Commands, chunk: &Chunk, chunk_entity: Entity) {
         .spawn((
             SpatialBundle::default(),
             Collider::compound(cubes),
-            RigidBody::Fixed,
+            RigidBody::Static,
         ))
         .set_parent(chunk_entity);
 }
