@@ -40,13 +40,11 @@ fn insert_one(commands: &mut Commands, chunk: &Chunk, chunk_entity: Entity) {
         return;
     }
 
-    commands
-        .spawn((
-            SpatialBundle::default(),
-            Collider::compound(cubes),
-            RigidBody::Static,
-        ))
-        .set_parent(chunk_entity);
+    commands.spawn((
+        ChildOf(chunk_entity),
+        Collider::compound(cubes),
+        RigidBody::Static,
+    ));
 }
 
 fn update_collider_naive(
@@ -62,10 +60,7 @@ fn update_collider_naive(
             let mut colliders = collider_q.iter_many(children);
 
             if let Some(collider_entity) = colliders.fetch_next() {
-                commands
-                    .get_entity(collider_entity)
-                    .unwrap()
-                    .despawn_recursive();
+                commands.get_entity(collider_entity).unwrap().despawn();
             };
         }
 

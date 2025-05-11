@@ -13,9 +13,9 @@ use strum::IntoEnumIterator;
 use crate::block::BlockUpdateEvent;
 use crate::textures::{BlockStandardMaterial, TextureState};
 use crate::{
-    block::{block_to_colour, BlockTextureMap, BlockType},
-    chunk::{Chunk, CHUNK_ISIZE},
-    quad::{get_indices, get_normals, get_positions, urect_to_uvs, Direction, Quad, QuadGroups},
+    block::{BlockTextureMap, BlockType, block_to_colour},
+    chunk::{CHUNK_ISIZE, Chunk},
+    quad::{Direction, Quad, QuadGroups, get_indices, get_normals, get_positions, urect_to_uvs},
 };
 
 pub struct ChunkMeshPlugin;
@@ -37,7 +37,7 @@ fn update_mesh_simple(
     mut block_updates: EventReader<BlockUpdateEvent>,
     added_chunks_q: Query<(&Chunk, Entity, Option<&Children>), Added<Chunk>>,
     chunks_q: Query<(&Chunk, Entity, Option<&Children>)>,
-    mut mesh_q: Query<(Entity, &mut Handle<Mesh>)>,
+    mut mesh_q: Query<(Entity, &mut Mesh3d)>,
 ) {
     for (chunk, chunk_entity, children) in added_chunks_q
         .iter()
@@ -48,7 +48,7 @@ fn update_mesh_simple(
                 let mut meshes = mesh_q.iter_many(children);
 
                 if let Some((pbr_entity, _)) = meshes.fetch_next() {
-                    commands.get_entity(pbr_entity).unwrap().despawn_recursive();
+                    commands.get_entity(pbr_entity).unwrap().despawn();
                 };
 
                 assert_eq!(None, meshes.fetch_next());
@@ -62,20 +62,18 @@ fn update_mesh_simple(
             let mut meshes = mesh_q.iter_many_mut(children);
 
             if let Some((pbr_entity, mut old_mesh)) = meshes.fetch_next() {
-                *old_mesh = mesh_handle;
+                *old_mesh = Mesh3d(mesh_handle);
                 // Recompute Aabb
                 commands.get_entity(pbr_entity).unwrap().remove::<Aabb>();
                 continue;
             };
         };
 
-        commands
-            .spawn(PbrBundle {
-                mesh: mesh_handle,
-                material: block_material.clone(),
-                ..default()
-            })
-            .set_parent(chunk_entity);
+        commands.spawn((
+            ChildOf(chunk_entity),
+            Mesh3d(mesh_handle),
+            MeshMaterial3d(block_material.clone()),
+        ));
     }
 }
 

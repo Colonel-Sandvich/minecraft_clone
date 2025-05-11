@@ -37,12 +37,6 @@ impl Default for Chunk {
     }
 }
 
-#[derive(Bundle, Default)]
-pub struct ChunkBundle {
-    pub chunk: Chunk,
-    pub spatial: SpatialBundle,
-}
-
 impl Chunk {
     pub fn get(&self, pos: UVec3) -> BlockType {
         self.blocks[pos.x as usize][pos.z as usize][pos.y as usize]
@@ -83,15 +77,15 @@ impl Chunk {
     }
 
     pub fn place_random_block(&mut self) -> Option<(BlockType, UVec3)> {
-        let mut rng = rand::thread_rng();
-        let mut get_range = || rng.gen_range(0..CHUNK_SIZE);
+        let mut rng = rand::rng();
+        let mut get_range = || rng.random_range(0..CHUNK_SIZE);
 
         let pos = uvec3(get_range() as u32, get_range() as u32, get_range() as u32);
         let block = self.get_mut_uvec(pos);
 
         if !block.is_solid() {
             // Assumes Air = 0
-            *block = BlockType::from_repr(rng.gen_range(1..BlockType::COUNT)).unwrap();
+            *block = BlockType::from_repr(rng.random_range(1..BlockType::COUNT)).unwrap();
 
             return Some((block.clone(), pos));
         }

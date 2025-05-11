@@ -1,7 +1,4 @@
-use avian3d::{
-    collision::Collider,
-    spatial_query::{SpatialQuery, SpatialQueryFilter},
-};
+use avian3d::prelude::*;
 use bevy::prelude::*;
 
 use crate::{
@@ -22,7 +19,7 @@ impl Plugin for ClickHandlerPlugin {
 
 fn process_clicks(
     mut click_events: EventReader<BlockClickEvent>,
-    dimension: Query<&Dimension>,
+    dimension: Single<&Dimension>,
     mut chunks: Query<&mut Chunk>,
     mut block_events: EventWriter<BlockUpdateEvent>,
     mut picked_block: Local<BlockType>,
@@ -32,11 +29,9 @@ fn process_clicks(
         // let dim = dimension.get(click.dimension);
         // TODO: Abstract over Dimension, Chunk, Block
         // Single struct?
-        let dim = dimension.single();
-
         let pos = click.pos;
 
-        let Some(chunk_entity) = dim.chunks.get(&pos.chunk) else {
+        let Some(chunk_entity) = dimension.chunks.get(&pos.chunk) else {
             warn!("Clicked into missing chunk");
             continue;
         };
@@ -51,7 +46,7 @@ fn process_clicks(
                     continue;
                 };
 
-                block_events.send(BlockUpdateEvent {
+                block_events.write(BlockUpdateEvent {
                     chunk: *chunk_entity,
                     pos,
                     kind: BlockUpdateKind::Break,
@@ -63,7 +58,7 @@ fn process_clicks(
                         &Collider::cuboid(0.90, 0.90, 0.90),
                         pos.to_global().as_vec3() + 0.5,
                         Quat::IDENTITY,
-                        SpatialQueryFilter::default(),
+                        &SpatialQueryFilter::default(),
                     )
                     .is_empty()
                 {
@@ -74,7 +69,7 @@ fn process_clicks(
                     continue;
                 };
 
-                block_events.send(BlockUpdateEvent {
+                block_events.write(BlockUpdateEvent {
                     chunk: *chunk_entity,
                     pos,
                     kind: BlockUpdateKind::Place(*picked_block),

@@ -1,17 +1,17 @@
 [package]
 name = "minecraft_clone"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 
 [dependencies]
-bevy = { version = "0.14", features = ["wayland", "dynamic_linking"] }
+bevy = { version = "0.16.0", features = ["wayland", "dynamic_linking"] }
 #NOTE: Disabling bevy/dynamic_linking may improve the performance of this linker (mold).
-bevy-inspector-egui = { version = "0.25" }
-rand = { version = "*" }
-strum = { version = "*", features = ["derive"] }
-avian3d = { version = "0.1" }
-itertools = "*"
-bevy_framepace = "0.17"
+avian3d = { version = "0.3.0" }
+bevy-inspector-egui = { version = "0.31.0" }
+rand = { version = "0.9.1" }
+strum = { version = "0.27.1", features = ["derive"] }
+itertools = "0.14.0"
+bevy_framepace = "0.19.1"
 
 
 # Enable a small amount of optimization in debug mode

@@ -1,12 +1,12 @@
 use std::ops::Mul;
 
-use bevy::{prelude::*, utils::HashMap};
+use bevy::{platform::collections::HashMap, prelude::*};
 
 use crate::{
     block::{BlockPos, BlockUpdateEvent, BlockUpdateKind},
     chunk::{
+        CHUNK_SIZE, Chunk,
         util::{generate_flat_chunk_data, generate_full_chunk_data},
-        Chunk, ChunkBundle, CHUNK_SIZE,
     },
 };
 
@@ -25,7 +25,11 @@ impl Plugin for DimensionPlugin {
 }
 
 fn setup(mut commands: Commands) {
-    commands.spawn((Dimension::default(), SpatialBundle::default()));
+    commands.spawn((
+        Dimension::default(),
+        Transform::default(),
+        Visibility::default(),
+    ));
 }
 
 fn spawn_chunks(mut commands: Commands, mut dimension: Query<(&mut Dimension, Entity)>) {
@@ -34,17 +38,12 @@ fn spawn_chunks(mut commands: Commands, mut dimension: Query<(&mut Dimension, En
 
         for (pos, chunk) in chunks.into_iter() {
             let chunk_entity = commands
-                .spawn(ChunkBundle {
+                .spawn((
+                    ChildOf(dimension_entity),
                     chunk,
-                    spatial: SpatialBundle {
-                        transform: Transform::from_translation(
-                            pos.as_vec3().mul(CHUNK_SIZE as f32),
-                        ),
-                        ..default()
-                    },
-                    ..default()
-                })
-                .set_parent(dimension_entity)
+                    Transform::from_translation(pos.as_vec3().mul(CHUNK_SIZE as f32)),
+                    Visibility::default(),
+                ))
                 .id();
 
             dim.chunks.insert(pos, chunk_entity);
@@ -83,7 +82,7 @@ fn place_block_in_chunks(
 ) {
     for (_, chunk_children) in dimension.iter() {
         for chunk_entity in chunk_children.iter() {
-            let Some(mut chunk) = chunks.get_mut(*chunk_entity).ok() else {
+            let Some(mut chunk) = chunks.get_mut(chunk_entity).ok() else {
                 continue;
             };
 
@@ -119,7 +118,7 @@ fn place_block_in_chunks_2(
                 continue;
             };
 
-            block_events.send(BlockUpdateEvent {
+            block_events.write(BlockUpdateEvent {
                 chunk: *chunk_entity,
                 pos: BlockPos {
                     chunk: chunk_pos.clone(),

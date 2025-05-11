@@ -1,11 +1,8 @@
-use bevy::{prelude::*, utils::HashMap};
+use bevy::{platform::collections::HashMap, prelude::*};
 use rand::Rng;
 use strum::{EnumCount, EnumIter, FromRepr};
 
-use crate::{
-    chunk::{CHUNK_ISIZE, CHUNK_SIZE},
-    quad::Direction,
-};
+use crate::{chunk::CHUNK_ISIZE, quad::Direction};
 
 pub struct BlockPlugin;
 
@@ -56,9 +53,9 @@ impl BlockType {
     }
 
     pub fn random_not_air() -> Self {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
 
-        BlockType::from_repr(rng.gen_range(1..BlockType::COUNT)).unwrap()
+        BlockType::from_repr(rng.random_range(1..BlockType::COUNT)).unwrap()
     }
 }
 
@@ -103,7 +100,7 @@ pub fn block_to_colour(block: BlockType, side: Direction) -> Vec4 {
         _ => Srgba::WHITE,
     };
 
-    Vec4::new(color.red, color.green, color.blue, color.alpha)
+    color.to_vec4()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

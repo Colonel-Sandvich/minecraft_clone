@@ -40,22 +40,22 @@ pub struct BlockEvents {
 
 fn laser(
     click: Res<ButtonInput<MouseButton>>,
-    cameras: Query<(&Parent, &GlobalTransform), With<MouseCam>>,
+    cameras: Single<(&ChildOf, &GlobalTransform), With<MouseCam>>,
     spatial_query: SpatialQuery,
     mut queued_events: ResMut<BlockEvents>,
     mut gizmos: Gizmos,
 ) {
-    let (camera_parent, camera) = cameras.single();
+    let (camera_parent, camera) = *cameras;
 
     if let Some(ray) = spatial_query.cast_ray(
         camera.translation(),
         Dir3::from(camera.forward()),
         PLAYER_REACH,
         true,
-        SpatialQueryFilter::default().with_excluded_entities([camera_parent.get()]),
+        &SpatialQueryFilter::default().with_excluded_entities([camera_parent.parent()]),
     ) {
         let block =
-            (camera.translation() + camera.forward() * (ray.time_of_impact + 0.001)).floor();
+            (camera.translation() + camera.forward().as_vec3() * (ray.distance + 0.001)).floor();
         // let block_normal =
         //     (camera.translation() + camera.forward() * (ray.time_of_impact - 0.001)).floor();
 
@@ -97,12 +97,12 @@ fn act_on_clicks(
     mut block_click_events: EventWriter<BlockClickEvent>,
 ) {
     if let Some(left) = queued_events.left.take() {
-        block_click_events.send(left);
+        block_click_events.write(left);
     }
     if let Some(right) = queued_events.right.take() {
-        block_click_events.send(right);
+        block_click_events.write(right);
     }
     if let Some(middle) = queued_events.middle.take() {
-        block_click_events.send(middle);
+        block_click_events.write(middle);
     }
 }

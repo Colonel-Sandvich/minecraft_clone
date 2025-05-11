@@ -1,11 +1,11 @@
+use crate::mob::controller::{FlyController, Flying, Velocity};
+
 use super::{
-    cam::MouseState,
-    fly_controller::{FlyController, Flying},
-    make_collider,
-    spawn::SPAWN_POINT,
     GameMode, Player,
+    cam::{MouseCam, MouseState},
+    spawn::{SPAWN_POINT, make_player_collider},
 };
-use avian3d::{collision::Collider, prelude::LinearVelocity};
+use avian3d::prelude::*;
 use bevy::prelude::*;
 
 pub struct ControlPlayerPlugin;
@@ -60,9 +60,9 @@ fn change_gamemode(
     mut commands: Commands,
     keys: Res<ButtonInput<KeyCode>>,
     key_bindings: Res<KeyBindings>,
-    mut player_q: Query<(Entity, &mut Player)>,
+    player: Single<(Entity, &mut Player)>,
 ) {
-    let (player_entity, mut player) = player_q.single_mut();
+    let (player_entity, mut player) = player.into_inner();
     let player_entity = &mut commands.get_entity(player_entity).unwrap();
 
     if keys.just_pressed(key_bindings.change_gamemode) {
@@ -76,7 +76,7 @@ fn change_gamemode(
             GameMode::Adventure => todo!(),
             GameMode::Spectator => {
                 // controller.filter_flags = KinematicCharacterController::default().filter_flags;
-                player_entity.insert(make_collider());
+                player_entity.insert(make_player_collider());
                 player.gamemode = GameMode::Creative;
             }
         };
@@ -87,9 +87,9 @@ fn toggle_fly(
     mut commands: Commands,
     keys: Res<ButtonInput<KeyCode>>,
     key_bindings: Res<KeyBindings>,
-    flyer_q: Query<(Entity, Has<Flying>), With<FlyController>>,
+    flyer: Single<(Entity, Has<Flying>), With<FlyController>>,
 ) {
-    let (entity, flying) = flyer_q.single();
+    let (entity, flying) = *flyer;
     let entity = &mut commands.get_entity(entity).unwrap();
 
     if keys.just_pressed(key_bindings.toggle_fly) {
@@ -103,12 +103,17 @@ fn toggle_fly(
 fn debug_reset_character(
     keys: Res<ButtonInput<KeyCode>>,
     key_bindings: Res<KeyBindings>,
-    mut player_q: Query<(&mut Transform, &mut LinearVelocity), With<Player>>,
+    player_q: Single<(&mut Transform, &mut Velocity, &Children), With<Player>>,
+    mut camera_q: Query<&mut Transform, (With<MouseCam>, Without<Player>)>,
 ) {
     if keys.just_pressed(key_bindings.debug_reset_character) {
-        let mut player = player_q.single_mut();
-        *player.1 = LinearVelocity::ZERO;
-        *player.0 = Transform::from_translation(SPAWN_POINT);
+        let (mut transform, mut velocity, children) = player_q.into_inner();
+        **velocity = Vec3::ZERO;
+        *transform = Transform::from_translation(SPAWN_POINT);
+        let mut cameras = camera_q.iter_many_mut(children);
+        while let Some(mut camera) = cameras.fetch_next() {
+            camera.rotation = Transform::default().looking_to(Vec3::X, Vec3::Y).rotation;
+        }
     }
 }
 

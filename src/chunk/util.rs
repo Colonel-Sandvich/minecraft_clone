@@ -1,8 +1,6 @@
-use bevy::prelude::*;
-
 use crate::block::BlockType;
 
-use super::{Chunk, CHUNK_SIZE};
+use super::{CHUNK_SIZE, Chunk};
 
 pub fn generate_flat_chunk_data() -> Chunk {
     let mut chunk = Chunk::default();
