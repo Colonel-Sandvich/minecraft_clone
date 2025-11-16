@@ -2,12 +2,12 @@ use avian3d::prelude::*;
 use bevy::prelude::*;
 
 use crate::{
-    block::{BlockType, BlockUpdateEvent, BlockUpdateKind},
+    block::{BlockType, BlockUpdateKind, BlockUpdateMessage},
     chunk::Chunk,
     dimension::Dimension,
 };
 
-use super::laser::{BlockClickEvent, MouseButtonForBlock};
+use super::laser::{BlockClickMessage, MouseButtonForBlock};
 
 pub struct ClickHandlerPlugin;
 
@@ -18,10 +18,10 @@ impl Plugin for ClickHandlerPlugin {
 }
 
 fn process_clicks(
-    mut click_events: EventReader<BlockClickEvent>,
+    mut click_events: MessageReader<BlockClickMessage>,
     dimension: Single<&Dimension>,
     mut chunks: Query<&mut Chunk>,
-    mut block_events: EventWriter<BlockUpdateEvent>,
+    mut block_events: MessageWriter<BlockUpdateMessage>,
     mut picked_block: Local<BlockType>,
     query: SpatialQuery,
 ) {
@@ -46,7 +46,7 @@ fn process_clicks(
                     continue;
                 };
 
-                block_events.write(BlockUpdateEvent {
+                block_events.write(BlockUpdateMessage {
                     chunk: *chunk_entity,
                     pos,
                     kind: BlockUpdateKind::Break,
@@ -69,7 +69,7 @@ fn process_clicks(
                     continue;
                 };
 
-                block_events.write(BlockUpdateEvent {
+                block_events.write(BlockUpdateMessage {
                     chunk: *chunk_entity,
                     pos,
                     kind: BlockUpdateKind::Place(*picked_block),

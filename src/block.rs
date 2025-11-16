@@ -8,7 +8,7 @@ pub struct BlockPlugin;
 
 impl Plugin for BlockPlugin {
     fn build(&self, app: &mut App) {
-        app.add_event::<BlockUpdateEvent>();
+        app.add_message::<BlockUpdateMessage>();
     }
 }
 
@@ -128,8 +128,8 @@ pub enum BlockUpdateKind {
     // Replace(BlockType, BlockType), // (old, new) ?
 }
 
-#[derive(Event)]
-pub struct BlockUpdateEvent {
+#[derive(Message)]
+pub struct BlockUpdateMessage {
     pub chunk: Entity,
     pub pos: BlockPos,
     pub kind: BlockUpdateKind,

@@ -1,16 +1,12 @@
+use bevy::asset::RenderAssetUsages;
+use bevy::camera::primitives::Aabb;
+use bevy::math::UVec3;
+use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
-use bevy::render::primitives::Aabb;
-use bevy::{
-    math::UVec3,
-    render::{
-        mesh::{Indices, Mesh, PrimitiveTopology},
-        render_asset::RenderAssetUsages,
-    },
-};
 use itertools::Itertools;
 use strum::IntoEnumIterator;
 
-use crate::block::BlockUpdateEvent;
+use crate::block::BlockUpdateMessage;
 use crate::textures::{BlockStandardMaterial, TextureState};
 use crate::{
     block::{BlockTextureMap, BlockType, block_to_colour},
@@ -34,7 +30,7 @@ fn update_mesh_simple(
     mut meshes: ResMut<Assets<Mesh>>,
     block_material: Res<BlockStandardMaterial>,
     block_texture_map: Res<BlockTextureMap>,
-    mut block_updates: EventReader<BlockUpdateEvent>,
+    mut block_updates: MessageReader<BlockUpdateMessage>,
     added_chunks_q: Query<(&Chunk, Entity, Option<&Children>), Added<Chunk>>,
     chunks_q: Query<(&Chunk, Entity, Option<&Children>)>,
     mut mesh_q: Query<(Entity, &mut Mesh3d)>,

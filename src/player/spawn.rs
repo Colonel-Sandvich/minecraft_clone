@@ -5,13 +5,12 @@ use super::{
     cam::{MouseCam, MouseSettings},
 };
 use avian3d::prelude::Collider;
-use bevy::{
-    prelude::*,
-    render::view::{NoCpuCulling, NoIndirectDrawing},
-};
+use bevy::{camera::visibility::NoCpuCulling, prelude::*, render::view::NoIndirectDrawing};
 
 use crate::{
     chunk::CHUNK_SIZE,
+    dimension::Dimension,
+    game_state::GameState,
     mob::controller::{CharacterController, FlyController},
 };
 
@@ -19,16 +18,21 @@ pub struct SpawnPlayerPlugin;
 
 impl Plugin for SpawnPlayerPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, setup);
+        app.add_systems(OnExit(GameState::GenWorld), spawn_player);
     }
 }
 
-pub const SPAWN_POINT: Vec3 = Vec3::new(0.5, CHUNK_SIZE as f32 + 2.0, 0.5);
+pub const SPAWN_POINT: Vec3 = Vec3::new(
+    CHUNK_SIZE as f32 / 2.0,
+    CHUNK_SIZE as f32 + 2.0,
+    CHUNK_SIZE as f32 / 2.0,
+);
 
 pub const EYELINE: f32 = 0.1;
 
-fn setup(mut commands: Commands) {
+fn spawn_player(mut commands: Commands, dimension_q: Query<Entity, With<Dimension>>) {
     commands.spawn((
+        ChildOf(dimension_q.single().unwrap()),
         Player::default(),
         Transform::from_translation(SPAWN_POINT),
         make_player_collider(),

@@ -2,11 +2,9 @@ pub mod collider;
 pub mod mesh;
 pub mod util;
 
-use bevy::{math::uvec3, prelude::*};
+use bevy::prelude::*;
 use collider::ChunkColliderPlugin;
 use mesh::ChunkMeshPlugin;
-use rand::Rng;
-use strum::EnumCount;
 
 use crate::block::BlockType;
 
@@ -76,23 +74,6 @@ impl Chunk {
         true
     }
 
-    pub fn place_random_block(&mut self) -> Option<(BlockType, UVec3)> {
-        let mut rng = rand::rng();
-        let mut get_range = || rng.random_range(0..CHUNK_SIZE);
-
-        let pos = uvec3(get_range() as u32, get_range() as u32, get_range() as u32);
-        let block = self.get_mut_uvec(pos);
-
-        if !block.is_solid() {
-            // Assumes Air = 0
-            *block = BlockType::from_repr(rng.random_range(1..BlockType::COUNT)).unwrap();
-
-            return Some((block.clone(), pos));
-        }
-
-        None
-    }
-
     pub fn break_block(&mut self, pos: UVec3) -> bool {
         let block = self.get_mut_uvec(pos);
 
@@ -105,8 +86,8 @@ impl Chunk {
         true
     }
 
-    pub fn iter(&self) -> ChunkIterator {
-        ChunkIterator {
+    pub fn iter(&self) -> BlockIterator<'_> {
+        BlockIterator {
             chunk: self,
             x: 0,
             y: 0,
@@ -115,14 +96,14 @@ impl Chunk {
     }
 }
 
-pub struct ChunkIterator<'a> {
+pub struct BlockIterator<'a> {
     chunk: &'a Chunk,
     x: usize,
     y: usize,
     z: usize,
 }
 
-impl<'a> Iterator for ChunkIterator<'a> {
+impl<'a> Iterator for BlockIterator<'a> {
     type Item = (&'a BlockType, (usize, usize, usize));
 
     fn next(&mut self) -> Option<Self::Item> {

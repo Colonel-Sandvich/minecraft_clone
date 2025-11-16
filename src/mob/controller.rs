@@ -43,7 +43,7 @@ pub struct Flying;
 pub fn classic_move(
     keys: Res<ButtonInput<KeyCode>>,
     key_bindings: Res<KeyBindings>, // Need to change to actions
-    mut player_q: Query<
+    player_q: Single<
         (
             &MovementAcceleration,
             &JumpImpulse,
@@ -57,49 +57,43 @@ pub fn classic_move(
     camera_q: Query<&Transform, With<MouseCam>>,
     time: Res<Time>,
 ) {
-    for (movement_acceleration, jump_impulse, mut linear_velocity, children, is_grounded, flying) in
-        player_q.iter_mut()
-    {
-        let mut direction = Vec3::ZERO;
-        let look_transform = camera_q.get(*children.first().unwrap()).unwrap();
-        let forward = look_transform
-            .forward()
-            .reject_from_normalized(Vec3::Y)
-            .normalize();
-        let right = look_transform
-            .right()
-            .reject_from_normalized(Vec3::Y)
-            .normalize();
+    let (movement_acceleration, jump_impulse, mut linear_velocity, children, is_grounded, flying) =
+        player_q.into_inner();
+    let mut delta = Vec3::ZERO;
 
-        for key in keys.get_pressed() {
-            let key = *key;
-            direction += if key == key_bindings.move_forward {
-                forward
-            } else if key == key_bindings.move_backward {
-                -forward
-            } else if key == key_bindings.move_left {
-                -right
-            } else if key == key_bindings.move_right {
-                right
-            } else {
-                Vec3::ZERO
-            }
-        }
-
-        let mut velocity =
-            direction.normalize_or_zero() * movement_acceleration.0 * time.delta_secs();
-
-        if keys.pressed(key_bindings.jump) && is_grounded && !flying {
-            velocity.y = jump_impulse.0;
-        }
-
-        if keys.pressed(key_bindings.sprint) {
-            velocity.x *= 2.0;
-            velocity.z *= 2.0;
-        }
-
-        linear_velocity.0 += velocity;
+    if keys.pressed(key_bindings.move_forward) {
+        delta.z += 1.0;
     }
+    if keys.pressed(key_bindings.move_backward) {
+        delta.z -= 1.0;
+    }
+    if keys.pressed(key_bindings.move_right) {
+        delta.x += 1.0;
+    }
+    if keys.pressed(key_bindings.move_left) {
+        delta.x -= 1.0;
+    }
+
+    let look_transform = camera_q.get(*children.first().unwrap()).unwrap();
+    let forward = look_transform.forward() * delta.z;
+    let right = look_transform.right() * delta.x;
+
+    let mut direction = forward + right;
+    direction.y = 0.0;
+    direction = direction.normalize_or_zero();
+
+    let mut velocity = direction * movement_acceleration.0 * time.delta_secs();
+
+    if keys.pressed(key_bindings.jump) && is_grounded && !flying {
+        velocity.y = jump_impulse.0;
+    }
+
+    if keys.pressed(key_bindings.sprint) {
+        velocity.x *= 2.0;
+        velocity.z *= 2.0;
+    }
+
+    linear_velocity.0 += velocity;
 }
 
 pub fn fly_move(

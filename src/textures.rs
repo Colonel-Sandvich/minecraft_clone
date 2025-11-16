@@ -35,10 +35,10 @@ fn load_textures(mut commands: Commands, asset_server: Res<AssetServer>) {
 fn check_textures(
     mut next_state: ResMut<NextState<TextureState>>,
     block_texture_folder: Res<BlockTextureFolder>,
-    mut events: EventReader<AssetEvent<LoadedFolder>>,
+    mut messages: MessageReader<AssetEvent<LoadedFolder>>,
 ) {
-    for event in events.read() {
-        if event.is_loaded_with_dependencies(&block_texture_folder.0) {
+    for message in messages.read() {
+        if message.is_loaded_with_dependencies(&block_texture_folder.0) {
             next_state.set(TextureState::Finished);
             info!("Textures loaded.");
         }

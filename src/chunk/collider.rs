@@ -3,7 +3,7 @@ use bevy::math::vec3;
 use bevy::prelude::*;
 use itertools::Itertools;
 
-use crate::{block::BlockUpdateEvent, chunk::Chunk};
+use crate::{block::BlockUpdateMessage, chunk::Chunk};
 
 use super::CHUNK_VOLUME;
 
@@ -49,7 +49,7 @@ fn insert_one(commands: &mut Commands, chunk: &Chunk, chunk_entity: Entity) {
 
 fn update_collider_naive(
     mut commands: Commands,
-    mut block_updates: EventReader<BlockUpdateEvent>,
+    mut block_updates: MessageReader<BlockUpdateMessage>,
     chunks_q: Query<(&Chunk, Entity, Option<&Children>)>,
     collider_q: Query<Entity, With<Collider>>,
 ) {
