@@ -62,11 +62,11 @@ fn laser(
         let block_pos = BlockPos::from_global(block.as_ivec3());
         let block_normal_pos = BlockPos::from_global(block_normal.as_ivec3());
 
-        gizmos.cuboid(
+        gizmos.cube(
             Transform::from_translation(block + 0.5).with_scale(Vec3::splat(1.01)),
             basic::BLUE,
         );
-        gizmos.cuboid(
+        gizmos.cube(
             Transform::from_translation(block_normal + 0.5).with_scale(Vec3::splat(1.01)),
             basic::RED,
         );

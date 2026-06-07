@@ -15,7 +15,7 @@ use bevy::{
     diagnostic::FrameTimeDiagnosticsPlugin, input::common_conditions::input_toggle_active,
     prelude::*,
 };
-use bevy_framepace::{FramepacePlugin, FramepaceSettings, Limiter};
+use bevy_framepace::FramepacePlugin;
 use bevy_inspector_egui::{bevy_egui::EguiPlugin, quick::WorldInspectorPlugin};
 use block::BlockPlugin;
 use chunk::ChunkPlugin;

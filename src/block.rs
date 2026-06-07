@@ -1,5 +1,5 @@
 use bevy::{platform::collections::HashMap, prelude::*};
-use rand::Rng;
+use rand::RngExt;
 use strum::{EnumCount, EnumIter, FromRepr};
 
 use crate::{chunk::CHUNK_ISIZE, quad::Direction};

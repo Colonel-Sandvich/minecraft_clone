@@ -44,7 +44,7 @@ pub fn mov_system(
         &mut query
     {
         let (position, grounded) = mov(
-            &spatial_query.query_pipeline,
+            &spatial_query,
             collider,
             transform.translation,
             transform.rotation,
@@ -67,7 +67,7 @@ pub fn mov_system(
 }
 
 fn mov(
-    pipeline: &SpatialQueryPipeline,
+    spatial_query: &SpatialQuery,
     collider: &Collider,
     // Origin position.
     position: Vec3,
@@ -107,7 +107,7 @@ fn mov(
         let y_target_distance = vec3(0.0, vdt.y, 0.0);
 
         let (distance, hit_data, direction) = shapecast(
-            pipeline,
+            spatial_query,
             collider,
             rotation,
             filter,
@@ -131,7 +131,7 @@ fn mov(
         let xz_target_distance = vec3(vdt.x, 0.0, vdt.z);
 
         let (distance, hit_data, direction) = shapecast(
-            pipeline,
+            spatial_query,
             collider,
             rotation,
             filter,
@@ -236,7 +236,7 @@ fn mov(
 // }
 
 fn shapecast(
-    pipeline: &SpatialQueryPipeline,
+    spatial_query: &SpatialQuery,
     collider: &Collider,
     rotation: Quat,
     filter: &SpatialQueryFilter,
@@ -248,7 +248,7 @@ fn shapecast(
         return (0.0, None, Vec3::ZERO);
     };
 
-    let (distance, hit_data) = if let Some(hit_data) = pipeline.cast_shape(
+    let (distance, hit_data) = if let Some(hit_data) = spatial_query.cast_shape(
         collider,
         position,
         rotation,
@@ -256,7 +256,6 @@ fn shapecast(
         &ShapeCastConfig {
             max_distance: target_distance.length(),
             ignore_origin_penetration: config.ignore_origin_penetration,
-            // target_distance: config.skin,
             ..default()
         },
         filter,
