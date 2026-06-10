@@ -1,4 +1,4 @@
-use bevy::math::{vec2, Rect, UVec3, Vec2, Vec3, Vec4};
+use bevy::math::{Rect, UVec3, Vec2, Vec3, Vec4, vec2};
 use strum::EnumIter;
 
 #[derive(Copy, Clone, Debug)]
