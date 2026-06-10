@@ -8,10 +8,9 @@ use avian3d::prelude::{Collider, Position, RigidBody, TransformInterpolation};
 use bevy::{camera::visibility::NoCpuCulling, prelude::*, render::view::NoIndirectDrawing};
 
 use crate::{
-    chunk::CHUNK_SIZE,
-    dimension::Dimension,
     game_state::GameState,
     mob::controller::{CharacterController, FlyController},
+    world::{chunk::CHUNK_SIZE, dimension::Dimension},
 };
 
 pub struct SpawnPlayerPlugin;

@@ -3,9 +3,9 @@ use bevy::math::vec3;
 use bevy::prelude::*;
 use itertools::Itertools;
 
-use crate::{block::BlockUpdateMessage, chunk::Chunk};
+use crate::block::BlockUpdateMessage;
 
-use super::CHUNK_VOLUME;
+use super::{CHUNK_VOLUME, Chunk};
 
 pub struct ChunkColliderPlugin;
 

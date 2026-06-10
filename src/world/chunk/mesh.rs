@@ -6,13 +6,13 @@ use bevy::prelude::*;
 use itertools::Itertools;
 use strum::IntoEnumIterator;
 
-use crate::block::BlockUpdateMessage;
 use crate::textures::{BlockStandardMaterial, TextureState};
 use crate::{
-    block::{BlockTextureMap, BlockType, block_to_colour},
-    chunk::{CHUNK_ISIZE, Chunk},
+    block::{BlockTextureMap, BlockType, BlockUpdateMessage, block_to_colour},
     quad::{Direction, Quad, QuadGroups, get_indices, get_normals, get_positions, urect_to_uvs},
 };
+
+use super::{CHUNK_ISIZE, Chunk};
 
 pub struct ChunkMeshPlugin;
 

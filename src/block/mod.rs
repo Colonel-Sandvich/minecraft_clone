@@ -2,7 +2,7 @@ use bevy::{platform::collections::HashMap, prelude::*};
 use rand::RngExt;
 use strum::{EnumCount, EnumIter, FromRepr};
 
-use crate::{chunk::CHUNK_ISIZE, quad::Direction};
+use crate::{quad::Direction, world::chunk::CHUNK_ISIZE};
 
 pub struct BlockPlugin;
 

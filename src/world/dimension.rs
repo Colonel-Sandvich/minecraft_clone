@@ -3,10 +3,11 @@ use std::ops::Mul;
 use bevy::{platform::collections::HashMap, prelude::*};
 
 use crate::{
-    chunk::{CHUNK_ISIZE, CHUNK_SIZE, Chunk, util::generate_full_chunk_data},
     game_state::{GameState, Playing},
     player::Player,
 };
+
+use super::chunk::{CHUNK_ISIZE, CHUNK_SIZE, Chunk, util::generate_full_chunk_data};
 
 #[derive(Default, Component)]
 pub struct Dimension {

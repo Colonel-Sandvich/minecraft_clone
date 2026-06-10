@@ -1,14 +1,14 @@
-pub mod block_interaction;
 pub mod cam;
 pub mod control;
 pub mod inspector;
+pub mod interaction;
 pub mod spawn;
 
 use bevy::prelude::*;
-use block_interaction::BlockInteractionPlugin;
 use cam::PlayerCamPlugin;
 use control::ControlPlayerPlugin;
 use inspector::InspectorPlugin;
+use interaction::BlockInteractionPlugin;
 use spawn::SpawnPlayerPlugin;
 
 pub struct PlayerPlugin;

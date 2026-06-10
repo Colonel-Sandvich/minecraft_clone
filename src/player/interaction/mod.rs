@@ -6,8 +6,7 @@ use bevy::{color::palettes::basic, input::InputSystems, prelude::*};
 
 use crate::{
     block::{BlockPos, BlockType, BlockUpdateKind, BlockUpdateMessage},
-    chunk::Chunk,
-    dimension::Dimension,
+    world::{chunk::Chunk, dimension::Dimension},
 };
 
 use super::cam::MouseCam;
@@ -216,5 +215,5 @@ fn block_place_would_intersect(pos: BlockPos, spatial_query: &SpatialQuery) -> b
 }
 
 #[cfg(test)]
-#[path = "block_interaction_tests.rs"]
+#[path = "tests.rs"]
 mod tests;
