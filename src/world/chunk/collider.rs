@@ -6,6 +6,7 @@ use itertools::Itertools;
 use crate::block::BlockUpdateMessage;
 
 use super::{CHUNK_VOLUME, Chunk};
+use crate::world::WORLD_COLLISION_LAYERS;
 
 pub struct ChunkColliderPlugin;
 
@@ -43,6 +44,7 @@ fn insert_one(commands: &mut Commands, chunk: &Chunk, chunk_entity: Entity) {
     commands.spawn((
         ChildOf(chunk_entity),
         Collider::compound(cubes),
+        WORLD_COLLISION_LAYERS,
         RigidBody::Static,
     ));
 }

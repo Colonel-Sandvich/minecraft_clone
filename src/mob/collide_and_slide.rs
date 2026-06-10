@@ -2,6 +2,7 @@ use avian3d::prelude::*;
 use bevy::prelude::*;
 
 use super::controller::{CharacterController, Grounded, Velocity};
+use crate::world::WORLD_LAYER;
 
 #[derive(Component, Clone)]
 pub struct CollideAndSlideConfig {
@@ -24,14 +25,14 @@ impl Default for CollideAndSlideConfig {
     }
 }
 
-pub fn mov_system(
+pub fn move_character_controllers(
     mut commands: Commands,
     mut params: ParamSet<(
         Query<
             (
                 Entity,
                 &Velocity,
-                &Collider,
+                Option<&Collider>,
                 &Position,
                 &Rotation,
                 &CollideAndSlideConfig,
@@ -61,7 +62,7 @@ pub fn mov_system(
                 (
                     entity,
                     velocity.0,
-                    collider.clone(),
+                    collider.cloned(),
                     position.0,
                     rotation.0,
                     collide_and_slide_config.clone(),
@@ -84,16 +85,20 @@ pub fn mov_system(
             was_grounded,
         ) in inputs
         {
-            let (new_position, is_grounded) = mov(
-                &spatial_query,
-                &collider,
-                position,
-                rotation,
-                &mut velocity,
-                &SpatialQueryFilter::from_excluded_entities([entity]),
-                &collide_and_slide_config,
-                &time,
-            );
+            let (new_position, is_grounded) = if let Some(collider) = collider {
+                collide_and_slide(
+                    &spatial_query,
+                    &collider,
+                    position,
+                    rotation,
+                    &mut velocity,
+                    &SpatialQueryFilter::from_mask(WORLD_LAYER).with_excluded_entities([entity]),
+                    &collide_and_slide_config,
+                    &time,
+                )
+            } else {
+                (position + velocity * time.delta_secs(), false)
+            };
 
             outputs.push((entity, velocity, new_position, is_grounded, was_grounded));
         }
@@ -118,7 +123,7 @@ pub fn mov_system(
     }
 }
 
-fn mov(
+fn collide_and_slide(
     spatial_query: &SpatialQuery,
     collider: &Collider,
     position: Vec3,

@@ -5,7 +5,7 @@ use crate::player::cam::MouseState;
 use avian3d::physics_transform::PhysicsTransformSystems;
 use avian3d::prelude::PhysicsSystems;
 use bevy::prelude::*;
-use collide_and_slide::mov_system;
+use collide_and_slide::move_character_controllers;
 use controller::{
     Flying, Grounded, Velocity, apply_flight_vertical_input, apply_player_movement_input,
 };
@@ -28,7 +28,7 @@ impl Plugin for MobPhysicsPlugin {
         // pipeline always has up-to-date collider data.
         app.add_systems(
             FixedPostUpdate,
-            (mov_system, apply_vertical_physics)
+            (move_character_controllers, apply_vertical_physics)
                 .chain()
                 .after(PhysicsSystems::StepSimulation)
                 .before(PhysicsTransformSystems::PositionToTransform),

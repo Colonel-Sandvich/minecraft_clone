@@ -6,7 +6,7 @@ use bevy::{color::palettes::basic, input::InputSystems, prelude::*};
 
 use crate::{
     block::{BlockPos, BlockType, BlockUpdateKind, BlockUpdateMessage},
-    world::{chunk::Chunk, dimension::Dimension},
+    world::{ACTOR_LAYER, WORLD_LAYER, chunk::Chunk, dimension::Dimension},
 };
 
 use super::cam::MouseCam;
@@ -100,20 +100,33 @@ fn raycast_block_target(
 ) -> Option<BlockTarget> {
     let ray = spatial_query.cast_ray(
         camera.translation(),
-        Dir3::from(camera.forward()),
+        camera.forward(),
         PLAYER_REACH,
         true,
-        &SpatialQueryFilter::default().with_excluded_entities([entity_to_ignore]),
+        &SpatialQueryFilter::from_mask(WORLD_LAYER).with_excluded_entities([entity_to_ignore]),
     )?;
 
-    let hit_block =
-        (camera.translation() + camera.forward().as_vec3() * (ray.distance + 0.001)).floor();
-    let adjacent_block = hit_block + ray.normal;
+    let hit_block = (camera.translation() + camera.forward().as_vec3() * (ray.distance + 0.001))
+        .floor()
+        .as_ivec3();
+    let adjacent_block = hit_block + block_face_normal(ray.normal);
 
     Some(BlockTarget {
-        hit_block: BlockPos::from_global(hit_block.as_ivec3()),
-        adjacent_block: BlockPos::from_global(adjacent_block.as_ivec3()),
+        hit_block: BlockPos::from_global(hit_block),
+        adjacent_block: BlockPos::from_global(adjacent_block),
     })
+}
+
+fn block_face_normal(normal: Vec3) -> IVec3 {
+    let abs = normal.abs();
+
+    if abs.x >= abs.y && abs.x >= abs.z {
+        ivec3(normal.x.signum() as i32, 0, 0)
+    } else if abs.y >= abs.z {
+        ivec3(0, normal.y.signum() as i32, 0)
+    } else {
+        ivec3(0, 0, normal.z.signum() as i32)
+    }
 }
 
 fn draw_block_target_gizmos(gizmos: &mut Gizmos, target: BlockTarget) {
@@ -209,7 +222,7 @@ fn block_place_would_intersect(pos: BlockPos, spatial_query: &SpatialQuery) -> b
             &Collider::cuboid(0.90, 0.90, 0.90),
             pos.to_global().as_vec3() + 0.5,
             Quat::IDENTITY,
-            &SpatialQueryFilter::default(),
+            &SpatialQueryFilter::from_mask(ACTOR_LAYER),
         )
         .is_empty()
 }

@@ -36,6 +36,29 @@ fn target() -> BlockTarget {
     }
 }
 
+#[test]
+fn block_face_normal_uses_dominant_axis() {
+    assert_eq!(block_face_normal(vec3(0.9999, 0.0001, 0.0)), ivec3(1, 0, 0));
+    assert_eq!(
+        block_face_normal(vec3(-0.9999, 0.0001, 0.0)),
+        ivec3(-1, 0, 0)
+    );
+    assert_eq!(
+        block_face_normal(vec3(0.001, -0.998, 0.002)),
+        ivec3(0, -1, 0)
+    );
+    assert_eq!(block_face_normal(vec3(0.001, 0.002, 0.998)), ivec3(0, 0, 1));
+}
+
+#[test]
+fn placing_air_is_ignored() {
+    let mut chunk = Chunk::default();
+    let pos = uvec3(1, 2, 3);
+
+    assert!(!chunk.place_block(pos, BlockType::Air));
+    assert_eq!(chunk.get(pos), BlockType::Air);
+}
+
 fn app_with_request_emitter() -> App {
     let mut app = App::new();
     app.add_plugins(MinimalPlugins)

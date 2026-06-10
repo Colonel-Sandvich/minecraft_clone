@@ -10,7 +10,7 @@ use bevy::{camera::visibility::NoCpuCulling, prelude::*, render::view::NoIndirec
 use crate::{
     game_state::GameState,
     mob::controller::{CharacterController, FlyController},
-    world::{chunk::CHUNK_SIZE, dimension::Dimension},
+    world::{ACTOR_COLLISION_LAYERS, chunk::CHUNK_SIZE, dimension::Dimension},
 };
 
 pub struct SpawnPlayerPlugin;
@@ -37,6 +37,7 @@ fn spawn_player(mut commands: Commands, dimension_q: Query<Entity, With<Dimensio
         Position::new(SPAWN_POINT),
         Transform::from_translation(SPAWN_POINT),
         TransformInterpolation,
+        ACTOR_COLLISION_LAYERS,
         make_player_collider(),
         CharacterController,
         FlyController,

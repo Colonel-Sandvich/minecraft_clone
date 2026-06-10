@@ -165,6 +165,20 @@ impl MovementTest {
             Transform::from_translation(pos),
         ));
     }
+
+    fn remove_player_collider(&mut self) {
+        self.app
+            .world_mut()
+            .entity_mut(self.player)
+            .remove::<Collider>();
+    }
+
+    fn insert_grounded(&mut self) {
+        self.app
+            .world_mut()
+            .entity_mut(self.player)
+            .insert(Grounded);
+    }
 }
 
 fn floor_top_y() -> f32 {
@@ -505,6 +519,29 @@ fn interpolation_does_not_feed_eased_render_transform_back_into_fixed_movement()
         "interpolation should not change the observed fixed-step displacement; control_distance={control_distance} interpolated_distance={interpolated_distance} control_pos={:?} interpolated_pos={:?}",
         control.sim_pos(),
         interpolated.sim_pos(),
+    );
+}
+
+#[test]
+fn colliderless_controller_moves_without_collision() {
+    let mut t = MovementTest::new(Vec3::new(0.0, resting_y(), 0.0));
+    t.spawn_static(Vec3::new(0.0, 0.0, 0.0), Vec3::new(20.0, 1.0, 20.0));
+    t.warmup_query_pipeline();
+    t.set_pos(Vec3::new(0.0, resting_y(), 0.0));
+
+    t.insert_grounded();
+    t.remove_player_collider();
+    t.set_velocity(Vec3::new(4.0, 0.0, 0.0));
+    let start = t.sim_pos();
+    t.tick();
+
+    assert!(
+        t.sim_pos().x > start.x,
+        "colliderless controller should still move"
+    );
+    assert!(
+        !t.grounded(),
+        "colliderless controller should not remain grounded"
     );
 }
 

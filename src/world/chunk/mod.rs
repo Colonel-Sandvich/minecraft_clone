@@ -65,6 +65,10 @@ impl Chunk {
     pub fn place_block(&mut self, pos: UVec3, block: BlockType) -> bool {
         let old_block = self.get_mut_uvec(pos);
 
+        if !block.is_solid() {
+            return false;
+        }
+
         if old_block.is_solid() {
             return false;
         };

@@ -105,23 +105,25 @@ fn change_gamemode(
     mut commands: Commands,
     keys: Res<ButtonInput<KeyCode>>,
     key_bindings: Res<KeyBindings>,
-    player: Single<(Entity, &mut Player)>,
+    player: Single<(Entity, &mut Player, &mut Velocity)>,
 ) {
-    let (player_entity, mut player) = player.into_inner();
+    let (player_entity, mut player, mut velocity) = player.into_inner();
     let player_entity = &mut commands.get_entity(player_entity).unwrap();
 
     if keys.just_pressed(key_bindings.change_gamemode) {
         match player.gamemode {
             GameMode::Survival => todo!(),
             GameMode::Creative => {
-                // controller.filter_flags = QueryFilterFlags::all();
                 player_entity.remove::<Collider>();
+                player_entity.insert(Flying);
+                **velocity = Vec3::ZERO;
                 player.gamemode = GameMode::Spectator;
             }
             GameMode::Adventure => todo!(),
             GameMode::Spectator => {
-                // controller.filter_flags = KinematicCharacterController::default().filter_flags;
                 player_entity.insert(make_player_collider());
+                player_entity.remove::<Flying>();
+                **velocity = Vec3::ZERO;
                 player.gamemode = GameMode::Creative;
             }
         };
@@ -148,18 +150,15 @@ fn toggle_fly(
 fn debug_reset_character(
     keys: Res<ButtonInput<KeyCode>>,
     key_bindings: Res<KeyBindings>,
-    player_q: Single<(&mut Transform, &mut Position, &mut Velocity, &Children), With<Player>>,
-    mut camera_q: Query<&mut Transform, (With<MouseCam>, Without<Player>)>,
+    player_q: Single<(&mut Transform, &mut Position, &mut Velocity), With<Player>>,
+    mut camera: Single<&mut Transform, (With<MouseCam>, Without<Player>)>,
 ) {
     if keys.just_pressed(key_bindings.debug_reset_character) {
-        let (mut transform, mut position, mut velocity, children) = player_q.into_inner();
+        let (mut transform, mut position, mut velocity) = player_q.into_inner();
         **velocity = Vec3::ZERO;
         position.0 = SPAWN_POINT;
         *transform = Transform::from_translation(SPAWN_POINT);
-        let mut cameras = camera_q.iter_many_mut(children);
-        while let Some(mut camera) = cameras.fetch_next() {
-            camera.rotation = Transform::default().looking_to(Vec3::X, Vec3::Y).rotation;
-        }
+        camera.rotation = Transform::default().looking_to(Vec3::X, Vec3::Y).rotation;
     }
 }
 

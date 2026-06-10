@@ -48,13 +48,12 @@ pub fn apply_player_movement_input(
             &AirMovementAcceleration,
             &JumpImpulse,
             &mut Velocity,
-            &Children,
             Has<Grounded>,
             Has<Flying>,
         ),
         With<Player>,
     >,
-    camera_q: Query<&Transform, With<MouseCam>>,
+    camera: Single<&Transform, With<MouseCam>>,
     time: Res<Time<Fixed>>,
 ) {
     let (
@@ -62,13 +61,12 @@ pub fn apply_player_movement_input(
         air_movement_acceleration,
         jump_impulse,
         mut linear_velocity,
-        children,
         is_grounded,
         flying,
     ) = player_q.into_inner();
     let movement_intent = key_bindings.movement_intent(&keys);
 
-    let look_transform = camera_q.get(*children.first().unwrap()).unwrap();
+    let look_transform = camera.into_inner();
     let look_forward = horizontal_direction(*look_transform.forward());
     let move_direction = world_move_direction(
         *look_transform.forward(),
