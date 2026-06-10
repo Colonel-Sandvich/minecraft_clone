@@ -37,6 +37,51 @@ pub struct KeyBindings {
     pub debug_reset_character: KeyCode,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct PlayerMovementIntent {
+    /// Local input axis: +X right, +Y ascend, +Z forward.
+    pub local_move_axis: Vec3,
+    pub jump: bool,
+    pub sprint: bool,
+}
+
+impl PlayerMovementIntent {
+    pub fn wants_forward_sprint(self) -> bool {
+        self.sprint && self.local_move_axis.z > 0.0
+    }
+}
+
+impl KeyBindings {
+    pub fn movement_intent(&self, keys: &ButtonInput<KeyCode>) -> PlayerMovementIntent {
+        let mut local_move_axis = Vec3::ZERO;
+
+        if keys.pressed(self.move_forward) {
+            local_move_axis.z += 1.0;
+        }
+        if keys.pressed(self.move_backward) {
+            local_move_axis.z -= 1.0;
+        }
+        if keys.pressed(self.move_right) {
+            local_move_axis.x += 1.0;
+        }
+        if keys.pressed(self.move_left) {
+            local_move_axis.x -= 1.0;
+        }
+        if keys.pressed(self.move_ascend) {
+            local_move_axis.y += 1.0;
+        }
+        if keys.pressed(self.move_descend) {
+            local_move_axis.y -= 1.0;
+        }
+
+        PlayerMovementIntent {
+            local_move_axis,
+            jump: keys.pressed(self.jump),
+            sprint: keys.pressed(self.sprint),
+        }
+    }
+}
+
 impl Default for KeyBindings {
     fn default() -> Self {
         Self {
@@ -103,12 +148,13 @@ fn toggle_fly(
 fn debug_reset_character(
     keys: Res<ButtonInput<KeyCode>>,
     key_bindings: Res<KeyBindings>,
-    player_q: Single<(&mut Transform, &mut Velocity, &Children), With<Player>>,
+    player_q: Single<(&mut Transform, &mut Position, &mut Velocity, &Children), With<Player>>,
     mut camera_q: Query<&mut Transform, (With<MouseCam>, Without<Player>)>,
 ) {
     if keys.just_pressed(key_bindings.debug_reset_character) {
-        let (mut transform, mut velocity, children) = player_q.into_inner();
+        let (mut transform, mut position, mut velocity, children) = player_q.into_inner();
         **velocity = Vec3::ZERO;
+        position.0 = SPAWN_POINT;
         *transform = Transform::from_translation(SPAWN_POINT);
         let mut cameras = camera_q.iter_many_mut(children);
         while let Some(mut camera) = cameras.fetch_next() {

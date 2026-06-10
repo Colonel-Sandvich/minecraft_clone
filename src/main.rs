@@ -10,7 +10,9 @@ mod textures;
 mod ui;
 mod util;
 
-use avian3d::{PhysicsPlugins, prelude::PhysicsInterpolationPlugin};
+use std::time::Duration;
+
+use avian3d::PhysicsPlugins;
 use bevy::{
     diagnostic::FrameTimeDiagnosticsPlugin, input::common_conditions::input_toggle_active,
     prelude::*,
@@ -26,6 +28,8 @@ use mob::MobControllerPlugin;
 use player::PlayerPlugin;
 use textures::BlockTextureAtlasPlugin;
 use ui::UIPlugin;
+
+const FIXED_TICK_RATE_HZ: f64 = 20.0;
 
 fn main() {
     App::new()
@@ -47,7 +51,11 @@ fn main() {
         .add_plugins(DimensionPlugin)
         .add_plugins(ChunkPlugin)
         .add_plugins(UIPlugin)
-        .add_plugins(PhysicsPlugins::default().set(PhysicsInterpolationPlugin::interpolate_all()))
+        .insert_resource(Time::<Fixed>::from_hz(FIXED_TICK_RATE_HZ))
+        .insert_resource(Time::<Virtual>::from_max_delta(Duration::from_secs_f64(
+            1.0 / FIXED_TICK_RATE_HZ,
+        )))
+        .add_plugins(PhysicsPlugins::default())
         // .add_plugins(PhysicsDebugPlugin::default())
         .add_plugins((
             FrameTimeDiagnosticsPlugin::default(),
@@ -60,7 +68,5 @@ fn main() {
         // .insert_resource(FramepaceSettings {
         //     limiter: Limiter::from_framerate(60.0),
         // })
-        // .insert_resource(Time::<Fixed>::from_hz(20.0))
-        // ????
         .run();
 }

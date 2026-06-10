@@ -4,7 +4,7 @@ use super::{
     PLAYER_HEIGHT, PLAYER_LENGTH, PLAYER_WIDTH, Player,
     cam::{MouseCam, MouseSettings},
 };
-use avian3d::prelude::Collider;
+use avian3d::prelude::{Collider, Position, RigidBody, TransformInterpolation};
 use bevy::{camera::visibility::NoCpuCulling, prelude::*, render::view::NoIndirectDrawing};
 
 use crate::{
@@ -34,7 +34,10 @@ fn spawn_player(mut commands: Commands, dimension_q: Query<Entity, With<Dimensio
     commands.spawn((
         ChildOf(dimension_q.single().unwrap()),
         Player::default(),
+        RigidBody::Kinematic,
+        Position::new(SPAWN_POINT),
         Transform::from_translation(SPAWN_POINT),
+        TransformInterpolation,
         make_player_collider(),
         CharacterController,
         FlyController,

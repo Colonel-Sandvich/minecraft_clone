@@ -2,55 +2,106 @@ pub mod collide_and_slide;
 pub mod controller;
 
 use crate::player::cam::MouseState;
+use avian3d::physics_transform::PhysicsTransformSystems;
+use avian3d::prelude::PhysicsSystems;
 use bevy::prelude::*;
 use collide_and_slide::mov_system;
-use controller::{Flying, MovementDampingFactor, Velocity, classic_move, fly_move};
+use controller::{
+    Flying, Grounded, Velocity, apply_flight_vertical_input, apply_player_movement_input,
+};
 
-pub struct MobControllerPlugin;
+/// Core physics plugin with Minecraft-like movement physics.
+/// Does **not** depend on input or MouseState, so tests can use it directly.
+pub struct MobPhysicsPlugin;
 
-impl Plugin for MobControllerPlugin {
+impl Plugin for MobPhysicsPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(
             FixedUpdate,
-            (
-                apply_gravity,
-                (fly_move, classic_move).distributive_run_if(in_state(MouseState::Grabbed)),
-                apply_movement_damping,
-                mov_system,
-            )
-                .chain(),
+            apply_horizontal_drag
+                .in_set(MobPhysicsSystems::HorizontalDrag)
+                .before(PhysicsSystems::StepSimulation),
+        );
+
+        // Run movement and post-move physics in FixedPostUpdate after the
+        // physics schedule has rebuilt the spatial query pipeline, so the
+        // pipeline always has up-to-date collider data.
+        app.add_systems(
+            FixedPostUpdate,
+            (mov_system, apply_vertical_physics)
+                .chain()
+                .after(PhysicsSystems::StepSimulation)
+                .before(PhysicsTransformSystems::PositionToTransform),
         );
     }
 }
 
-const GRAVITY: f32 = 9.81;
+/// Full controller plugin that combines input with the core physics.
+pub struct MobControllerPlugin;
 
-fn apply_gravity(time: Res<Time>, mut controllers: Query<&mut Velocity, Without<Flying>>) {
-    for mut velocity in &mut controllers {
-        velocity.0 += GRAVITY * Vec3::NEG_Y * time.delta_secs();
+impl Plugin for MobControllerPlugin {
+    fn build(&self, app: &mut App) {
+        // Input systems run first each fixed tick (before core physics)
+        app.add_systems(
+            FixedUpdate,
+            (apply_flight_vertical_input, apply_player_movement_input)
+                .distributive_run_if(in_state(MouseState::Grabbed))
+                .after(MobPhysicsSystems::HorizontalDrag)
+                .before(PhysicsSystems::StepSimulation),
+        );
+
+        // Core physics runs after input
+        app.add_plugins(MobPhysicsPlugin);
     }
 }
 
-const SPEED_THRESHOLD: f32 = 0.01;
+#[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum MobPhysicsSystems {
+    HorizontalDrag,
+}
 
-fn apply_movement_damping(mut query: Query<(&MovementDampingFactor, &mut Velocity, Has<Flying>)>) {
-    for (damping_factor, mut velocity, is_flying) in &mut query {
-        velocity.0.x *= damping_factor.0;
-        velocity.0.z *= damping_factor.0;
-        if is_flying {
-            velocity.0.y *= damping_factor.0;
+// ---------------------------------------------------------------------------
+// Minecraft-like movement physics (assumes 20 TPS)
+//   Horizontal drag: applied before input each tick, then input acceleration is added.
+//   Vertical post-move: v_y = (v_y - 1.6) * 0.98
+// ---------------------------------------------------------------------------
+
+const VERTICAL_GRAVITY: f32 = 1.6; // 0.08 blocks/tick × 20 TPS
+const VERTICAL_DAMPING: f32 = 0.98;
+const AIR_DRAG: f32 = 0.91;
+const GROUND_DRAG: f32 = 0.546; // 0.91 × 0.6 (normal block friction)
+
+fn apply_horizontal_drag(mut query: Query<(&mut Velocity, Has<Grounded>, Has<Flying>)>) {
+    for (mut velocity, grounded, flying) in &mut query {
+        let drag = if grounded { GROUND_DRAG } else { AIR_DRAG };
+        velocity.x *= drag;
+        velocity.z *= drag;
+
+        if flying {
+            velocity.y *= drag;
         }
 
-        if velocity.x.abs() < SPEED_THRESHOLD {
+        // Snap near-zero velocities to exactly zero to avoid drift
+        if velocity.x.abs() < 0.005 {
             velocity.x = 0.0;
         }
-
-        if velocity.y.abs() < SPEED_THRESHOLD {
-            velocity.y = 0.0;
-        }
-
-        if velocity.z.abs() < SPEED_THRESHOLD {
+        if velocity.z.abs() < 0.005 {
             velocity.z = 0.0;
         }
     }
 }
+
+fn apply_vertical_physics(mut query: Query<(&mut Velocity, Has<Flying>)>) {
+    for (mut velocity, flying) in &mut query {
+        if !flying {
+            velocity.y = (velocity.y - VERTICAL_GRAVITY) * VERTICAL_DAMPING;
+        }
+
+        if velocity.y.abs() < 0.005 {
+            velocity.y = 0.0;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests;

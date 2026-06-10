@@ -26,41 +26,93 @@ impl Default for CollideAndSlideConfig {
 
 pub fn mov_system(
     mut commands: Commands,
-    mut query: Query<
-        (
-            Entity,
-            &mut Velocity,
-            &Collider,
-            &mut Transform,
-            &CollideAndSlideConfig,
-            Has<Grounded>,
-        ),
-        With<CharacterController>,
-    >,
-    spatial_query: SpatialQuery,
-    time: Res<Time>,
+    mut params: ParamSet<(
+        Query<
+            (
+                Entity,
+                &Velocity,
+                &Collider,
+                &Position,
+                &Rotation,
+                &CollideAndSlideConfig,
+                Has<Grounded>,
+            ),
+            With<CharacterController>,
+        >,
+        SpatialQuery,
+        Query<(&mut Velocity, &mut Position), With<CharacterController>>,
+    )>,
+    time: Res<Time<Fixed>>,
 ) {
-    for (entity, mut velocity, collider, mut transform, collide_and_slide_config, is_grounded) in
-        &mut query
+    // SpatialQuery reads Position internally, so stage results before mutating Position.
+    let inputs = params
+        .p0()
+        .iter()
+        .map(
+            |(
+                entity,
+                velocity,
+                collider,
+                position,
+                rotation,
+                collide_and_slide_config,
+                was_grounded,
+            )| {
+                (
+                    entity,
+                    velocity.0,
+                    collider.clone(),
+                    position.0,
+                    rotation.0,
+                    collide_and_slide_config.clone(),
+                    was_grounded,
+                )
+            },
+        )
+        .collect::<Vec<_>>();
+
+    let mut outputs = Vec::with_capacity(inputs.len());
     {
-        let (position, grounded) = mov(
-            &spatial_query,
+        let spatial_query = params.p1();
+        for (
+            entity,
+            mut velocity,
             collider,
-            transform.translation,
-            transform.rotation,
-            &mut velocity,
-            &SpatialQueryFilter::from_excluded_entities([entity]),
+            position,
+            rotation,
             collide_and_slide_config,
-            &time,
-        );
+            was_grounded,
+        ) in inputs
+        {
+            let (new_position, is_grounded) = mov(
+                &spatial_query,
+                &collider,
+                position,
+                rotation,
+                &mut velocity,
+                &SpatialQueryFilter::from_excluded_entities([entity]),
+                &collide_and_slide_config,
+                &time,
+            );
 
-        transform.translation = position;
+            outputs.push((entity, velocity, new_position, is_grounded, was_grounded));
+        }
+    }
 
-        if grounded && !is_grounded {
+    let mut query = params.p2();
+    for (entity, new_velocity, new_position, is_grounded, was_grounded) in outputs {
+        let Ok((mut velocity, mut position)) = query.get_mut(entity) else {
+            continue;
+        };
+
+        velocity.0 = new_velocity;
+        position.0 = new_position;
+
+        if is_grounded && !was_grounded {
             commands.entity(entity).insert(Grounded);
         }
 
-        if !grounded && is_grounded {
+        if !is_grounded && was_grounded {
             commands.entity(entity).remove::<Grounded>();
         }
     }
@@ -69,171 +121,171 @@ pub fn mov_system(
 fn mov(
     spatial_query: &SpatialQuery,
     collider: &Collider,
-    // Origin position.
     position: Vec3,
-    // Rotation of the collider.
     rotation: Quat,
     velocity: &mut Vec3,
-    // Entities/colliders to ignore in this colliding.
-    // Should add the entity related to this collider to this.
     filter: &SpatialQueryFilter,
     config: &CollideAndSlideConfig,
-    time: &Res<Time>,
+    time: &Res<Time<Fixed>>,
 ) -> (Vec3, bool) {
-    // move down y
-    // if hit ground set state to grounded
-    // move xz
-    // mark first attempt
-    // then allow for autostep to kick in
-    // go back to original pos and move up by up to autostep
-    // move xz
-    // move back down by up to autostep
-    // Instead of lowering the bounding box by a maximum of 0.6m,
-    // the game now lowers it until it reaches the player's height minus their vertical speed.
-    // finally compare this position to first attempt
-    // move to whichever has largest distance to start pos
-    // let original_position = position.clone();
-
     let mut vdt = *velocity * time.delta_secs();
+    let intended_xz = vec3(vdt.x, 0.0, vdt.z);
+    let original_position = position;
+    let original_velocity = *velocity;
 
     let mut grounded = false;
-
+    let mut had_horizontal_collision = false;
+    let mut normal_velocity = *velocity;
     let mut position = position;
+
     for _ in 0..config.max_bounces {
         if vdt.abs_diff_eq(Vec3::ZERO, 0.0001) {
             break;
         }
 
         let y_target_distance = vec3(0.0, vdt.y, 0.0);
-
         let (distance, hit_data, direction) = shapecast(
             spatial_query,
             collider,
             rotation,
             filter,
-            &config,
+            config,
             position,
             y_target_distance,
         );
 
         let y_impact = hit_data.is_some();
-
         if y_impact {
-            vdt.y = 0.0;
-            velocity.y = 0.0;
+            normal_velocity.y = 0.0;
         }
-
         grounded = grounded || (y_impact && y_target_distance.y < 0.0);
 
         position += direction * distance;
         vdt -= direction * distance;
+        if y_impact {
+            vdt.y = 0.0;
+        }
 
         let xz_target_distance = vec3(vdt.x, 0.0, vdt.z);
-
         let (distance, hit_data, direction) = shapecast(
             spatial_query,
             collider,
             rotation,
             filter,
-            &config,
+            config,
             position,
             xz_target_distance,
         );
 
-        // let first_position = position + xz_target_distance.normalize_or_zero() * distance;
         position += direction * distance;
         vdt -= direction * distance;
 
         if let Some(hit_data) = hit_data {
-            // Only redirect when autostep fails??
+            had_horizontal_collision = true;
             vdt = vdt.reject_from_normalized(hit_data.normal1);
-            *velocity = velocity.reject_from_normalized(hit_data.normal1);
+            normal_velocity = normal_velocity.reject_from_normalized(hit_data.normal1);
         }
     }
 
-    (position, grounded)
+    let normal_position = position;
 
-    // let position = if grounded && hit_data.is_some() {
-    //     try_autostep(
-    //         pipeline,
-    //         collider,
-    //         rotation,
-    //         filter,
-    //         config,
-    //         original_position,
-    //         position,
-    //         xz_target_distance,
-    //         first_position,
-    //     )
-    // } else {
-    //     first_position
-    // };
+    if grounded && had_horizontal_collision && config.autostep > 0.0 {
+        if let Some((autostep_position, autostep_velocity)) = try_autostep(
+            spatial_query,
+            collider,
+            rotation,
+            filter,
+            config,
+            original_position,
+            original_velocity,
+            intended_xz,
+            normal_position,
+        ) {
+            *velocity = autostep_velocity;
+            return (autostep_position, true);
+        }
+    }
 
-    // (position, grounded)
+    *velocity = normal_velocity;
+    (normal_position, grounded)
 }
 
-// fn try_autostep(
-//     pipeline: &SpatialQueryPipeline,
-//     collider: &Collider,
-//     rotation: Quat,
-//     filter: &SpatialQueryFilter,
-//     config: &CollideAndSlideConfig,
-//     original_position: Vec3,
-//     mut position: Vec3,
-//     xz_target_distance: Vec3,
-//     first_position: Vec3,
-// ) -> Vec3 {
-//     let autostep_up = Vec3::Y * config.autostep;
+fn try_autostep(
+    spatial_query: &SpatialQuery,
+    collider: &Collider,
+    rotation: Quat,
+    filter: &SpatialQueryFilter,
+    config: &CollideAndSlideConfig,
+    original_position: Vec3,
+    original_velocity: Vec3,
+    intended_xz: Vec3,
+    normal_position: Vec3,
+) -> Option<(Vec3, Vec3)> {
+    if intended_xz.abs_diff_eq(Vec3::ZERO, 0.0001) {
+        return None;
+    }
 
-//     let (distance, _, direction) = shapecast(
-//         pipeline,
-//         collider,
-//         rotation,
-//         filter,
-//         &config,
-//         position,
-//         autostep_up,
-//     );
-//     position += direction * distance;
+    let mut position = original_position;
+    let mut velocity = original_velocity;
+    let mut autostep_config = config.clone();
+    autostep_config.ignore_origin_penetration = false;
 
-//     let (distance, _, direction) = shapecast(
-//         pipeline,
-//         collider,
-//         rotation,
-//         filter,
-//         &config,
-//         position,
-//         xz_target_distance,
-//     );
-//     position += direction * distance;
+    let (up_distance, _, _) = shapecast(
+        spatial_query,
+        collider,
+        rotation,
+        filter,
+        &autostep_config,
+        position,
+        Vec3::Y * config.autostep,
+    );
+    if up_distance <= 0.0001 {
+        return None;
+    }
+    position += Vec3::Y * up_distance;
 
-//     let autostep_down = Vec3::NEG_Y * config.autostep;
+    let (xz_distance, xz_hit, xz_direction) = shapecast(
+        spatial_query,
+        collider,
+        rotation,
+        filter,
+        &autostep_config,
+        position,
+        intended_xz,
+    );
+    position += xz_direction * xz_distance;
+    velocity.y = 0.0;
+    if let Some(hit) = xz_hit {
+        velocity = velocity.reject_from_normalized(hit.normal1);
+    }
 
-//     let (distance, _, direction) = shapecast(
-//         pipeline,
-//         collider,
-//         rotation,
-//         filter,
-//         &config,
-//         position,
-//         autostep_down,
-//     );
-//     position += direction * distance;
+    let (down_distance, down_hit, _) = shapecast(
+        spatial_query,
+        collider,
+        rotation,
+        filter,
+        &autostep_config,
+        position,
+        Vec3::NEG_Y * up_distance,
+    );
+    down_hit?;
+    position += Vec3::NEG_Y * down_distance;
+    velocity.y = 0.0;
 
-//     let first_distance = (original_position - first_position).length();
-//     let autostep_distance = (original_position - position).length();
+    let stepped_height = position.y - original_position.y;
+    if stepped_height <= config.skin || stepped_height > config.autostep + config.skin {
+        return None;
+    }
 
-//     if first_distance > 0.0 || autostep_distance > 0.0 {
-//         dbg!("First distance: {}", first_distance);
-//         dbg!("Autostep distance: {}", autostep_distance);
-//     }
+    let normal_xz_dist = (normal_position - original_position).xz().length_squared();
+    let autostep_xz_dist = (position - original_position).xz().length_squared();
 
-//     if first_distance > autostep_distance {
-//         return first_position;
-//     } else {
-//         return position;
-//     }
-// }
+    if autostep_xz_dist > normal_xz_dist + 0.000001 {
+        Some((position, velocity))
+    } else {
+        None
+    }
+}
 
 fn shapecast(
     spatial_query: &SpatialQuery,

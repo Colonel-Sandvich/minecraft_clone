@@ -1,6 +1,5 @@
 use std::f32::consts::PI;
 
-use avian3d::prelude::ColliderTransform;
 use bevy::input::mouse::AccumulatedMouseMotion;
 use bevy::prelude::*;
 use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
@@ -65,24 +64,15 @@ fn player_look(
     settings: Res<MouseSettings>,
     window: Single<&Window, With<PrimaryWindow>>,
     mouse_motion: Res<AccumulatedMouseMotion>,
-    mouse_cam: Single<(&mut Transform, &ChildOf), With<MouseCam>>,
-    mut mouse_cam_parent_q: Query<&mut ColliderTransform, Without<MouseCam>>,
+    mut mouse_cam: Single<&mut Transform, With<MouseCam>>,
 ) {
-    let (mut transform, parent) = mouse_cam.into_inner();
-
-    let (mut yaw, mut pitch, _) = transform.rotation.to_euler(EulerRot::YXZ);
-    // Using smallest of height or width ensures equal vertical and horizontal sensitivity
+    let (mut yaw, mut pitch, _) = mouse_cam.rotation.to_euler(EulerRot::YXZ);
     let window_scale = window.height().min(window.width());
     pitch -= (settings.sensitivity * mouse_motion.delta.y * window_scale).to_radians();
     yaw -= (settings.sensitivity * mouse_motion.delta.x * window_scale).to_radians();
 
     pitch = pitch.clamp(-PI / 2.0 + EPSILON, PI / 2.0 - EPSILON);
 
-    // Order is important to prevent unintended roll
-    transform.rotation =
+    mouse_cam.rotation =
         Quat::from_axis_angle(Vec3::Y, yaw) * Quat::from_axis_angle(Vec3::X, pitch);
-
-    let mut parent_transform = mouse_cam_parent_q.get_mut(parent.parent()).unwrap();
-
-    parent_transform.rotation = Quat::from_axis_angle(Vec3::Y, transform.rotation.y).into();
 }
