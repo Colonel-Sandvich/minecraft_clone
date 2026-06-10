@@ -2,14 +2,19 @@ use bevy::color::palettes::css;
 use bevy::{
     diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin},
     prelude::*,
+    time::common_conditions::on_timer,
 };
+use std::time::Duration;
 
 pub struct FpsPlugin;
 
 impl Plugin for FpsPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Startup, setup);
-        app.add_systems(Update, update_fps_text);
+        app.add_systems(
+            Update,
+            update_fps_text.run_if(on_timer(Duration::from_secs_f32(1.0 / 20.0))),
+        );
     }
 }
 
