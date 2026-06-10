@@ -1,16 +1,14 @@
+pub mod block_interaction;
 pub mod cam;
-pub mod click_handler;
 pub mod control;
 pub mod inspector;
-pub mod laser;
 pub mod spawn;
 
 use bevy::prelude::*;
+use block_interaction::BlockInteractionPlugin;
 use cam::PlayerCamPlugin;
-use click_handler::ClickHandlerPlugin;
 use control::ControlPlayerPlugin;
 use inspector::InspectorPlugin;
-use laser::LaserPlugin;
 use spawn::SpawnPlayerPlugin;
 
 pub struct PlayerPlugin;
@@ -21,8 +19,7 @@ impl Plugin for PlayerPlugin {
             ControlPlayerPlugin,
             PlayerCamPlugin,
             SpawnPlayerPlugin,
-            LaserPlugin,
-            ClickHandlerPlugin,
+            BlockInteractionPlugin,
             InspectorPlugin,
         ));
     }
