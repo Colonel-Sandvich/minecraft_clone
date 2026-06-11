@@ -7,7 +7,7 @@ use bevy::{
 use crate::world::{
     chunk::{Chunk, ChunkNeedsSave, ChunkPosition},
     generation::WorldMetadata,
-    storage::{ChunkRepository, ChunkStoreResult},
+    storage::{ChunkRepository, ChunkStoreError, ChunkStoreResult},
 };
 
 const INITIAL_SAVE_RETRY_DELAY_UPDATES: u32 = 60;
@@ -16,34 +16,63 @@ const MAX_SAVE_RETRY_DELAY_UPDATES: u32 = 600;
 #[derive(Resource, Default)]
 pub(crate) struct ChunkSaveTasks {
     tasks: HashMap<Entity, Task<ChunkSaveOutput>>,
-    retry_after_updates: HashMap<Entity, u32>,
+    failures: HashMap<Entity, ChunkSaveFailure>,
 }
 
 impl ChunkSaveTasks {
     fn tick_retry_backoffs(&mut self) {
-        for delay in self.retry_after_updates.values_mut() {
-            *delay = delay.saturating_sub(1);
+        for failure in self.failures.values_mut() {
+            failure.retry_after_updates = failure.retry_after_updates.saturating_sub(1);
         }
     }
 
     fn can_start(&self, entity: Entity) -> bool {
         !self.tasks.contains_key(&entity)
             && self
-                .retry_after_updates
+                .failures
                 .get(&entity)
-                .is_none_or(|delay| *delay == 0)
+                .is_none_or(|failure| failure.can_retry())
     }
 
     fn record_success(&mut self, entity: Entity) {
-        self.retry_after_updates.remove(&entity);
+        self.failures.remove(&entity);
     }
 
-    fn record_failure(&mut self, entity: Entity) {
-        self.retry_after_updates
-            .entry(entity)
-            .and_modify(|delay| *delay = (*delay * 2).min(MAX_SAVE_RETRY_DELAY_UPDATES))
-            .or_insert(INITIAL_SAVE_RETRY_DELAY_UPDATES);
+    fn record_failure(&mut self, entity: Entity, error: ChunkStoreError) {
+        let attempts = self
+            .failures
+            .get(&entity)
+            .map_or(0, |failure| failure.attempts)
+            .saturating_add(1);
+
+        self.failures.insert(
+            entity,
+            ChunkSaveFailure {
+                error,
+                attempts,
+                retry_after_updates: retry_delay_for_attempt(attempts),
+            },
+        );
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ChunkSaveFailure {
+    error: ChunkStoreError,
+    attempts: u32,
+    retry_after_updates: u32,
+}
+
+impl ChunkSaveFailure {
+    fn can_retry(&self) -> bool {
+        self.retry_after_updates == 0
+    }
+}
+
+fn retry_delay_for_attempt(attempts: u32) -> u32 {
+    INITIAL_SAVE_RETRY_DELAY_UPDATES
+        .saturating_mul(2_u32.saturating_pow(attempts.saturating_sub(1).min(5)))
+        .min(MAX_SAVE_RETRY_DELAY_UPDATES)
 }
 
 #[derive(Resource, Debug, Clone, Copy)]
@@ -105,7 +134,7 @@ pub(crate) fn finish_chunk_save_tasks(
             }
             Err(error) => {
                 warn!(%error, pos = ?output.pos, "Failed to persist dirty chunk");
-                save_tasks.record_failure(entity);
+                save_tasks.record_failure(entity, error);
             }
         }
     }
@@ -147,7 +176,6 @@ pub(crate) fn start_chunk_save_tasks(
         };
         let repository = repository.clone();
         let task = thread_pool.spawn(async move { save_chunk_snapshot(request, repository) });
-        save_tasks.retry_after_updates.remove(&entity);
         save_tasks.tasks.insert(entity, task);
         started += 1;
     }
@@ -191,6 +219,13 @@ mod tests {
         );
     }
 
+    fn test_save_error() -> ChunkStoreError {
+        ChunkStoreError::Io {
+            kind: std::io::ErrorKind::Other,
+            message: "intentional save failure".to_owned(),
+        }
+    }
+
     #[derive(Default)]
     struct FailingSaveStore;
 
@@ -209,11 +244,28 @@ mod tests {
             _chunk: &Chunk,
             _metadata: &WorldMetadata,
         ) -> ChunkStoreResult<()> {
-            Err(ChunkStoreError::Io {
-                kind: std::io::ErrorKind::Other,
-                message: "intentional save failure".to_owned(),
-            })
+            Err(test_save_error())
         }
+    }
+
+    #[test]
+    fn save_failure_record_preserves_attempts_across_retries() {
+        let entity = Entity::PLACEHOLDER;
+        let mut save_tasks = ChunkSaveTasks::default();
+
+        save_tasks.record_failure(entity, test_save_error());
+        assert_eq!(save_tasks.failures[&entity].attempts, 1);
+        assert_eq!(
+            save_tasks.failures[&entity].retry_after_updates,
+            retry_delay_for_attempt(1)
+        );
+
+        save_tasks.record_failure(entity, test_save_error());
+        assert_eq!(save_tasks.failures[&entity].attempts, 2);
+        assert_eq!(
+            save_tasks.failures[&entity].retry_after_updates,
+            retry_delay_for_attempt(2)
+        );
     }
 
     #[test]
@@ -324,7 +376,7 @@ mod tests {
         update_until(&mut app, |world| {
             world
                 .resource::<ChunkSaveTasks>()
-                .retry_after_updates
+                .failures
                 .contains_key(&chunk_entity)
         });
 
@@ -332,6 +384,8 @@ mod tests {
 
         let save_tasks = app.world().resource::<ChunkSaveTasks>();
         assert!(!save_tasks.tasks.contains_key(&chunk_entity));
-        assert!(save_tasks.retry_after_updates[&chunk_entity] < INITIAL_SAVE_RETRY_DELAY_UPDATES);
+        let failure = &save_tasks.failures[&chunk_entity];
+        assert_eq!(failure.attempts, 1);
+        assert!(failure.retry_after_updates < INITIAL_SAVE_RETRY_DELAY_UPDATES);
     }
 }
