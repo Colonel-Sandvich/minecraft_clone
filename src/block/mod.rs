@@ -49,6 +49,44 @@ pub struct BlockRenderProfile {
     pub sidedness: FaceSidedness,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum BlockMaterialLayer {
+    Opaque,
+    CutoutSingleSided,
+    CutoutDoubleSided,
+}
+
+impl BlockMaterialLayer {
+    pub const COUNT: usize = 3;
+    pub const ALL: [Self; Self::COUNT] = [
+        Self::Opaque,
+        Self::CutoutSingleSided,
+        Self::CutoutDoubleSided,
+    ];
+
+    pub const fn index(self) -> usize {
+        match self {
+            Self::Opaque => 0,
+            Self::CutoutSingleSided => 1,
+            Self::CutoutDoubleSided => 2,
+        }
+    }
+}
+
+impl BlockRenderProfile {
+    pub const fn material_layer(self) -> BlockMaterialLayer {
+        match (self.layer, self.sidedness) {
+            (BlockRenderLayer::Opaque, _) => BlockMaterialLayer::Opaque,
+            (BlockRenderLayer::Cutout, FaceSidedness::Single) => {
+                BlockMaterialLayer::CutoutSingleSided
+            }
+            (BlockRenderLayer::Cutout, FaceSidedness::Double) => {
+                BlockMaterialLayer::CutoutDoubleSided
+            }
+        }
+    }
+}
+
 impl BlockType {
     pub fn render_profile(self) -> Option<BlockRenderProfile> {
         use BlockType::*;
@@ -187,13 +225,19 @@ mod tests {
 
     #[test]
     fn leaves_are_cutout_non_occluding_and_double_sided() {
+        let profile = BlockType::OakLeaves.render_profile().unwrap();
+
         assert_eq!(
-            BlockType::OakLeaves.render_profile(),
-            Some(BlockRenderProfile {
+            profile,
+            BlockRenderProfile {
                 layer: BlockRenderLayer::Cutout,
                 occlusion: FaceOcclusion::None,
                 sidedness: FaceSidedness::Double,
-            })
+            }
+        );
+        assert_eq!(
+            profile.material_layer(),
+            BlockMaterialLayer::CutoutDoubleSided
         );
     }
 }

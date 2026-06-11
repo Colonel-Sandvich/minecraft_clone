@@ -10,8 +10,8 @@ use strum::IntoEnumIterator;
 use crate::textures::{BlockStandardMaterials, TextureState};
 use crate::{
     block::{
-        BlockRenderLayer, BlockRenderProfile, BlockTextureMap, BlockType, BlockUpdateMessage,
-        FaceOcclusion, FaceSidedness, block_to_colour,
+        BlockMaterialLayer, BlockTextureMap, BlockType, BlockUpdateMessage, FaceOcclusion,
+        FaceSidedness, block_to_colour,
     },
     quad::{Direction, Quad, QuadGroups, get_indices, get_normals, get_positions, urect_to_uvs},
 };
@@ -20,44 +20,12 @@ use super::{CHUNK_ISIZE, Chunk};
 
 pub struct ChunkMeshPlugin;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ChunkMeshLayer {
-    Opaque,
-    CutoutSingleSided,
-    CutoutDoubleSided,
-}
-
-impl ChunkMeshLayer {
-    const ALL: [Self; Self::COUNT] = [
-        Self::Opaque,
-        Self::CutoutSingleSided,
-        Self::CutoutDoubleSided,
-    ];
-    const COUNT: usize = 3;
-
-    fn index(self) -> usize {
-        match self {
-            Self::Opaque => 0,
-            Self::CutoutSingleSided => 1,
-            Self::CutoutDoubleSided => 2,
-        }
-    }
-
-    fn from_render_profile(profile: BlockRenderProfile) -> Self {
-        match (profile.layer, profile.sidedness) {
-            (BlockRenderLayer::Opaque, _) => Self::Opaque,
-            (BlockRenderLayer::Cutout, FaceSidedness::Single) => Self::CutoutSingleSided,
-            (BlockRenderLayer::Cutout, FaceSidedness::Double) => Self::CutoutDoubleSided,
-        }
-    }
-}
-
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
-struct ChunkMeshLayerMarker(ChunkMeshLayer);
+struct ChunkMaterialLayerMarker(BlockMaterialLayer);
 
 #[derive(Debug, Default)]
 pub struct LayeredQuadGroups {
-    pub layers: [QuadGroups; ChunkMeshLayer::COUNT],
+    pub layers: [QuadGroups; BlockMaterialLayer::COUNT],
 }
 
 impl Plugin for ChunkMeshPlugin {
@@ -77,7 +45,7 @@ fn update_mesh_simple(
     mut block_updates: MessageReader<BlockUpdateMessage>,
     added_chunks_q: Query<(&Chunk, Entity, Option<&Children>), Added<Chunk>>,
     chunks_q: Query<(&Chunk, Entity, Option<&Children>)>,
-    mesh_children_q: Query<(Entity, &ChunkMeshLayerMarker), With<Mesh3d>>,
+    mesh_children_q: Query<(Entity, &ChunkMaterialLayerMarker), With<Mesh3d>>,
     mut mesh_q: Query<&mut Mesh3d>,
 ) {
     for (chunk, chunk_entity, children) in added_chunks_q
@@ -103,7 +71,7 @@ fn update_chunk_mesh_children(
     meshes: &mut Assets<Mesh>,
     block_materials: &BlockStandardMaterials,
     block_texture_map: &BlockTextureMap,
-    mesh_children_q: &Query<(Entity, &ChunkMeshLayerMarker), With<Mesh3d>>,
+    mesh_children_q: &Query<(Entity, &ChunkMaterialLayerMarker), With<Mesh3d>>,
     mesh_q: &mut Query<&mut Mesh3d>,
     chunk: &Chunk,
     chunk_entity: Entity,
@@ -132,7 +100,7 @@ fn update_chunk_mesh_children(
 
         commands.spawn((
             ChildOf(chunk_entity),
-            ChunkMeshLayerMarker(layer),
+            ChunkMaterialLayerMarker(layer),
             Mesh3d(mesh_handle),
             MeshMaterial3d(block_materials.get(layer)),
         ));
@@ -150,9 +118,9 @@ fn update_chunk_mesh_children(
 pub fn make_chunk_meshes(
     chunk: &Chunk,
     block_texture_map: &BlockTextureMap,
-) -> Vec<(ChunkMeshLayer, Mesh)> {
+) -> Vec<(BlockMaterialLayer, Mesh)> {
     let quad_groups = make_layered_quad_groups(chunk, block_texture_map);
-    ChunkMeshLayer::ALL
+    BlockMaterialLayer::ALL
         .into_iter()
         .filter_map(|layer| {
             make_mesh_from_quad_groups(&quad_groups.layers[layer.index()]).map(|mesh| (layer, mesh))
@@ -193,13 +161,13 @@ pub fn make_layered_quad_groups(
                         continue;
                     }
 
-                    buffer.layers[ChunkMeshLayer::from_render_profile(profile).index()].groups
-                        [side as usize]
-                        .push(Quad {
+                    buffer.layers[profile.material_layer().index()].groups[side as usize].push(
+                        Quad {
                             voxel: UVec3::from_slice(&[x, y, z].map(|u| u.try_into().unwrap())),
                             uv: block_texture_map.block_to_mesh(block, side),
                             color: block_to_colour(block, side),
-                        });
+                        },
+                    );
                 }
             }
         }
@@ -314,11 +282,11 @@ mod tests {
         chunk.blocks[1][0][0] = BlockType::OakLeaves;
 
         let groups = make_layered_quad_groups(&chunk, &texture_map);
-        let leaf_groups = &groups.layers[ChunkMeshLayer::CutoutDoubleSided.index()];
+        let leaf_groups = &groups.layers[BlockMaterialLayer::CutoutDoubleSided.index()];
 
         assert_eq!(quad_count(leaf_groups), 11);
         assert_eq!(
-            groups.layers[ChunkMeshLayer::Opaque.index()]
+            groups.layers[BlockMaterialLayer::Opaque.index()]
                 .groups
                 .iter()
                 .map(Vec::len)
@@ -337,8 +305,8 @@ mod tests {
         chunk.blocks[1][0][0] = BlockType::OakLeaves;
 
         let groups = make_layered_quad_groups(&chunk, &texture_map);
-        let opaque_groups = &groups.layers[ChunkMeshLayer::Opaque.index()];
-        let leaf_groups = &groups.layers[ChunkMeshLayer::CutoutDoubleSided.index()];
+        let opaque_groups = &groups.layers[BlockMaterialLayer::Opaque.index()];
+        let leaf_groups = &groups.layers[BlockMaterialLayer::CutoutDoubleSided.index()];
 
         assert_eq!(quad_count(opaque_groups), 6);
         assert_eq!(quad_count(leaf_groups), 5);
@@ -360,7 +328,10 @@ mod tests {
 
         assert_eq!(
             layers,
-            vec![ChunkMeshLayer::Opaque, ChunkMeshLayer::CutoutDoubleSided]
+            vec![
+                BlockMaterialLayer::Opaque,
+                BlockMaterialLayer::CutoutDoubleSided
+            ]
         );
     }
 }

@@ -1,7 +1,6 @@
 use bevy::{asset::LoadedFolder, image::ImageSampler, platform::collections::HashMap, prelude::*};
 
-use crate::block::BlockTextureMap;
-use crate::world::chunk::mesh::ChunkMeshLayer;
+use crate::block::{BlockMaterialLayer, BlockTextureMap};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, States)]
 pub enum TextureState {
@@ -104,11 +103,11 @@ pub struct BlockStandardMaterials {
 }
 
 impl BlockStandardMaterials {
-    pub fn get(&self, layer: ChunkMeshLayer) -> Handle<StandardMaterial> {
+    pub fn get(&self, layer: BlockMaterialLayer) -> Handle<StandardMaterial> {
         match layer {
-            ChunkMeshLayer::Opaque => self.opaque.clone(),
-            ChunkMeshLayer::CutoutSingleSided => self.cutout_single_sided.clone(),
-            ChunkMeshLayer::CutoutDoubleSided => self.cutout_double_sided.clone(),
+            BlockMaterialLayer::Opaque => self.opaque.clone(),
+            BlockMaterialLayer::CutoutSingleSided => self.cutout_single_sided.clone(),
+            BlockMaterialLayer::CutoutDoubleSided => self.cutout_double_sided.clone(),
         }
     }
 }
