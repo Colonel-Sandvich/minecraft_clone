@@ -190,7 +190,7 @@ mod tests {
         assert_eq!(error.kind, ChunkLoadErrorKind::Permanent);
         assert!(matches!(
             error.source,
-            ChunkStoreError::ChunkMetadataMismatch { .. }
+            ChunkStoreError::WorldMetadataMismatch { .. }
         ));
     }
 

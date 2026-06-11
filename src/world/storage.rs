@@ -63,37 +63,30 @@ impl Default for ChunkRepository {
 
 #[derive(Default)]
 pub struct InMemoryChunkStore {
-    chunks: Mutex<HashMap<IVec3, StoredChunk>>,
+    inner: Mutex<InMemoryChunkStoreInner>,
 }
 
-struct StoredChunk {
-    format_version: u32,
-    generator_version: u32,
-    height_chunks: usize,
-    blocks: Vec<u8>,
+#[derive(Default)]
+struct InMemoryChunkStoreInner {
+    metadata: Option<WorldMetadata>,
+    chunks: HashMap<IVec3, Vec<u8>>,
 }
 
 impl ChunkStore for InMemoryChunkStore {
     fn load_chunk(&self, pos: IVec3, metadata: &WorldMetadata) -> ChunkStoreResult<Option<Chunk>> {
-        let chunks = self
-            .chunks
+        let mut inner = self
+            .inner
             .lock()
             .map_err(|_| ChunkStoreError::LockPoisoned {
                 store: "in-memory chunk store",
             })?;
-        let Some(stored) = chunks.get(&pos) else {
+        ensure_store_metadata(&mut inner.metadata, metadata)?;
+
+        let Some(bytes) = inner.chunks.get(&pos) else {
             return Ok(None);
         };
 
-        validate_chunk_metadata(
-            pos,
-            stored.format_version,
-            stored.generator_version,
-            stored.height_chunks,
-            metadata,
-        )?;
-
-        Ok(Some(Chunk::try_from_storage_bytes(&stored.blocks)?))
+        Ok(Some(Chunk::try_from_storage_bytes(bytes)?))
     }
 
     fn save_chunk(
@@ -102,26 +95,22 @@ impl ChunkStore for InMemoryChunkStore {
         chunk: &Chunk,
         metadata: &WorldMetadata,
     ) -> ChunkStoreResult<()> {
-        self.chunks
+        let mut inner = self
+            .inner
             .lock()
             .map_err(|_| ChunkStoreError::LockPoisoned {
                 store: "in-memory chunk store",
-            })?
-            .insert(
-                pos,
-                StoredChunk {
-                    format_version: metadata.chunk_format_version,
-                    generator_version: metadata.generator_version,
-                    height_chunks: metadata.height_chunks,
-                    blocks: chunk.to_storage_bytes(),
-                },
-            );
+            })?;
+        ensure_store_metadata(&mut inner.metadata, metadata)?;
+
+        inner.chunks.insert(pos, chunk.to_storage_bytes());
         Ok(())
     }
 }
 
 pub struct SqliteChunkStore {
     connection: Mutex<Connection>,
+    metadata: WorldMetadata,
 }
 
 impl SqliteChunkStore {
@@ -132,6 +121,7 @@ impl SqliteChunkStore {
 
         let store = Self {
             connection: Mutex::new(Connection::open(path)?),
+            metadata: metadata.clone(),
         };
         store.initialize(metadata)?;
         Ok(store)
@@ -140,6 +130,7 @@ impl SqliteChunkStore {
     pub fn open_in_memory(metadata: &WorldMetadata) -> ChunkStoreResult<Self> {
         let store = Self {
             connection: Mutex::new(Connection::open_in_memory()?),
+            metadata: metadata.clone(),
         };
         store.initialize(metadata)?;
         Ok(store)
@@ -158,9 +149,6 @@ impl SqliteChunkStore {
                 x INTEGER NOT NULL,
                 y INTEGER NOT NULL,
                 z INTEGER NOT NULL,
-                format_version INTEGER NOT NULL,
-                generator_version INTEGER NOT NULL,
-                height_chunks INTEGER NOT NULL,
                 blocks BLOB NOT NULL,
                 PRIMARY KEY (x, y, z)
             );",
@@ -197,37 +185,22 @@ impl SqliteChunkStore {
 
 impl ChunkStore for SqliteChunkStore {
     fn load_chunk(&self, pos: IVec3, metadata: &WorldMetadata) -> ChunkStoreResult<Option<Chunk>> {
+        validate_world_metadata(&self.metadata, metadata)?;
+
         let connection = self.connection()?;
-        let row = connection
+        let bytes = connection
             .query_row(
-                "SELECT format_version, generator_version, height_chunks, blocks
+                "SELECT blocks
                 FROM chunks
                 WHERE x = ?1 AND y = ?2 AND z = ?3",
                 params![pos.x, pos.y, pos.z],
-                |row| {
-                    Ok((
-                        row.get::<_, u32>(0)?,
-                        row.get::<_, u32>(1)?,
-                        row.get::<_, i64>(2)?,
-                        row.get::<_, Vec<u8>>(3)?,
-                    ))
-                },
+                |row| row.get::<_, Vec<u8>>(0),
             )
             .optional()?;
 
-        let Some((format_version, generator_version, height_chunks, bytes)) = row else {
+        let Some(bytes) = bytes else {
             return Ok(None);
         };
-        let height_chunks = usize::try_from(height_chunks)
-            .map_err(|_| ChunkStoreError::InvalidStoredHeight { pos, height_chunks })?;
-
-        validate_chunk_metadata(
-            pos,
-            format_version,
-            generator_version,
-            height_chunks,
-            metadata,
-        )?;
 
         Ok(Some(Chunk::try_from_storage_bytes(&bytes)?))
     }
@@ -238,30 +211,16 @@ impl ChunkStore for SqliteChunkStore {
         chunk: &Chunk,
         metadata: &WorldMetadata,
     ) -> ChunkStoreResult<()> {
+        validate_world_metadata(&self.metadata, metadata)?;
+
         let connection = self.connection()?;
-        let height_chunks = i64::try_from(metadata.height_chunks).map_err(|_| {
-            ChunkStoreError::HeightChunksOutOfRange {
-                height_chunks: metadata.height_chunks,
-            }
-        })?;
         connection.execute(
             "INSERT INTO chunks (
-                x, y, z, format_version, generator_version, height_chunks, blocks
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                x, y, z, blocks
+            ) VALUES (?1, ?2, ?3, ?4)
             ON CONFLICT(x, y, z) DO UPDATE SET
-                format_version = excluded.format_version,
-                generator_version = excluded.generator_version,
-                height_chunks = excluded.height_chunks,
                 blocks = excluded.blocks",
-            params![
-                pos.x,
-                pos.y,
-                pos.z,
-                metadata.chunk_format_version,
-                metadata.generator_version,
-                height_chunks,
-                chunk.to_storage_bytes(),
-            ],
+            params![pos.x, pos.y, pos.z, chunk.to_storage_bytes()],
         )?;
 
         Ok(())
@@ -304,29 +263,63 @@ fn ensure_metadata_value(
     }
 }
 
-fn validate_chunk_metadata(
-    pos: IVec3,
-    format_version: u32,
-    generator_version: u32,
-    height_chunks: usize,
+fn ensure_store_metadata(
+    stored: &mut Option<WorldMetadata>,
     metadata: &WorldMetadata,
 ) -> ChunkStoreResult<()> {
-    if format_version != metadata.chunk_format_version
-        || generator_version != metadata.generator_version
-        || height_chunks != metadata.height_chunks
-    {
-        return Err(ChunkStoreError::ChunkMetadataMismatch {
-            pos,
-            format_version,
-            generator_version,
-            height_chunks,
-            expected_format_version: metadata.chunk_format_version,
-            expected_generator_version: metadata.generator_version,
-            expected_height_chunks: metadata.height_chunks,
-        });
+    if let Some(stored) = stored {
+        validate_world_metadata(stored, metadata)
+    } else {
+        *stored = Some(metadata.clone());
+        Ok(())
+    }
+}
+
+fn validate_world_metadata(
+    expected: &WorldMetadata,
+    found: &WorldMetadata,
+) -> ChunkStoreResult<()> {
+    if expected.seed != found.seed {
+        return Err(world_metadata_mismatch("seed", expected.seed, found.seed));
+    }
+
+    if expected.generator_version != found.generator_version {
+        return Err(world_metadata_mismatch(
+            "generator_version",
+            expected.generator_version,
+            found.generator_version,
+        ));
+    }
+
+    if expected.chunk_format_version != found.chunk_format_version {
+        return Err(world_metadata_mismatch(
+            "chunk_format_version",
+            expected.chunk_format_version,
+            found.chunk_format_version,
+        ));
+    }
+
+    if expected.height_chunks != found.height_chunks {
+        return Err(world_metadata_mismatch(
+            "height_chunks",
+            expected.height_chunks,
+            found.height_chunks,
+        ));
     }
 
     Ok(())
+}
+
+fn world_metadata_mismatch(
+    key: &str,
+    expected: impl ToString,
+    found: impl ToString,
+) -> ChunkStoreError {
+    ChunkStoreError::WorldMetadataMismatch {
+        key: key.to_owned(),
+        expected: expected.to_string(),
+        found: found.to_string(),
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -349,22 +342,6 @@ pub enum ChunkStoreError {
         expected: String,
         found: String,
     },
-    ChunkMetadataMismatch {
-        pos: IVec3,
-        format_version: u32,
-        generator_version: u32,
-        height_chunks: usize,
-        expected_format_version: u32,
-        expected_generator_version: u32,
-        expected_height_chunks: usize,
-    },
-    InvalidStoredHeight {
-        pos: IVec3,
-        height_chunks: i64,
-    },
-    HeightChunksOutOfRange {
-        height_chunks: usize,
-    },
 }
 
 impl std::fmt::Display for ChunkStoreError {
@@ -385,28 +362,6 @@ impl std::fmt::Display for ChunkStoreError {
             } => write!(
                 f,
                 "world metadata mismatch for {key}: expected {expected}, found {found}"
-            ),
-            Self::ChunkMetadataMismatch {
-                pos,
-                format_version,
-                generator_version,
-                height_chunks,
-                expected_format_version,
-                expected_generator_version,
-                expected_height_chunks,
-            } => write!(
-                f,
-                "chunk at {pos:?} has incompatible metadata: format {format_version}, generator {generator_version}, height {height_chunks}; expected format {expected_format_version}, generator {expected_generator_version}, height {expected_height_chunks}"
-            ),
-            Self::InvalidStoredHeight { pos, height_chunks } => {
-                write!(
-                    f,
-                    "chunk at {pos:?} has invalid stored height {height_chunks}"
-                )
-            }
-            Self::HeightChunksOutOfRange { height_chunks } => write!(
-                f,
-                "height_chunks {height_chunks} does not fit in SQLite integer"
             ),
         }
     }
