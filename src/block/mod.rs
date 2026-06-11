@@ -1,6 +1,5 @@
 use bevy::{platform::collections::HashMap, prelude::*};
-use rand::RngExt;
-use strum::{EnumCount, EnumIter, FromRepr};
+use strum::EnumIter;
 
 use crate::{quad::Direction, world::chunk::CHUNK_ISIZE};
 
@@ -12,7 +11,7 @@ impl Plugin for BlockPlugin {
     }
 }
 
-#[derive(Default, Clone, Copy, Debug, Reflect, PartialEq, Eq, FromRepr, EnumCount, EnumIter)]
+#[derive(Default, Clone, Copy, Debug, Reflect, PartialEq, Eq, EnumIter)]
 pub enum BlockType {
     #[default]
     Air = 0,
@@ -52,12 +51,6 @@ impl BlockType {
             Air => false,
             _ => true,
         }
-    }
-
-    pub fn random_not_air() -> Self {
-        let mut rng = rand::rng();
-
-        BlockType::from_repr(rng.random_range(1..BlockType::COUNT)).unwrap()
     }
 
     pub const fn storage_id(self) -> u16 {

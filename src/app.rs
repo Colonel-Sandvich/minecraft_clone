@@ -9,8 +9,14 @@ use bevy_framepace::FramepacePlugin;
 use bevy_inspector_egui::{bevy_egui::EguiPlugin, quick::WorldInspectorPlugin};
 
 use crate::{
-    block::BlockPlugin, game_state::GameStatePlugin, light::LightPlugin, mob::MobControllerPlugin,
-    player::PlayerPlugin, textures::BlockTextureAtlasPlugin, ui::UIPlugin, world::WorldPlugin,
+    block::BlockPlugin,
+    game_state::GameStatePlugin,
+    light::LightPlugin,
+    mob::MobControllerPlugin,
+    player::PlayerPlugin,
+    textures::BlockTextureAtlasPlugin,
+    ui::UIPlugin,
+    world::{WorldConfig, WorldMetadata, WorldPlugin},
 };
 
 pub const FIXED_TICK_RATE_HZ: f64 = 20.0;
@@ -34,6 +40,7 @@ impl Plugin for AppPlugin {
         .add_plugins(PlayerPlugin)
         .add_plugins(BlockPlugin)
         .add_plugins(BlockTextureAtlasPlugin)
+        .insert_resource(WorldConfig::development_sqlite(WorldMetadata::default()))
         .add_plugins(WorldPlugin)
         .add_plugins(UIPlugin)
         .insert_resource(Time::<Fixed>::from_hz(FIXED_TICK_RATE_HZ))

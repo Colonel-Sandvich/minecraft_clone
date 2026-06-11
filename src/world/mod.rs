@@ -1,13 +1,60 @@
 pub mod chunk;
 pub mod dimension;
+pub mod generation;
+pub mod loading;
+pub mod storage;
+
+use std::path::PathBuf;
 
 use avian3d::prelude::CollisionLayers;
 use bevy::prelude::*;
 
 use chunk::ChunkPlugin;
 use dimension::DimensionPlugin;
+use storage::{ChunkRepository, ChunkStoreResult, SqliteChunkStore, development_world_path};
+
+pub use generation::WorldMetadata;
 
 pub struct WorldPlugin;
+
+#[derive(Resource, Debug, Clone, PartialEq, Eq)]
+pub struct WorldConfig {
+    pub metadata: WorldMetadata,
+    pub storage: WorldStorageConfig,
+}
+
+impl WorldConfig {
+    pub fn in_memory(metadata: WorldMetadata) -> Self {
+        Self {
+            metadata,
+            storage: WorldStorageConfig::InMemory,
+        }
+    }
+
+    pub fn sqlite(metadata: WorldMetadata, path: impl Into<PathBuf>) -> Self {
+        Self {
+            metadata,
+            storage: WorldStorageConfig::Sqlite { path: path.into() },
+        }
+    }
+
+    pub fn development_sqlite(metadata: WorldMetadata) -> Self {
+        let path = development_world_path(&metadata);
+        Self::sqlite(metadata, path)
+    }
+}
+
+impl Default for WorldConfig {
+    fn default() -> Self {
+        Self::in_memory(WorldMetadata::default())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WorldStorageConfig {
+    InMemory,
+    Sqlite { path: PathBuf },
+}
 
 pub const WORLD_LAYER: u32 = 1 << 0;
 pub const ACTOR_LAYER: u32 = 1 << 1;
@@ -19,6 +66,88 @@ pub const ACTOR_COLLISION_LAYERS: CollisionLayers =
 
 impl Plugin for WorldPlugin {
     fn build(&self, app: &mut App) {
+        ensure_world_resources(app);
         app.add_plugins((DimensionPlugin, ChunkPlugin));
+    }
+}
+
+fn ensure_world_resources(app: &mut App) {
+    let config = app
+        .world()
+        .get_resource::<WorldConfig>()
+        .cloned()
+        .unwrap_or_else(|| {
+            let metadata = app
+                .world()
+                .get_resource::<WorldMetadata>()
+                .cloned()
+                .unwrap_or_default();
+            WorldConfig::in_memory(metadata)
+        });
+
+    if !app.world().contains_resource::<WorldConfig>() {
+        app.insert_resource(config.clone());
+    }
+
+    if let Some(metadata) = app.world().get_resource::<WorldMetadata>() {
+        assert_eq!(
+            metadata, &config.metadata,
+            "WorldMetadata resource must match WorldConfig metadata"
+        );
+    } else {
+        app.insert_resource(config.metadata.clone());
+    }
+
+    if app.world().contains_resource::<ChunkRepository>() {
+        return;
+    }
+
+    let repository = build_chunk_repository(&config)
+        .unwrap_or_else(|error| panic!("failed to open configured chunk store: {error}"));
+    app.insert_resource(repository);
+}
+
+fn build_chunk_repository(config: &WorldConfig) -> ChunkStoreResult<ChunkRepository> {
+    match &config.storage {
+        WorldStorageConfig::InMemory => {
+            info!(seed = config.metadata.seed, "Using in-memory chunk store");
+            Ok(ChunkRepository::default())
+        }
+        WorldStorageConfig::Sqlite { path } => {
+            let store = SqliteChunkStore::open(path, &config.metadata)?;
+            info!(
+                seed = config.metadata.seed,
+                path = %path.display(),
+                "Using SQLite chunk store"
+            );
+            Ok(ChunkRepository::new(store))
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_world_config_is_stable_and_in_memory() {
+        let config = WorldConfig::default();
+
+        assert_eq!(config.metadata, WorldMetadata::default());
+        assert!(matches!(config.storage, WorldStorageConfig::InMemory));
+    }
+
+    #[test]
+    fn development_world_config_uses_seeded_sqlite_path() {
+        let metadata = WorldMetadata::with_seed(42);
+        let config = WorldConfig::development_sqlite(metadata.clone());
+
+        assert_eq!(config.metadata, metadata);
+        assert_eq!(
+            config.storage,
+            WorldStorageConfig::Sqlite {
+                path: development_world_path(&metadata)
+            }
+        );
     }
 }

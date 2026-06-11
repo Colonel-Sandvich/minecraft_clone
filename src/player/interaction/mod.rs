@@ -6,7 +6,11 @@ use bevy::{color::palettes::basic, input::InputSystems, prelude::*};
 
 use crate::{
     block::{BlockPos, BlockType, BlockUpdateKind, BlockUpdateMessage},
-    world::{ACTOR_LAYER, WORLD_LAYER, chunk::Chunk, dimension::Dimension},
+    world::{
+        ACTOR_LAYER, WORLD_LAYER,
+        chunk::{Chunk, ChunkNeedsSave},
+        dimension::Dimension,
+    },
 };
 
 use super::cam::MouseCam;
@@ -163,6 +167,7 @@ fn emit_block_interaction_requests(
 }
 
 fn apply_block_interaction_requests(
+    mut commands: Commands,
     mut requests: MessageReader<BlockInteractionRequest>,
     dimension: Single<&Dimension>,
     mut chunks: Query<&mut Chunk>,
@@ -173,12 +178,12 @@ fn apply_block_interaction_requests(
     for request in requests.read().copied() {
         let pos = request.block_pos();
 
-        let Some(chunk_entity) = dimension.chunks.get(&pos.chunk) else {
+        let Some(chunk_entity) = dimension.chunk_entity(pos.chunk) else {
             warn!("Interacted with missing chunk");
             continue;
         };
 
-        let Ok(mut chunk) = chunks.get_mut(*chunk_entity) else {
+        let Ok(mut chunk) = chunks.get_mut(chunk_entity) else {
             continue;
         };
 
@@ -192,10 +197,11 @@ fn apply_block_interaction_requests(
                 }
 
                 block_updates.write(BlockUpdateMessage {
-                    chunk: *chunk_entity,
+                    chunk: chunk_entity,
                     pos,
                     kind: BlockUpdateKind::Break,
                 });
+                commands.entity(chunk_entity).insert(ChunkNeedsSave);
             }
             BlockInteractionKind::Place => {
                 if block_place_would_intersect(pos, &spatial_query) {
@@ -207,10 +213,11 @@ fn apply_block_interaction_requests(
                 }
 
                 block_updates.write(BlockUpdateMessage {
-                    chunk: *chunk_entity,
+                    chunk: chunk_entity,
                     pos,
                     kind: BlockUpdateKind::Place(selected_block.0),
                 });
+                commands.entity(chunk_entity).insert(ChunkNeedsSave);
             }
         }
     }

@@ -1,6 +1,5 @@
 pub mod collider;
 pub mod mesh;
-pub mod util;
 
 use bevy::prelude::*;
 use collider::ChunkColliderPlugin;
