@@ -21,8 +21,15 @@ pub const CHUNK_SIZE: usize = 16;
 pub const CHUNK_ISIZE: i32 = 16;
 
 pub const CHUNK_VOLUME: usize = CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE;
+pub const CHUNK_BLOCK_STORAGE_BYTES: usize = CHUNK_VOLUME * std::mem::size_of::<u16>();
 
-#[derive(Component, Debug, Clone, Reflect)]
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ChunkPosition(pub IVec3);
+
+#[derive(Component, Debug, Clone, Copy)]
+pub struct ChunkNeedsSave;
+
+#[derive(Component, Debug, Clone, PartialEq, Eq, Reflect)]
 pub struct Chunk {
     pub blocks: [[[BlockType; CHUNK_SIZE]; CHUNK_SIZE]; CHUNK_SIZE],
 }
@@ -98,7 +105,64 @@ impl Chunk {
             z: 0,
         }
     }
+
+    pub fn to_storage_bytes(&self) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(CHUNK_BLOCK_STORAGE_BYTES);
+
+        for (block, _) in self.iter() {
+            bytes.extend_from_slice(&block.storage_id().to_le_bytes());
+        }
+
+        bytes
+    }
+
+    pub fn try_from_storage_bytes(bytes: &[u8]) -> Result<Self, ChunkDecodeError> {
+        if bytes.len() != CHUNK_BLOCK_STORAGE_BYTES {
+            return Err(ChunkDecodeError::InvalidLength {
+                expected: CHUNK_BLOCK_STORAGE_BYTES,
+                actual: bytes.len(),
+            });
+        }
+
+        let mut chunk = Chunk::default();
+        let mut offset = 0;
+
+        for y in 0..CHUNK_SIZE {
+            for z in 0..CHUNK_SIZE {
+                for x in 0..CHUNK_SIZE {
+                    let id = u16::from_le_bytes([bytes[offset], bytes[offset + 1]]);
+                    chunk.blocks[x][z][y] = BlockType::from_storage_id(id)
+                        .ok_or(ChunkDecodeError::UnknownBlockId(id))?;
+                    offset += std::mem::size_of::<u16>();
+                }
+            }
+        }
+
+        Ok(chunk)
+    }
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ChunkDecodeError {
+    InvalidLength { expected: usize, actual: usize },
+    UnknownBlockId(u16),
+}
+
+impl std::fmt::Display for ChunkDecodeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidLength { expected, actual } => {
+                write!(
+                    f,
+                    "invalid chunk byte length: expected {expected}, got {actual}"
+                )
+            }
+            Self::UnknownBlockId(id) => write!(f, "unknown block storage id {id}"),
+        }
+    }
+}
+
+impl std::error::Error for ChunkDecodeError {}
 
 pub struct BlockIterator<'a> {
     chunk: &'a Chunk,
@@ -129,5 +193,36 @@ impl<'a> Iterator for BlockIterator<'a> {
         }
 
         Some((block, pos))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn chunk_storage_bytes_roundtrip_in_iteration_order() {
+        let mut chunk = Chunk::default();
+        chunk.blocks[0][0][0] = BlockType::Grass;
+        chunk.blocks[1][0][0] = BlockType::Dirt;
+        chunk.blocks[0][1][0] = BlockType::Stone;
+        chunk.blocks[0][0][1] = BlockType::OakLog;
+        chunk.blocks[15][15][15] = BlockType::OakLeaves;
+
+        let bytes = chunk.to_storage_bytes();
+
+        assert_eq!(bytes.len(), CHUNK_BLOCK_STORAGE_BYTES);
+        assert_eq!(Chunk::try_from_storage_bytes(&bytes), Ok(chunk));
+    }
+
+    #[test]
+    fn chunk_storage_bytes_reject_unknown_block_ids() {
+        let mut bytes = Chunk::default().to_storage_bytes();
+        bytes[0..2].copy_from_slice(&u16::MAX.to_le_bytes());
+
+        assert_eq!(
+            Chunk::try_from_storage_bytes(&bytes),
+            Err(ChunkDecodeError::UnknownBlockId(u16::MAX))
+        );
     }
 }
