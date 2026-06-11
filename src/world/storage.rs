@@ -3,6 +3,7 @@ use std::{
     io::ErrorKind,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
+    time::Duration,
 };
 
 use bevy::prelude::*;
@@ -14,6 +15,11 @@ use crate::world::{
 };
 
 pub type ChunkStoreResult<T> = Result<T, ChunkStoreError>;
+
+const SQLITE_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
+const SQLITE_CACHE_SIZE_KIB: i32 = 16 * 1024;
+const SQLITE_MMAP_SIZE_BYTES: i64 = 256 * 1024 * 1024;
+const SQLITE_WAL_AUTOCHECKPOINT_PAGES: i32 = 1_000;
 
 pub trait ChunkStore: Send + Sync + 'static {
     fn load_chunk(&self, pos: IVec3, metadata: &WorldMetadata) -> ChunkStoreResult<Option<Chunk>>;
@@ -109,35 +115,34 @@ impl ChunkStore for InMemoryChunkStore {
 }
 
 pub struct SqliteChunkStore {
-    connection: Mutex<Connection>,
+    path: PathBuf,
     metadata: WorldMetadata,
 }
 
 impl SqliteChunkStore {
     pub fn open(path: impl AsRef<Path>, metadata: &WorldMetadata) -> ChunkStoreResult<Self> {
-        if let Some(parent) = path.as_ref().parent() {
+        let path = path.as_ref().to_path_buf();
+        if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
 
         let store = Self {
-            connection: Mutex::new(Connection::open(path)?),
+            path,
             metadata: metadata.clone(),
         };
-        store.initialize(metadata)?;
+        let connection = store.open_connection()?;
+        Self::initialize(&connection, metadata)?;
         Ok(store)
     }
 
-    pub fn open_in_memory(metadata: &WorldMetadata) -> ChunkStoreResult<Self> {
-        let store = Self {
-            connection: Mutex::new(Connection::open_in_memory()?),
-            metadata: metadata.clone(),
-        };
-        store.initialize(metadata)?;
-        Ok(store)
+    fn open_connection(&self) -> ChunkStoreResult<Connection> {
+        let connection = Connection::open(&self.path)?;
+        configure_sqlite_connection(&connection)?;
+        Ok(connection)
     }
 
-    fn initialize(&self, metadata: &WorldMetadata) -> ChunkStoreResult<()> {
-        let connection = self.connection()?;
+    fn initialize(connection: &Connection, metadata: &WorldMetadata) -> ChunkStoreResult<()> {
+        configure_sqlite_database(connection)?;
 
         connection.execute_batch(
             "CREATE TABLE IF NOT EXISTS world_metadata (
@@ -147,39 +152,31 @@ impl SqliteChunkStore {
 
             CREATE TABLE IF NOT EXISTS chunks (
                 x INTEGER NOT NULL,
-                y INTEGER NOT NULL,
                 z INTEGER NOT NULL,
+                y INTEGER NOT NULL,
                 blocks BLOB NOT NULL,
-                PRIMARY KEY (x, y, z)
-            );",
+                PRIMARY KEY (x, z, y)
+            ) WITHOUT ROWID;",
         )?;
 
-        ensure_metadata_value(&connection, "seed", metadata.seed.to_string())?;
+        ensure_metadata_value(connection, "seed", metadata.seed.to_string())?;
         ensure_metadata_value(
-            &connection,
+            connection,
             "generator_version",
             metadata.generator_version.to_string(),
         )?;
         ensure_metadata_value(
-            &connection,
+            connection,
             "chunk_format_version",
             metadata.chunk_format_version.to_string(),
         )?;
         ensure_metadata_value(
-            &connection,
+            connection,
             "height_chunks",
             metadata.height_chunks.to_string(),
         )?;
 
         Ok(())
-    }
-
-    fn connection(&self) -> ChunkStoreResult<std::sync::MutexGuard<'_, Connection>> {
-        self.connection
-            .lock()
-            .map_err(|_| ChunkStoreError::LockPoisoned {
-                store: "sqlite chunk store",
-            })
     }
 }
 
@@ -187,13 +184,13 @@ impl ChunkStore for SqliteChunkStore {
     fn load_chunk(&self, pos: IVec3, metadata: &WorldMetadata) -> ChunkStoreResult<Option<Chunk>> {
         validate_world_metadata(&self.metadata, metadata)?;
 
-        let connection = self.connection()?;
+        let connection = self.open_connection()?;
         let bytes = connection
             .query_row(
                 "SELECT blocks
                 FROM chunks
-                WHERE x = ?1 AND y = ?2 AND z = ?3",
-                params![pos.x, pos.y, pos.z],
+                WHERE x = ?1 AND z = ?2 AND y = ?3",
+                params![pos.x, pos.z, pos.y],
                 |row| row.get::<_, Vec<u8>>(0),
             )
             .optional()?;
@@ -213,18 +210,37 @@ impl ChunkStore for SqliteChunkStore {
     ) -> ChunkStoreResult<()> {
         validate_world_metadata(&self.metadata, metadata)?;
 
-        let connection = self.connection()?;
+        let connection = self.open_connection()?;
         connection.execute(
             "INSERT INTO chunks (
-                x, y, z, blocks
+                x, z, y, blocks
             ) VALUES (?1, ?2, ?3, ?4)
-            ON CONFLICT(x, y, z) DO UPDATE SET
+            ON CONFLICT(x, z, y) DO UPDATE SET
                 blocks = excluded.blocks",
-            params![pos.x, pos.y, pos.z, chunk.to_storage_bytes()],
+            params![pos.x, pos.z, pos.y, chunk.to_storage_bytes()],
         )?;
 
         Ok(())
     }
+}
+
+fn configure_sqlite_connection(connection: &Connection) -> ChunkStoreResult<()> {
+    connection.busy_timeout(SQLITE_BUSY_TIMEOUT)?;
+    connection.execute_batch(&format!(
+        "PRAGMA synchronous = NORMAL;
+        PRAGMA temp_store = MEMORY;
+        PRAGMA cache_size = -{SQLITE_CACHE_SIZE_KIB};
+        PRAGMA mmap_size = {SQLITE_MMAP_SIZE_BYTES};
+        PRAGMA wal_autocheckpoint = {SQLITE_WAL_AUTOCHECKPOINT_PAGES};"
+    ))?;
+
+    Ok(())
+}
+
+fn configure_sqlite_database(connection: &Connection) -> ChunkStoreResult<()> {
+    connection.execute_batch("PRAGMA journal_mode = WAL;")?;
+
+    Ok(())
 }
 
 pub fn development_world_path(metadata: &WorldMetadata) -> PathBuf {
@@ -403,11 +419,52 @@ impl From<ChunkDecodeError> for ChunkStoreError {
 mod tests {
     use super::*;
     use crate::block::BlockType;
+    use std::{
+        ops::Deref,
+        sync::atomic::{AtomicU64, Ordering},
+    };
+
+    static NEXT_TEST_STORE_ID: AtomicU64 = AtomicU64::new(0);
+
+    struct TestSqliteStore {
+        store: SqliteChunkStore,
+        path: PathBuf,
+    }
+
+    impl Deref for TestSqliteStore {
+        type Target = SqliteChunkStore;
+
+        fn deref(&self) -> &Self::Target {
+            &self.store
+        }
+    }
+
+    impl Drop for TestSqliteStore {
+        fn drop(&mut self) {
+            for suffix in ["", "-wal", "-shm"] {
+                let _ = std::fs::remove_file(format!("{}{}", self.path.display(), suffix));
+            }
+        }
+    }
+
+    fn test_sqlite_store(metadata: &WorldMetadata) -> TestSqliteStore {
+        let id = NEXT_TEST_STORE_ID.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "minecraft_clone-test-{}-{id}.sqlite3",
+            std::process::id()
+        ));
+        for suffix in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{}", path.display(), suffix));
+        }
+        let store = SqliteChunkStore::open(&path, metadata).unwrap();
+
+        TestSqliteStore { store, path }
+    }
 
     #[test]
     fn sqlite_store_roundtrips_full_chunks() {
         let metadata = WorldMetadata::with_seed(42);
-        let store = SqliteChunkStore::open_in_memory(&metadata).unwrap();
+        let store = test_sqlite_store(&metadata);
         let pos = ivec3(-2, 1, 3);
         let mut chunk = Chunk::default();
         chunk.blocks[0][0][0] = BlockType::Grass;
@@ -421,7 +478,7 @@ mod tests {
     #[test]
     fn sqlite_store_rejects_world_metadata_mismatch() {
         let metadata = WorldMetadata::with_seed(42);
-        let store = SqliteChunkStore::open_in_memory(&metadata).unwrap();
+        let store = test_sqlite_store(&metadata);
         let mut incompatible = metadata.clone();
         incompatible.height_chunks += 1;
 
