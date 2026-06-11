@@ -110,6 +110,15 @@ impl BlockStandardMaterials {
             BlockMaterialLayer::CutoutDoubleSided => self.cutout_double_sided.clone(),
         }
     }
+
+    #[cfg(test)]
+    pub(crate) fn test_handles() -> Self {
+        Self {
+            opaque: Handle::default(),
+            cutout_single_sided: Handle::default(),
+            cutout_double_sided: Handle::default(),
+        }
+    }
 }
 
 /// Create a texture atlas with the given padding and sampling settings

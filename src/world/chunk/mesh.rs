@@ -4,19 +4,18 @@ use bevy::math::UVec3;
 use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
-use itertools::Itertools;
 use strum::IntoEnumIterator;
 
 use crate::textures::{BlockStandardMaterials, TextureState};
 use crate::{
     block::{
-        BlockMaterialLayer, BlockTextureMap, BlockType, BlockUpdateMessage, FaceOcclusion,
-        FaceSidedness, block_to_colour,
+        BlockMaterialLayer, BlockTextureMap, BlockType, FaceOcclusion, FaceSidedness,
+        block_to_colour,
     },
     quad::{Direction, Quad, QuadGroups, get_indices, get_normals, get_positions, urect_to_uvs},
 };
 
-use super::{CHUNK_ISIZE, Chunk};
+use super::{CHUNK_ISIZE, Chunk, ChunkNeedsMeshRebuild};
 
 pub struct ChunkMeshPlugin;
 
@@ -31,27 +30,22 @@ pub struct LayeredQuadGroups {
 impl Plugin for ChunkMeshPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(
-            Update,
-            update_mesh_simple.run_if(in_state(TextureState::Finished)),
+            FixedPreUpdate,
+            rebuild_chunk_meshes.run_if(in_state(TextureState::Finished)),
         );
     }
 }
 
-fn update_mesh_simple(
+fn rebuild_chunk_meshes(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     block_materials: Res<BlockStandardMaterials>,
     block_texture_map: Res<BlockTextureMap>,
-    mut block_updates: MessageReader<BlockUpdateMessage>,
-    added_chunks_q: Query<(&Chunk, Entity, Option<&Children>), Added<Chunk>>,
-    chunks_q: Query<(&Chunk, Entity, Option<&Children>)>,
+    chunks_q: Query<(&Chunk, Entity, Option<&Children>), With<ChunkNeedsMeshRebuild>>,
     mesh_children_q: Query<(Entity, &ChunkMaterialLayerMarker), With<Mesh3d>>,
     mut mesh_q: Query<&mut Mesh3d>,
 ) {
-    for (chunk, chunk_entity, children) in added_chunks_q
-        .iter()
-        .chain(chunks_q.iter_many(block_updates.read().map(|u| u.chunk).unique()))
-    {
+    for (chunk, chunk_entity, children) in chunks_q.iter() {
         update_chunk_mesh_children(
             &mut commands,
             &mut meshes,
@@ -63,6 +57,9 @@ fn update_mesh_simple(
             chunk_entity,
             children,
         );
+        commands
+            .entity(chunk_entity)
+            .remove::<ChunkNeedsMeshRebuild>();
     }
 }
 
@@ -272,6 +269,31 @@ mod tests {
 
     fn quad_count(groups: &QuadGroups) -> usize {
         groups.groups.iter().map(Vec::len).sum()
+    }
+
+    #[test]
+    fn mesh_rebuild_marker_is_removed_after_rebuild() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .init_resource::<Assets<Mesh>>()
+            .insert_resource(test_texture_map())
+            .insert_resource(BlockStandardMaterials::test_handles())
+            .add_systems(Update, rebuild_chunk_meshes);
+
+        let mut chunk = Chunk::default();
+        chunk.blocks[0][0][0] = BlockType::Stone;
+        let chunk_entity = app.world_mut().spawn((chunk, ChunkNeedsMeshRebuild)).id();
+
+        app.update();
+
+        let world = app.world();
+        assert!(world.get::<ChunkNeedsMeshRebuild>(chunk_entity).is_none());
+        let children = world.get::<Children>(chunk_entity).unwrap();
+        let mesh_child_count = children
+            .iter()
+            .filter(|child| world.get::<Mesh3d>(*child).is_some())
+            .count();
+        assert_eq!(mesh_child_count, 1);
     }
 
     #[test]

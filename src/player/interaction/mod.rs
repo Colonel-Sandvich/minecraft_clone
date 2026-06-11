@@ -8,7 +8,7 @@ use crate::{
     block::{BlockPos, BlockType, BlockUpdateKind, BlockUpdateMessage},
     world::{
         ACTOR_LAYER, WORLD_LAYER,
-        chunk::{Chunk, ChunkNeedsSave},
+        chunk::{Chunk, ChunkNeedsColliderRebuild, ChunkNeedsMeshRebuild, ChunkNeedsSave},
         dimension::Dimension,
     },
 };
@@ -201,7 +201,11 @@ fn apply_block_interaction_requests(
                     pos,
                     kind: BlockUpdateKind::Break,
                 });
-                commands.entity(chunk_entity).insert(ChunkNeedsSave);
+                commands.entity(chunk_entity).insert((
+                    ChunkNeedsSave,
+                    ChunkNeedsMeshRebuild,
+                    ChunkNeedsColliderRebuild,
+                ));
             }
             BlockInteractionKind::Place => {
                 if block_place_would_intersect(pos, &spatial_query) {
@@ -217,7 +221,11 @@ fn apply_block_interaction_requests(
                     pos,
                     kind: BlockUpdateKind::Place(selected_block.0),
                 });
-                commands.entity(chunk_entity).insert(ChunkNeedsSave);
+                commands.entity(chunk_entity).insert((
+                    ChunkNeedsSave,
+                    ChunkNeedsMeshRebuild,
+                    ChunkNeedsColliderRebuild,
+                ));
             }
         }
     }

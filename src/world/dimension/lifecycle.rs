@@ -9,7 +9,10 @@ use bevy::{
 use crate::{
     player::Player,
     world::{
-        chunk::{CHUNK_SIZE, ChunkNeedsSave, ChunkPosition},
+        chunk::{
+            CHUNK_SIZE, ChunkNeedsColliderRebuild, ChunkNeedsMeshRebuild, ChunkNeedsSave,
+            ChunkPosition,
+        },
         generation::WorldMetadata,
         loading::{ChunkLoadRequest, load_or_generate_chunk},
         storage::ChunkRepository,
@@ -149,6 +152,8 @@ pub(crate) fn finish_chunk_load_tasks(
             .spawn((
                 ChildOf(dimension_entity),
                 ChunkPosition(pos),
+                ChunkNeedsMeshRebuild,
+                ChunkNeedsColliderRebuild,
                 loaded.chunk,
                 Transform::from_translation(pos.as_vec3().mul(CHUNK_SIZE as f32)),
                 Visibility::default(),

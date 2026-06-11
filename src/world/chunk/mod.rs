@@ -28,6 +28,12 @@ pub struct ChunkPosition(pub IVec3);
 #[derive(Component, Debug, Clone, Copy)]
 pub struct ChunkNeedsSave;
 
+#[derive(Component, Debug, Clone, Copy)]
+pub struct ChunkNeedsMeshRebuild;
+
+#[derive(Component, Debug, Clone, Copy)]
+pub struct ChunkNeedsColliderRebuild;
+
 #[derive(Component, Debug, Clone, PartialEq, Eq, Reflect)]
 pub struct Chunk {
     pub blocks: [[[BlockType; CHUNK_SIZE]; CHUNK_SIZE]; CHUNK_SIZE],
