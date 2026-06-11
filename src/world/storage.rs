@@ -21,6 +21,35 @@ const SQLITE_CACHE_SIZE_KIB: i32 = 16 * 1024;
 const SQLITE_MMAP_SIZE_BYTES: i64 = 256 * 1024 * 1024;
 const SQLITE_WAL_AUTOCHECKPOINT_PAGES: i32 = 1_000;
 
+const SQL_CREATE_WORLD_METADATA: &str = "CREATE TABLE IF NOT EXISTS world_metadata (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+)";
+const SQL_CREATE_SQLITE_CHUNKS: &str = "CREATE TABLE IF NOT EXISTS chunks (
+    x INTEGER NOT NULL,
+    z INTEGER NOT NULL,
+    y INTEGER NOT NULL,
+    blocks BLOB NOT NULL,
+    PRIMARY KEY (x, z, y)
+) WITHOUT ROWID";
+#[cfg(feature = "turso-store")]
+const SQL_CREATE_TURSO_CHUNKS: &str = "CREATE TABLE IF NOT EXISTS chunks (
+    x INTEGER NOT NULL,
+    z INTEGER NOT NULL,
+    y INTEGER NOT NULL,
+    blocks BLOB NOT NULL,
+    PRIMARY KEY (x, z, y)
+)";
+const SQL_SELECT_METADATA_VALUE: &str = "SELECT value FROM world_metadata WHERE key = ?1";
+const SQL_INSERT_METADATA_VALUE: &str = "INSERT INTO world_metadata (key, value) VALUES (?1, ?2)";
+const SQL_SELECT_CHUNK: &str = "SELECT blocks FROM chunks WHERE x = ?1 AND z = ?2 AND y = ?3";
+const SQL_UPDATE_CHUNK: &str = "UPDATE chunks
+SET blocks = ?4
+WHERE x = ?1 AND z = ?2 AND y = ?3";
+const SQL_INSERT_CHUNK: &str = "INSERT INTO chunks (
+    x, z, y, blocks
+) VALUES (?1, ?2, ?3, ?4)";
+
 pub trait ChunkStore: Send + Sync + 'static {
     fn load_chunk(&self, pos: IVec3, metadata: &WorldMetadata) -> ChunkStoreResult<Option<Chunk>>;
     fn save_chunk(
@@ -144,37 +173,12 @@ impl SqliteChunkStore {
     fn initialize(connection: &Connection, metadata: &WorldMetadata) -> ChunkStoreResult<()> {
         configure_sqlite_database(connection)?;
 
-        connection.execute_batch(
-            "CREATE TABLE IF NOT EXISTS world_metadata (
-                key TEXT PRIMARY KEY,
-                value TEXT NOT NULL
-            );
+        connection.execute(SQL_CREATE_WORLD_METADATA, [])?;
+        connection.execute(SQL_CREATE_SQLITE_CHUNKS, [])?;
 
-            CREATE TABLE IF NOT EXISTS chunks (
-                x INTEGER NOT NULL,
-                z INTEGER NOT NULL,
-                y INTEGER NOT NULL,
-                blocks BLOB NOT NULL,
-                PRIMARY KEY (x, z, y)
-            ) WITHOUT ROWID;",
-        )?;
-
-        ensure_metadata_value(connection, "seed", metadata.seed.to_string())?;
-        ensure_metadata_value(
-            connection,
-            "generator_version",
-            metadata.generator_version.to_string(),
-        )?;
-        ensure_metadata_value(
-            connection,
-            "chunk_format_version",
-            metadata.chunk_format_version.to_string(),
-        )?;
-        ensure_metadata_value(
-            connection,
-            "height_chunks",
-            metadata.height_chunks.to_string(),
-        )?;
+        for (key, value) in metadata_entries(metadata) {
+            ensure_metadata_value(connection, key, value)?;
+        }
 
         Ok(())
     }
@@ -186,13 +190,9 @@ impl ChunkStore for SqliteChunkStore {
 
         let connection = self.open_connection()?;
         let bytes = connection
-            .query_row(
-                "SELECT blocks
-                FROM chunks
-                WHERE x = ?1 AND z = ?2 AND y = ?3",
-                params![pos.x, pos.z, pos.y],
-                |row| row.get::<_, Vec<u8>>(0),
-            )
+            .query_row(SQL_SELECT_CHUNK, params![pos.x, pos.z, pos.y], |row| {
+                row.get::<_, Vec<u8>>(0)
+            })
             .optional()?;
 
         let Some(bytes) = bytes else {
@@ -210,18 +210,148 @@ impl ChunkStore for SqliteChunkStore {
     ) -> ChunkStoreResult<()> {
         validate_world_metadata(&self.metadata, metadata)?;
 
-        let connection = self.open_connection()?;
-        connection.execute(
-            "INSERT INTO chunks (
-                x, z, y, blocks
-            ) VALUES (?1, ?2, ?3, ?4)
-            ON CONFLICT(x, z, y) DO UPDATE SET
-                blocks = excluded.blocks",
-            params![pos.x, pos.z, pos.y, chunk.to_storage_bytes()],
-        )?;
+        let mut connection = self.open_connection()?;
+        let transaction = connection.transaction()?;
+        let blocks = chunk.to_storage_bytes();
+        if transaction.execute(SQL_UPDATE_CHUNK, params![pos.x, pos.z, pos.y, &blocks])? == 0 {
+            transaction.execute(SQL_INSERT_CHUNK, params![pos.x, pos.z, pos.y, &blocks])?;
+        }
+        transaction.commit()?;
 
         Ok(())
     }
+}
+
+#[cfg(feature = "turso-store")]
+pub struct TursoChunkStore {
+    database: turso::Database,
+    runtime: tokio::runtime::Runtime,
+    metadata: WorldMetadata,
+}
+
+#[cfg(feature = "turso-store")]
+impl TursoChunkStore {
+    pub fn open(path: impl AsRef<Path>, metadata: &WorldMetadata) -> ChunkStoreResult<Self> {
+        let path = path.as_ref();
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+
+        let path = path_to_string(path)?;
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .map_err(|error| ChunkStoreError::Runtime {
+                message: error.to_string(),
+            })?;
+        let database = runtime.block_on(async {
+            turso::Builder::new_local(&path)
+                .experimental_multiprocess_wal(true)
+                .build()
+                .await
+        })?;
+        let store = Self {
+            database,
+            runtime,
+            metadata: metadata.clone(),
+        };
+        store.runtime.block_on(store.initialize(metadata))?;
+        Ok(store)
+    }
+
+    async fn initialize(&self, metadata: &WorldMetadata) -> ChunkStoreResult<()> {
+        let connection = self.database.connect()?;
+        connection.execute(SQL_CREATE_WORLD_METADATA, ()).await?;
+        connection.execute(SQL_CREATE_TURSO_CHUNKS, ()).await?;
+
+        for (key, value) in metadata_entries(metadata) {
+            ensure_turso_metadata_value(&connection, key, value).await?;
+        }
+
+        Ok(())
+    }
+}
+
+#[cfg(feature = "turso-store")]
+impl ChunkStore for TursoChunkStore {
+    fn load_chunk(&self, pos: IVec3, metadata: &WorldMetadata) -> ChunkStoreResult<Option<Chunk>> {
+        validate_world_metadata(&self.metadata, metadata)?;
+
+        self.runtime.block_on(async {
+            let connection = self.database.connect()?;
+            let mut rows = connection
+                .query(SQL_SELECT_CHUNK, (pos.x, pos.z, pos.y))
+                .await?;
+            let Some(row) = rows.next().await? else {
+                return Ok(None);
+            };
+            let bytes = row.get::<Vec<u8>>(0)?;
+
+            Ok(Some(Chunk::try_from_storage_bytes(&bytes)?))
+        })
+    }
+
+    fn save_chunk(
+        &self,
+        pos: IVec3,
+        chunk: &Chunk,
+        metadata: &WorldMetadata,
+    ) -> ChunkStoreResult<()> {
+        validate_world_metadata(&self.metadata, metadata)?;
+        let blocks = chunk.to_storage_bytes();
+
+        self.runtime.block_on(async {
+            let mut connection = self.database.connect()?;
+            let transaction = connection.transaction().await?;
+            let changed = transaction
+                .execute(SQL_UPDATE_CHUNK, (pos.x, pos.z, pos.y, blocks.clone()))
+                .await?;
+            if changed == 0 {
+                transaction
+                    .execute(SQL_INSERT_CHUNK, (pos.x, pos.z, pos.y, blocks))
+                    .await?;
+            }
+            transaction.commit().await?;
+
+            Ok(())
+        })
+    }
+}
+
+#[cfg(feature = "turso-store")]
+async fn ensure_turso_metadata_value(
+    connection: &turso::Connection,
+    key: &'static str,
+    expected: String,
+) -> ChunkStoreResult<()> {
+    let mut rows = connection.query(SQL_SELECT_METADATA_VALUE, (key,)).await?;
+    let Some(row) = rows.next().await? else {
+        connection
+            .execute(SQL_INSERT_METADATA_VALUE, (key, expected))
+            .await?;
+        return Ok(());
+    };
+
+    let existing = row.get::<String>(0)?;
+    if existing == expected {
+        Ok(())
+    } else {
+        Err(ChunkStoreError::WorldMetadataMismatch {
+            key: key.to_owned(),
+            expected,
+            found: existing,
+        })
+    }
+}
+
+#[cfg(feature = "turso-store")]
+fn path_to_string(path: &Path) -> ChunkStoreResult<String> {
+    path.to_str()
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| ChunkStoreError::Io {
+            kind: ErrorKind::InvalidInput,
+            message: format!("database path is not valid UTF-8: {}", path.display()),
+        })
 }
 
 fn configure_sqlite_connection(connection: &Connection) -> ChunkStoreResult<()> {
@@ -249,17 +379,27 @@ pub fn development_world_path(metadata: &WorldMetadata) -> PathBuf {
         .join(format!("seed-{:016x}.sqlite3", metadata.seed))
 }
 
+fn metadata_entries(metadata: &WorldMetadata) -> [(&'static str, String); 4] {
+    [
+        ("seed", metadata.seed.to_string()),
+        ("generator_version", metadata.generator_version.to_string()),
+        (
+            "chunk_format_version",
+            metadata.chunk_format_version.to_string(),
+        ),
+        ("height_chunks", metadata.height_chunks.to_string()),
+    ]
+}
+
 fn ensure_metadata_value(
     connection: &Connection,
     key: &str,
     expected: String,
 ) -> ChunkStoreResult<()> {
     let existing = connection
-        .query_row(
-            "SELECT value FROM world_metadata WHERE key = ?1",
-            params![key],
-            |row| row.get::<_, String>(0),
-        )
+        .query_row(SQL_SELECT_METADATA_VALUE, params![key], |row| {
+            row.get::<_, String>(0)
+        })
         .optional()?;
 
     match existing {
@@ -270,10 +410,7 @@ fn ensure_metadata_value(
             found: existing,
         }),
         None => {
-            connection.execute(
-                "INSERT INTO world_metadata (key, value) VALUES (?1, ?2)",
-                params![key, expected],
-            )?;
+            connection.execute(SQL_INSERT_METADATA_VALUE, params![key, expected])?;
             Ok(())
         }
     }
@@ -358,6 +495,14 @@ pub enum ChunkStoreError {
         expected: String,
         found: String,
     },
+    #[cfg(feature = "turso-store")]
+    Turso {
+        message: String,
+    },
+    #[cfg(feature = "turso-store")]
+    Runtime {
+        message: String,
+    },
 }
 
 impl std::fmt::Display for ChunkStoreError {
@@ -379,6 +524,10 @@ impl std::fmt::Display for ChunkStoreError {
                 f,
                 "world metadata mismatch for {key}: expected {expected}, found {found}"
             ),
+            #[cfg(feature = "turso-store")]
+            Self::Turso { message } => write!(f, "turso error: {message}"),
+            #[cfg(feature = "turso-store")]
+            Self::Runtime { message } => write!(f, "runtime error: {message}"),
         }
     }
 }
@@ -415,6 +564,15 @@ impl From<ChunkDecodeError> for ChunkStoreError {
     }
 }
 
+#[cfg(feature = "turso-store")]
+impl From<turso::Error> for ChunkStoreError {
+    fn from(value: turso::Error) -> Self {
+        Self::Turso {
+            message: value.to_string(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -431,6 +589,12 @@ mod tests {
         path: PathBuf,
     }
 
+    #[cfg(feature = "turso-store")]
+    struct TestTursoStore {
+        store: TursoChunkStore,
+        path: PathBuf,
+    }
+
     impl Deref for TestSqliteStore {
         type Target = SqliteChunkStore;
 
@@ -441,30 +605,76 @@ mod tests {
 
     impl Drop for TestSqliteStore {
         fn drop(&mut self) {
-            for suffix in ["", "-wal", "-shm"] {
-                let _ = std::fs::remove_file(format!("{}{}", self.path.display(), suffix));
-            }
+            remove_test_store_files(&self.path);
+        }
+    }
+
+    #[cfg(feature = "turso-store")]
+    impl Deref for TestTursoStore {
+        type Target = TursoChunkStore;
+
+        fn deref(&self) -> &Self::Target {
+            &self.store
+        }
+    }
+
+    #[cfg(feature = "turso-store")]
+    impl Drop for TestTursoStore {
+        fn drop(&mut self) {
+            remove_test_store_files(&self.path);
+        }
+    }
+
+    fn test_store_path(prefix: &str) -> PathBuf {
+        let id = NEXT_TEST_STORE_ID.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir().join(format!(
+            "minecraft_clone-{prefix}-{}-{id}.sqlite3",
+            std::process::id()
+        ))
+    }
+
+    fn remove_test_store_files(path: &Path) {
+        for suffix in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{}", path.display(), suffix));
         }
     }
 
     fn test_sqlite_store(metadata: &WorldMetadata) -> TestSqliteStore {
-        let id = NEXT_TEST_STORE_ID.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!(
-            "minecraft_clone-test-{}-{id}.sqlite3",
-            std::process::id()
-        ));
-        for suffix in ["", "-wal", "-shm"] {
-            let _ = std::fs::remove_file(format!("{}{}", path.display(), suffix));
-        }
+        let path = test_store_path("sqlite-test");
+        remove_test_store_files(&path);
         let store = SqliteChunkStore::open(&path, metadata).unwrap();
 
         TestSqliteStore { store, path }
+    }
+
+    #[cfg(feature = "turso-store")]
+    fn test_turso_store(metadata: &WorldMetadata) -> TestTursoStore {
+        let path = test_store_path("turso-test");
+        remove_test_store_files(&path);
+        let store = TursoChunkStore::open(&path, metadata).unwrap();
+
+        TestTursoStore { store, path }
     }
 
     #[test]
     fn sqlite_store_roundtrips_full_chunks() {
         let metadata = WorldMetadata::with_seed(42);
         let store = test_sqlite_store(&metadata);
+        let pos = ivec3(-2, 1, 3);
+        let mut chunk = Chunk::default();
+        chunk.blocks[0][0][0] = BlockType::Grass;
+        chunk.blocks[15][15][15] = BlockType::OakLeaves;
+
+        store.save_chunk(pos, &chunk, &metadata).unwrap();
+
+        assert_eq!(store.load_chunk(pos, &metadata).unwrap(), Some(chunk));
+    }
+
+    #[cfg(feature = "turso-store")]
+    #[test]
+    fn turso_store_roundtrips_full_chunks() {
+        let metadata = WorldMetadata::with_seed(42);
+        let store = test_turso_store(&metadata);
         let pos = ivec3(-2, 1, 3);
         let mut chunk = Chunk::default();
         chunk.blocks[0][0][0] = BlockType::Grass;

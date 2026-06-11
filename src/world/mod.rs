@@ -11,6 +11,8 @@ use bevy::prelude::*;
 
 use chunk::ChunkPlugin;
 use dimension::DimensionPlugin;
+#[cfg(feature = "turso-store")]
+use storage::TursoChunkStore;
 use storage::{ChunkRepository, ChunkStoreResult, SqliteChunkStore, development_world_path};
 
 pub use generation::WorldMetadata;
@@ -38,6 +40,14 @@ impl WorldConfig {
         }
     }
 
+    #[cfg(feature = "turso-store")]
+    pub fn turso(metadata: WorldMetadata, path: impl Into<PathBuf>) -> Self {
+        Self {
+            metadata,
+            storage: WorldStorageConfig::Turso { path: path.into() },
+        }
+    }
+
     pub fn development_sqlite(metadata: WorldMetadata) -> Self {
         let path = development_world_path(&metadata);
         Self::sqlite(metadata, path)
@@ -53,7 +63,13 @@ impl Default for WorldConfig {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WorldStorageConfig {
     InMemory,
-    Sqlite { path: PathBuf },
+    Sqlite {
+        path: PathBuf,
+    },
+    #[cfg(feature = "turso-store")]
+    Turso {
+        path: PathBuf,
+    },
 }
 
 pub const WORLD_LAYER: u32 = 1 << 0;
@@ -119,6 +135,16 @@ fn build_chunk_repository(config: &WorldConfig) -> ChunkStoreResult<ChunkReposit
                 seed = config.metadata.seed,
                 path = %path.display(),
                 "Using SQLite chunk store"
+            );
+            Ok(ChunkRepository::new(store))
+        }
+        #[cfg(feature = "turso-store")]
+        WorldStorageConfig::Turso { path } => {
+            let store = TursoChunkStore::open(path, &config.metadata)?;
+            info!(
+                seed = config.metadata.seed,
+                path = %path.display(),
+                "Using Turso chunk store"
             );
             Ok(ChunkRepository::new(store))
         }
