@@ -1,6 +1,7 @@
 use bevy::{asset::LoadedFolder, image::ImageSampler, platform::collections::HashMap, prelude::*};
 
 use crate::block::BlockTextureMap;
+use crate::world::chunk::mesh::ChunkMeshLayer;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, States)]
 pub enum TextureState {
@@ -60,13 +61,30 @@ fn setup(
     let (texture_atlas_nearest, texture_atlas_sources, nearest_texture) =
         create_texture_atlas(loaded_folder, None, ImageSampler::nearest(), &mut textures);
 
-    commands.insert_resource(BlockStandardMaterial(materials.add(StandardMaterial {
-        base_color_texture: Some(nearest_texture),
-        metallic: 0.,
-        reflectance: 0.,
-        alpha_mode: AlphaMode::Mask(0.5),
-        ..default()
-    })));
+    commands.insert_resource(BlockStandardMaterials {
+        opaque: materials.add(StandardMaterial {
+            base_color_texture: Some(nearest_texture.clone()),
+            metallic: 0.,
+            reflectance: 0.,
+            ..default()
+        }),
+        cutout_single_sided: materials.add(StandardMaterial {
+            base_color_texture: Some(nearest_texture.clone()),
+            metallic: 0.,
+            reflectance: 0.,
+            alpha_mode: AlphaMode::Mask(0.5),
+            ..default()
+        }),
+        cutout_double_sided: materials.add(StandardMaterial {
+            base_color_texture: Some(nearest_texture),
+            metallic: 0.,
+            reflectance: 0.,
+            alpha_mode: AlphaMode::Mask(0.5),
+            double_sided: true,
+            cull_mode: None,
+            ..default()
+        }),
+    });
 
     let block_texture_map = create_texture_map(
         loaded_folder,
@@ -78,8 +96,22 @@ fn setup(
     commands.insert_resource(BlockTextureMap(block_texture_map));
 }
 
-#[derive(Resource, Deref)]
-pub struct BlockStandardMaterial(Handle<StandardMaterial>);
+#[derive(Resource)]
+pub struct BlockStandardMaterials {
+    opaque: Handle<StandardMaterial>,
+    cutout_single_sided: Handle<StandardMaterial>,
+    cutout_double_sided: Handle<StandardMaterial>,
+}
+
+impl BlockStandardMaterials {
+    pub fn get(&self, layer: ChunkMeshLayer) -> Handle<StandardMaterial> {
+        match layer {
+            ChunkMeshLayer::Opaque => self.opaque.clone(),
+            ChunkMeshLayer::CutoutSingleSided => self.cutout_single_sided.clone(),
+            ChunkMeshLayer::CutoutDoubleSided => self.cutout_double_sided.clone(),
+        }
+    }
+}
 
 /// Create a texture atlas with the given padding and sampling settings
 /// from the individual sprites in the given folder.

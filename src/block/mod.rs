@@ -24,25 +24,56 @@ pub enum BlockType {
     OakLeaves,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Visibility {
-    Empty,
-    Translucent,
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum BlockRenderLayer {
     Opaque,
+    Cutout,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FaceOcclusion {
+    None,
+    FullCube,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FaceSidedness {
+    Single,
+    Double,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BlockRenderProfile {
+    pub layer: BlockRenderLayer,
+    pub occlusion: FaceOcclusion,
+    pub sidedness: FaceSidedness,
 }
 
 impl BlockType {
-    pub fn visibility(&self) -> Visibility {
+    pub fn render_profile(self) -> Option<BlockRenderProfile> {
         use BlockType::*;
         match self {
-            Air => Visibility::Empty,
-            Glass => Visibility::Translucent,
-            _ => Visibility::Opaque,
+            Air => None,
+            Glass => Some(BlockRenderProfile {
+                layer: BlockRenderLayer::Cutout,
+                occlusion: FaceOcclusion::None,
+                sidedness: FaceSidedness::Single,
+            }),
+            OakLeaves => Some(BlockRenderProfile {
+                layer: BlockRenderLayer::Cutout,
+                occlusion: FaceOcclusion::None,
+                sidedness: FaceSidedness::Double,
+            }),
+            _ => Some(BlockRenderProfile {
+                layer: BlockRenderLayer::Opaque,
+                occlusion: FaceOcclusion::FullCube,
+                sidedness: FaceSidedness::Single,
+            }),
         }
     }
 
     pub fn is_visible(&self) -> bool {
-        self.visibility() != Visibility::Empty
+        self.render_profile().is_some()
     }
 
     pub fn is_solid(&self) -> bool {
@@ -152,6 +183,18 @@ mod tests {
         assert_eq!(BlockType::Glass.storage_id(), 5);
         assert_eq!(BlockType::OakLog.storage_id(), 6);
         assert_eq!(BlockType::OakLeaves.storage_id(), 7);
+    }
+
+    #[test]
+    fn leaves_are_cutout_non_occluding_and_double_sided() {
+        assert_eq!(
+            BlockType::OakLeaves.render_profile(),
+            Some(BlockRenderProfile {
+                layer: BlockRenderLayer::Cutout,
+                occlusion: FaceOcclusion::None,
+                sidedness: FaceSidedness::Double,
+            })
+        );
     }
 }
 

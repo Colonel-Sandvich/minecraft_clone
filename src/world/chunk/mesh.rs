@@ -2,19 +2,63 @@ use bevy::asset::RenderAssetUsages;
 use bevy::camera::primitives::Aabb;
 use bevy::math::UVec3;
 use bevy::mesh::{Indices, PrimitiveTopology};
+use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
 use itertools::Itertools;
 use strum::IntoEnumIterator;
 
-use crate::textures::{BlockStandardMaterial, TextureState};
+use crate::textures::{BlockStandardMaterials, TextureState};
 use crate::{
-    block::{BlockTextureMap, BlockType, BlockUpdateMessage, block_to_colour},
+    block::{
+        BlockRenderLayer, BlockRenderProfile, BlockTextureMap, BlockType, BlockUpdateMessage,
+        FaceOcclusion, FaceSidedness, block_to_colour,
+    },
     quad::{Direction, Quad, QuadGroups, get_indices, get_normals, get_positions, urect_to_uvs},
 };
 
 use super::{CHUNK_ISIZE, Chunk};
 
 pub struct ChunkMeshPlugin;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ChunkMeshLayer {
+    Opaque,
+    CutoutSingleSided,
+    CutoutDoubleSided,
+}
+
+impl ChunkMeshLayer {
+    const ALL: [Self; Self::COUNT] = [
+        Self::Opaque,
+        Self::CutoutSingleSided,
+        Self::CutoutDoubleSided,
+    ];
+    const COUNT: usize = 3;
+
+    fn index(self) -> usize {
+        match self {
+            Self::Opaque => 0,
+            Self::CutoutSingleSided => 1,
+            Self::CutoutDoubleSided => 2,
+        }
+    }
+
+    fn from_render_profile(profile: BlockRenderProfile) -> Self {
+        match (profile.layer, profile.sidedness) {
+            (BlockRenderLayer::Opaque, _) => Self::Opaque,
+            (BlockRenderLayer::Cutout, FaceSidedness::Single) => Self::CutoutSingleSided,
+            (BlockRenderLayer::Cutout, FaceSidedness::Double) => Self::CutoutDoubleSided,
+        }
+    }
+}
+
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
+struct ChunkMeshLayerMarker(ChunkMeshLayer);
+
+#[derive(Debug, Default)]
+pub struct LayeredQuadGroups {
+    pub layers: [QuadGroups; ChunkMeshLayer::COUNT],
+}
 
 impl Plugin for ChunkMeshPlugin {
     fn build(&self, app: &mut App) {
@@ -28,57 +72,99 @@ impl Plugin for ChunkMeshPlugin {
 fn update_mesh_simple(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
-    block_material: Res<BlockStandardMaterial>,
+    block_materials: Res<BlockStandardMaterials>,
     block_texture_map: Res<BlockTextureMap>,
     mut block_updates: MessageReader<BlockUpdateMessage>,
     added_chunks_q: Query<(&Chunk, Entity, Option<&Children>), Added<Chunk>>,
     chunks_q: Query<(&Chunk, Entity, Option<&Children>)>,
-    mut mesh_q: Query<(Entity, &mut Mesh3d)>,
+    mesh_children_q: Query<(Entity, &ChunkMeshLayerMarker), With<Mesh3d>>,
+    mut mesh_q: Query<&mut Mesh3d>,
 ) {
     for (chunk, chunk_entity, children) in added_chunks_q
         .iter()
         .chain(chunks_q.iter_many(block_updates.read().map(|u| u.chunk).unique()))
     {
-        let Some(mesh) = make_mesh_simple(chunk, &block_texture_map) else {
-            if let Some(children) = children {
-                let mut meshes = mesh_q.iter_many(children);
-
-                if let Some((pbr_entity, _)) = meshes.fetch_next() {
-                    commands.get_entity(pbr_entity).unwrap().despawn();
-                };
-
-                assert_eq!(None, meshes.fetch_next());
-            }
-            continue;
-        };
-
-        let mesh_handle = meshes.add(mesh);
-
-        if let Some(children) = children {
-            let mut meshes = mesh_q.iter_many_mut(children);
-
-            if let Some((pbr_entity, mut old_mesh)) = meshes.fetch_next() {
-                *old_mesh = Mesh3d(mesh_handle);
-                // Recompute Aabb
-                commands.get_entity(pbr_entity).unwrap().remove::<Aabb>();
-                continue;
-            };
-        };
-
-        commands.spawn((
-            ChildOf(chunk_entity),
-            Mesh3d(mesh_handle),
-            MeshMaterial3d(block_material.clone()),
-        ));
+        update_chunk_mesh_children(
+            &mut commands,
+            &mut meshes,
+            &block_materials,
+            &block_texture_map,
+            &mesh_children_q,
+            &mut mesh_q,
+            chunk,
+            chunk_entity,
+            children,
+        );
     }
 }
 
-pub fn make_mesh_simple(chunk: &Chunk, block_texture_map: &BlockTextureMap) -> Option<Mesh> {
-    make_mesh_from_quad_groups(&make_quad_groups(chunk, block_texture_map))
+fn update_chunk_mesh_children(
+    commands: &mut Commands,
+    meshes: &mut Assets<Mesh>,
+    block_materials: &BlockStandardMaterials,
+    block_texture_map: &BlockTextureMap,
+    mesh_children_q: &Query<(Entity, &ChunkMeshLayerMarker), With<Mesh3d>>,
+    mesh_q: &mut Query<&mut Mesh3d>,
+    chunk: &Chunk,
+    chunk_entity: Entity,
+    children: Option<&Children>,
+) {
+    let existing_mesh_children = children
+        .map(|children| {
+            mesh_children_q
+                .iter_many(children)
+                .map(|(entity, marker)| (marker.0, entity))
+                .collect::<HashMap<_, _>>()
+        })
+        .unwrap_or_default();
+
+    let mut updated_layers = Vec::new();
+    for (layer, mesh) in make_chunk_meshes(chunk, block_texture_map) {
+        let mesh_handle = meshes.add(mesh);
+        updated_layers.push(layer);
+
+        if let Some(entity) = existing_mesh_children.get(&layer) {
+            *mesh_q.get_mut(*entity).unwrap() = Mesh3d(mesh_handle);
+            // Recompute Aabb after swapping mesh data.
+            commands.entity(*entity).remove::<Aabb>();
+            continue;
+        }
+
+        commands.spawn((
+            ChildOf(chunk_entity),
+            ChunkMeshLayerMarker(layer),
+            Mesh3d(mesh_handle),
+            MeshMaterial3d(block_materials.get(layer)),
+        ));
+    }
+
+    for (layer, entity) in existing_mesh_children {
+        if updated_layers.contains(&layer) {
+            continue;
+        }
+
+        commands.entity(entity).despawn();
+    }
 }
 
-pub fn make_quad_groups(chunk: &Chunk, block_texture_map: &BlockTextureMap) -> QuadGroups {
-    let mut buffer = QuadGroups::default();
+pub fn make_chunk_meshes(
+    chunk: &Chunk,
+    block_texture_map: &BlockTextureMap,
+) -> Vec<(ChunkMeshLayer, Mesh)> {
+    let quad_groups = make_layered_quad_groups(chunk, block_texture_map);
+    ChunkMeshLayer::ALL
+        .into_iter()
+        .filter_map(|layer| {
+            make_mesh_from_quad_groups(&quad_groups.layers[layer.index()]).map(|mesh| (layer, mesh))
+        })
+        .collect()
+}
+
+pub fn make_layered_quad_groups(
+    chunk: &Chunk,
+    block_texture_map: &BlockTextureMap,
+) -> LayeredQuadGroups {
+    let mut buffer = LayeredQuadGroups::default();
 
     for x in 0..CHUNK_ISIZE {
         for y in 0..CHUNK_ISIZE {
@@ -87,9 +173,9 @@ pub fn make_quad_groups(chunk: &Chunk, block_texture_map: &BlockTextureMap) -> Q
                     continue;
                 };
 
-                if !block.is_visible() {
+                let Some(profile) = block.render_profile() else {
                     continue;
-                }
+                };
 
                 let neighbours = [
                     chunk.get_i(x - 1, y, z),
@@ -103,27 +189,49 @@ pub fn make_quad_groups(chunk: &Chunk, block_texture_map: &BlockTextureMap) -> Q
                 for (neighbour, side) in neighbours.into_iter().zip(Direction::iter()) {
                     let neighbour = neighbour.unwrap_or(BlockType::Air);
 
-                    use crate::block::Visibility::*;
-
-                    if match (block.visibility(), neighbour.visibility()) {
-                        (Opaque, Empty) | (Opaque, Translucent) | (Translucent, Empty) => false,
-                        (Translucent, Translucent) => block == neighbour,
-                        (_, _) => true,
-                    } {
+                    if !should_emit_face(block, neighbour, side) {
                         continue;
                     }
 
-                    buffer.groups[side as usize].push(Quad {
-                        voxel: UVec3::from_slice(&[x, y, z].map(|u| u.try_into().unwrap())),
-                        uv: block_texture_map.block_to_mesh(block, side),
-                        color: block_to_colour(block, side),
-                    });
+                    buffer.layers[ChunkMeshLayer::from_render_profile(profile).index()].groups
+                        [side as usize]
+                        .push(Quad {
+                            voxel: UVec3::from_slice(&[x, y, z].map(|u| u.try_into().unwrap())),
+                            uv: block_texture_map.block_to_mesh(block, side),
+                            color: block_to_colour(block, side),
+                        });
                 }
             }
         }
     }
 
     buffer
+}
+
+fn should_emit_face(block: BlockType, neighbour: BlockType, side: Direction) -> bool {
+    let Some(block_profile) = block.render_profile() else {
+        return false;
+    };
+    let Some(neighbour_profile) = neighbour.render_profile() else {
+        return true;
+    };
+
+    if neighbour_profile.occlusion == FaceOcclusion::FullCube {
+        return false;
+    }
+
+    if block == neighbour
+        && block_profile.occlusion == FaceOcclusion::None
+        && neighbour_profile.occlusion == FaceOcclusion::None
+    {
+        return block_profile.sidedness == FaceSidedness::Double && is_positive_side(side);
+    }
+
+    true
+}
+
+fn is_positive_side(side: Direction) -> bool {
+    matches!(side, Direction::Right | Direction::Up | Direction::Backward)
 }
 
 pub fn make_mesh_from_quad_groups(quad_groups: &QuadGroups) -> Option<Mesh> {
@@ -165,4 +273,94 @@ pub fn make_mesh_from_quad_groups(quad_groups: &QuadGroups) -> Option<Mesh> {
     mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colours);
 
     Some(mesh)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bevy::{math::Rect, platform::collections::HashMap};
+    use strum::IntoEnumIterator;
+
+    use crate::block::block_and_side_to_texture_path;
+
+    fn test_texture_map() -> BlockTextureMap {
+        let mut paths = HashMap::default();
+
+        for block in BlockType::iter() {
+            if block == BlockType::Air {
+                continue;
+            }
+
+            for side in Direction::iter() {
+                paths.insert(
+                    block_and_side_to_texture_path(block, side).to_owned(),
+                    Rect::new(0.0, 0.0, 1.0, 1.0),
+                );
+            }
+        }
+
+        BlockTextureMap(paths)
+    }
+
+    fn quad_count(groups: &QuadGroups) -> usize {
+        groups.groups.iter().map(Vec::len).sum()
+    }
+
+    #[test]
+    fn adjacent_leaves_emit_one_shared_double_sided_face() {
+        let texture_map = test_texture_map();
+        let mut chunk = Chunk::default();
+        chunk.blocks[0][0][0] = BlockType::OakLeaves;
+        chunk.blocks[1][0][0] = BlockType::OakLeaves;
+
+        let groups = make_layered_quad_groups(&chunk, &texture_map);
+        let leaf_groups = &groups.layers[ChunkMeshLayer::CutoutDoubleSided.index()];
+
+        assert_eq!(quad_count(leaf_groups), 11);
+        assert_eq!(
+            groups.layers[ChunkMeshLayer::Opaque.index()]
+                .groups
+                .iter()
+                .map(Vec::len)
+                .sum::<usize>(),
+            0
+        );
+        assert_eq!(leaf_groups.groups[Direction::Right as usize].len(), 2);
+        assert_eq!(leaf_groups.groups[Direction::Left as usize].len(), 1);
+    }
+
+    #[test]
+    fn leaves_do_not_occlude_opaque_faces() {
+        let texture_map = test_texture_map();
+        let mut chunk = Chunk::default();
+        chunk.blocks[0][0][0] = BlockType::Stone;
+        chunk.blocks[1][0][0] = BlockType::OakLeaves;
+
+        let groups = make_layered_quad_groups(&chunk, &texture_map);
+        let opaque_groups = &groups.layers[ChunkMeshLayer::Opaque.index()];
+        let leaf_groups = &groups.layers[ChunkMeshLayer::CutoutDoubleSided.index()];
+
+        assert_eq!(quad_count(opaque_groups), 6);
+        assert_eq!(quad_count(leaf_groups), 5);
+        assert_eq!(opaque_groups.groups[Direction::Right as usize].len(), 1);
+        assert_eq!(leaf_groups.groups[Direction::Left as usize].len(), 0);
+    }
+
+    #[test]
+    fn chunk_meshes_are_split_by_render_layer() {
+        let texture_map = test_texture_map();
+        let mut chunk = Chunk::default();
+        chunk.blocks[0][0][0] = BlockType::Stone;
+        chunk.blocks[3][0][0] = BlockType::OakLeaves;
+
+        let layers = make_chunk_meshes(&chunk, &texture_map)
+            .into_iter()
+            .map(|(layer, _)| layer)
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            layers,
+            vec![ChunkMeshLayer::Opaque, ChunkMeshLayer::CutoutDoubleSided]
+        );
+    }
 }
