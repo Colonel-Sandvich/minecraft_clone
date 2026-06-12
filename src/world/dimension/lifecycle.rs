@@ -22,7 +22,7 @@ use crate::{
 use super::{
     Active, Dimension,
     tasks::{ChunkLoadBudget, ChunkLoadTasks, ChunkSpawnBudget},
-    view::chunk_positions_in_view,
+    view::{ViewDistance, chunk_positions_in_view},
 };
 
 pub(crate) fn maintain_chunk_view(
@@ -31,10 +31,15 @@ pub(crate) fn maintain_chunk_view(
     maybe_player_q: Option<Single<&Transform, With<Player>>>,
     dirty_chunks: Query<Option<&ChunkNeedsSave>>,
     metadata: Res<WorldMetadata>,
+    view_distance: Res<ViewDistance>,
     mut load_tasks: ResMut<ChunkLoadTasks>,
 ) {
     let centre = maybe_player_q.map_or(Transform::default(), |q| **q);
-    let chunks_in_view = chunk_positions_in_view(centre.translation, metadata.height_chunks);
+    let chunks_in_view = chunk_positions_in_view(
+        centre.translation,
+        metadata.height_chunks,
+        view_distance.chunks(),
+    );
     let chunks_in_view_set = chunks_in_view.iter().copied().collect::<HashSet<_>>();
 
     let (mut dim, _) = dimension.into_inner();
@@ -63,6 +68,7 @@ pub(crate) fn start_chunk_load_tasks(
     maybe_player_q: Option<Single<&Transform, With<Player>>>,
     repository: Res<ChunkRepository>,
     metadata: Res<WorldMetadata>,
+    view_distance: Res<ViewDistance>,
     load_budget: Res<ChunkLoadBudget>,
     mut load_tasks: ResMut<ChunkLoadTasks>,
 ) {
@@ -82,7 +88,11 @@ pub(crate) fn start_chunk_load_tasks(
     let thread_pool = AsyncComputeTaskPool::get();
     let mut started = 0;
 
-    for pos in chunk_positions_in_view(centre.translation, metadata.height_chunks) {
+    for pos in chunk_positions_in_view(
+        centre.translation,
+        metadata.height_chunks,
+        view_distance.chunks(),
+    ) {
         if started >= available_slots {
             break;
         }
@@ -106,6 +116,7 @@ pub(crate) fn finish_chunk_load_tasks(
     spawn_budget: Res<ChunkSpawnBudget>,
     mut load_tasks: ResMut<ChunkLoadTasks>,
     metadata: Res<WorldMetadata>,
+    view_distance: Res<ViewDistance>,
 ) {
     if spawn_budget.0 == 0 {
         return;
@@ -113,7 +124,11 @@ pub(crate) fn finish_chunk_load_tasks(
 
     let centre = maybe_player_q.map_or(Transform::default(), |q| **q);
     let mut completed = Vec::new();
-    for pos in chunk_positions_in_view(centre.translation, metadata.height_chunks) {
+    for pos in chunk_positions_in_view(
+        centre.translation,
+        metadata.height_chunks,
+        view_distance.chunks(),
+    ) {
         if completed.len() >= spawn_budget.0 {
             break;
         }
@@ -169,29 +184,33 @@ mod tests {
     use super::*;
     use bevy::platform::collections::HashMap;
 
+    use crate::world::chunk::Chunk;
     use crate::world::storage::{
         ChunkStore, ChunkStoreError, ChunkStoreResult, InMemoryChunkStore,
     };
-    use crate::world::{chunk::Chunk, dimension::VIEW_DISTANCE};
+
+    const TEST_VIEW_DISTANCE: i32 = 14;
 
     fn test_metadata() -> WorldMetadata {
         WorldMetadata::with_seed(1)
     }
 
     fn expected_chunk_count(metadata: &WorldMetadata) -> usize {
-        chunk_positions_in_view(Vec3::ZERO, metadata.height_chunks).len()
+        chunk_positions_in_view(Vec3::ZERO, metadata.height_chunks, TEST_VIEW_DISTANCE).len()
     }
 
     fn add_chunk_lifecycle_systems(app: &mut App) {
-        app.insert_resource(ChunkLoadTasks::default()).add_systems(
-            Update,
-            (
-                maintain_chunk_view,
-                start_chunk_load_tasks,
-                finish_chunk_load_tasks,
-            )
-                .chain(),
-        );
+        app.insert_resource(ChunkLoadTasks::default())
+            .insert_resource(ViewDistance::new(TEST_VIEW_DISTANCE))
+            .add_systems(
+                Update,
+                (
+                    maintain_chunk_view,
+                    start_chunk_load_tasks,
+                    finish_chunk_load_tasks,
+                )
+                    .chain(),
+            );
     }
 
     fn update_until(app: &mut App, mut predicate: impl FnMut(&World) -> bool) {
@@ -209,6 +228,7 @@ mod tests {
     #[test]
     fn gen_chunks_in_view_unloads_chunks_outside_view() {
         let metadata = test_metadata();
+        let moved_chunk_x = TEST_VIEW_DISTANCE + 2;
         let mut app = App::new();
         app.add_plugins(MinimalPlugins)
             .insert_resource(metadata.clone())
@@ -252,12 +272,12 @@ mod tests {
             .entity_mut(player)
             .get_mut::<Transform>()
             .unwrap()
-            .translation = Vec3::new(CHUNK_SIZE as f32 * 10.0, 0.0, 0.0);
+            .translation = Vec3::new(CHUNK_SIZE as f32 * moved_chunk_x as f32, 0.0, 0.0);
 
         update_until(&mut app, |world| {
             let dimension = world.get::<Dimension>(dimension_entity).unwrap();
             dimension.loaded_chunk_count() == expected_chunk_count(&metadata)
-                && dimension.chunk_entity(ivec3(10, 0, 0)).is_some()
+                && dimension.chunk_entity(ivec3(moved_chunk_x, 0, 0)).is_some()
         });
 
         let dimension = app.world().get::<Dimension>(dimension_entity).unwrap();
@@ -267,7 +287,7 @@ mod tests {
             expected_chunk_count(&metadata)
         );
         assert!(dimension.chunk_entity(IVec3::ZERO).is_none());
-        assert!(dimension.chunk_entity(ivec3(10, 0, 0)).is_some());
+        assert!(dimension.chunk_entity(ivec3(moved_chunk_x, 0, 0)).is_some());
         assert!(app.world().get_entity(origin_chunk).is_err());
     }
 
@@ -406,6 +426,7 @@ mod tests {
             .insert_resource(metadata.clone())
             .insert_resource(repository)
             .insert_resource(ChunkLoadTasks::default())
+            .insert_resource(ViewDistance::new(TEST_VIEW_DISTANCE))
             .add_systems(Update, maintain_chunk_view);
 
         let chunk_entity = app
@@ -426,7 +447,7 @@ mod tests {
         app.world_mut().spawn((
             Player::default(),
             Transform::from_translation(Vec3::new(
-                CHUNK_SIZE as f32 * (VIEW_DISTANCE + 2) as f32,
+                CHUNK_SIZE as f32 * (TEST_VIEW_DISTANCE + 2) as f32,
                 0.0,
                 0.0,
             )),

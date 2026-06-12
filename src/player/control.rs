@@ -1,6 +1,6 @@
 use crate::{
     mob::controller::{FlyController, Flying, Velocity},
-    world::generation::WorldMetadata,
+    world::{dimension::ViewDistance, generation::WorldMetadata},
 };
 
 use super::{
@@ -20,6 +20,7 @@ impl Plugin for ControlPlayerPlugin {
         app.add_systems(PreUpdate, change_gamemode);
         app.add_systems(PreUpdate, toggle_fly);
         app.add_systems(PreUpdate, debug_reset_character);
+        app.add_systems(PreUpdate, adjust_view_distance);
         app.add_systems(PreUpdate, toggle_grab_cursor);
     }
 }
@@ -38,6 +39,8 @@ pub struct KeyBindings {
     pub toggle_fly: KeyCode,
     pub change_gamemode: KeyCode,
     pub debug_reset_character: KeyCode,
+    pub view_distance_decrease: KeyCode,
+    pub view_distance_increase: KeyCode,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -100,6 +103,8 @@ impl Default for KeyBindings {
             toggle_fly: KeyCode::KeyF,
             change_gamemode: KeyCode::F4,
             debug_reset_character: KeyCode::KeyR,
+            view_distance_decrease: KeyCode::BracketLeft,
+            view_distance_increase: KeyCode::BracketRight,
         }
     }
 }
@@ -164,6 +169,26 @@ fn debug_reset_character(
         position.0 = spawn_point;
         *transform = Transform::from_translation(spawn_point);
         camera.rotation = Transform::default().looking_to(Vec3::X, Vec3::Y).rotation;
+    }
+}
+
+fn adjust_view_distance(
+    keys: Res<ButtonInput<KeyCode>>,
+    key_bindings: Res<KeyBindings>,
+    mut view_distance: ResMut<ViewDistance>,
+) {
+    let old_distance = view_distance.chunks();
+
+    if keys.just_pressed(key_bindings.view_distance_decrease) {
+        view_distance.decrease();
+    }
+    if keys.just_pressed(key_bindings.view_distance_increase) {
+        view_distance.increase();
+    }
+
+    let new_distance = view_distance.chunks();
+    if new_distance != old_distance {
+        info!(view_distance = new_distance, "View distance changed");
     }
 }
 

@@ -18,7 +18,7 @@ use super::{generation::WorldMetadata, storage::ChunkRepository};
 
 pub use self::{
     tasks::{ChunkLoadBudget, ChunkSpawnBudget},
-    view::{VIEW_DISTANCE, chunk_positions_in_view},
+    view::{ViewDistance, chunk_positions_in_view},
 };
 
 #[derive(Default, Component)]
@@ -46,7 +46,8 @@ impl Plugin for DimensionPlugin {
             .init_resource::<ChunkSpawnBudget>()
             .init_resource::<ChunkSaveBudget>()
             .init_resource::<ChunkSaveTasks>()
-            .init_resource::<ChunkLoadTasks>();
+            .init_resource::<ChunkLoadTasks>()
+            .init_resource::<ViewDistance>();
 
         app.add_systems(
             OnEnter(GameState::GenWorld),
