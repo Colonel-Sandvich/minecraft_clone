@@ -13,7 +13,10 @@ use chunk::ChunkPlugin;
 use dimension::DimensionPlugin;
 #[cfg(feature = "turso-store")]
 use storage::TursoChunkStore;
-use storage::{ChunkRepository, ChunkStoreResult, SqliteChunkStore, development_world_path};
+use storage::{
+    ChunkRepository, ChunkStoreResult, InMemoryChunkStore, NoopChunkStore, SqliteChunkStore,
+    development_world_path,
+};
 
 pub use generation::WorldMetadata;
 
@@ -30,6 +33,13 @@ impl WorldConfig {
         Self {
             metadata,
             storage: WorldStorageConfig::InMemory,
+        }
+    }
+
+    pub fn noop(metadata: WorldMetadata) -> Self {
+        Self {
+            metadata,
+            storage: WorldStorageConfig::Noop,
         }
     }
 
@@ -63,6 +73,7 @@ impl Default for WorldConfig {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WorldStorageConfig {
     InMemory,
+    Noop,
     Sqlite {
         path: PathBuf,
     },
@@ -127,7 +138,15 @@ fn build_chunk_repository(config: &WorldConfig) -> ChunkStoreResult<ChunkReposit
     match &config.storage {
         WorldStorageConfig::InMemory => {
             info!(seed = config.metadata.seed, "Using in-memory chunk store");
-            Ok(ChunkRepository::default())
+            Ok(ChunkRepository::new(InMemoryChunkStore::new(
+                config.metadata.clone(),
+            )))
+        }
+        WorldStorageConfig::Noop => {
+            info!(seed = config.metadata.seed, "Using no-op chunk store");
+            Ok(ChunkRepository::new(NoopChunkStore::new(
+                config.metadata.clone(),
+            )))
         }
         WorldStorageConfig::Sqlite { path } => {
             let store = SqliteChunkStore::open(path, &config.metadata)?;
@@ -175,5 +194,14 @@ mod tests {
                 path: development_world_path(&metadata)
             }
         );
+    }
+
+    #[test]
+    fn noop_world_config_is_selectable() {
+        let metadata = WorldMetadata::with_seed(42);
+        let config = WorldConfig::noop(metadata.clone());
+
+        assert_eq!(config.metadata, metadata);
+        assert_eq!(config.storage, WorldStorageConfig::Noop);
     }
 }

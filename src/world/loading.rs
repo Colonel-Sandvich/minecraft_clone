@@ -5,19 +5,21 @@ use rusqlite::ErrorCode;
 
 use crate::world::{
     chunk::Chunk,
-    generation::{WorldMetadata, generate_chunk},
+    generation::generate_chunk,
     storage::{ChunkRepository, ChunkStoreError},
 };
+
+#[cfg(feature = "turso-store")]
+use crate::world::storage::TursoStoreErrorKind;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChunkLoadRequest {
     pub pos: IVec3,
-    pub metadata: WorldMetadata,
 }
 
 impl ChunkLoadRequest {
-    pub const fn new(pos: IVec3, metadata: WorldMetadata) -> Self {
-        Self { pos, metadata }
+    pub const fn new(pos: IVec3) -> Self {
+        Self { pos }
     }
 }
 
@@ -94,7 +96,7 @@ pub fn load_or_generate_chunk(
     request: ChunkLoadRequest,
     repository: ChunkRepository,
 ) -> ChunkLoadOutput {
-    match repository.load_chunk(request.pos, &request.metadata) {
+    match repository.load_chunk(request.pos) {
         Ok(Some(chunk)) => ChunkLoadOutput {
             pos: request.pos,
             result: Ok(LoadedChunk {
@@ -103,7 +105,7 @@ pub fn load_or_generate_chunk(
             }),
         },
         Ok(None) => {
-            let chunk = generate_chunk(&request.metadata, request.pos);
+            let chunk = generate_chunk(repository.metadata(), request.pos);
 
             ChunkLoadOutput {
                 pos: request.pos,
@@ -123,6 +125,10 @@ pub fn load_or_generate_chunk(
 pub fn classify_load_error(error: ChunkStoreError) -> ChunkLoadError {
     match &error {
         ChunkStoreError::Sqlite { code, .. } if is_transient_sqlite_error(*code) => {
+            ChunkLoadError::transient(error)
+        }
+        #[cfg(feature = "turso-store")]
+        ChunkStoreError::Turso { kind, .. } if is_transient_turso_error(*kind) => {
             ChunkLoadError::transient(error)
         }
         ChunkStoreError::Io { kind, .. } if is_transient_io_error(*kind) => {
@@ -146,16 +152,28 @@ fn is_transient_io_error(kind: ErrorKind) -> bool {
     )
 }
 
+#[cfg(feature = "turso-store")]
+fn is_transient_turso_error(kind: TursoStoreErrorKind) -> bool {
+    match kind {
+        TursoStoreErrorKind::Busy
+        | TursoStoreErrorKind::BusySnapshot
+        | TursoStoreErrorKind::Interrupt => true,
+        TursoStoreErrorKind::Io(kind) => is_transient_io_error(kind),
+        TursoStoreErrorKind::Other => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::world::{generation::WorldMetadata, storage::InMemoryChunkStore};
 
     #[test]
     fn generated_chunks_are_not_saved_by_loading() {
         let metadata = WorldMetadata::with_seed(77);
-        let repository = ChunkRepository::default();
+        let repository = ChunkRepository::new(InMemoryChunkStore::new(metadata.clone()));
         let pos = ivec3(3, 0, -1);
-        let request = ChunkLoadRequest::new(pos, metadata.clone());
+        let request = ChunkLoadRequest::new(pos);
 
         let generated = load_or_generate_chunk(request.clone(), repository.clone());
         let stored = load_or_generate_chunk(request, repository.clone());
@@ -166,32 +184,21 @@ mod tests {
         assert_eq!(generated.source, ChunkLoadSource::Generated);
         assert_eq!(stored.source, ChunkLoadSource::Generated);
         assert_eq!(generated.chunk, stored.chunk);
-        assert_eq!(repository.load_chunk(pos, &metadata).unwrap(), None);
+        assert_eq!(repository.load_chunk(pos).unwrap(), None);
     }
 
     #[test]
-    fn storage_errors_are_not_regenerated_over() {
+    fn stored_chunks_are_not_regenerated_over() {
         let metadata = WorldMetadata::with_seed(77);
-        let repository = ChunkRepository::default();
+        let repository = ChunkRepository::new(InMemoryChunkStore::new(metadata.clone()));
         let pos = ivec3(3, 0, -1);
-        let mut incompatible = metadata.clone();
-        incompatible.generator_version += 1;
 
-        repository
-            .save_chunk(pos, &Chunk::default(), &metadata)
-            .unwrap();
+        repository.save_chunk(pos, &Chunk::default()).unwrap();
 
-        let loaded = load_or_generate_chunk(
-            ChunkLoadRequest::new(pos, incompatible.clone()),
-            repository.clone(),
-        );
+        let loaded = load_or_generate_chunk(ChunkLoadRequest::new(pos), repository.clone());
 
-        let error = loaded.result.unwrap_err();
-        assert_eq!(error.kind, ChunkLoadErrorKind::Permanent);
-        assert!(matches!(
-            error.source,
-            ChunkStoreError::WorldMetadataMismatch { .. }
-        ));
+        assert_eq!(repository.metadata(), &metadata);
+        assert_eq!(loaded.result.unwrap().source, ChunkLoadSource::Stored);
     }
 
     #[test]
@@ -214,5 +221,16 @@ mod tests {
         assert_eq!(transient.kind, ChunkLoadErrorKind::Transient);
         assert_eq!(permanent.kind, ChunkLoadErrorKind::Permanent);
         assert_eq!(permission.kind, ChunkLoadErrorKind::Permanent);
+    }
+
+    #[cfg(feature = "turso-store")]
+    #[test]
+    fn turso_busy_errors_are_transient() {
+        let error = classify_load_error(ChunkStoreError::Turso {
+            kind: TursoStoreErrorKind::Busy,
+            message: "database is busy".to_owned(),
+        });
+
+        assert_eq!(error.kind, ChunkLoadErrorKind::Transient);
     }
 }

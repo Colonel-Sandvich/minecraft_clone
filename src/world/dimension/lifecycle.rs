@@ -91,7 +91,7 @@ pub(crate) fn start_chunk_load_tasks(
             continue;
         }
 
-        let request = ChunkLoadRequest::new(pos, metadata.clone());
+        let request = ChunkLoadRequest::new(pos);
         let repository = repository.clone();
         let task = thread_pool.spawn(async move { load_or_generate_chunk(request, repository) });
         load_tasks.tasks.insert(pos, task);
@@ -169,7 +169,9 @@ mod tests {
     use super::*;
     use bevy::platform::collections::HashMap;
 
-    use crate::world::storage::{ChunkStore, ChunkStoreError, ChunkStoreResult};
+    use crate::world::storage::{
+        ChunkStore, ChunkStoreError, ChunkStoreResult, InMemoryChunkStore,
+    };
     use crate::world::{chunk::Chunk, dimension::VIEW_DISTANCE};
 
     fn test_metadata() -> WorldMetadata {
@@ -210,7 +212,9 @@ mod tests {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins)
             .insert_resource(metadata.clone())
-            .insert_resource(ChunkRepository::default())
+            .insert_resource(ChunkRepository::new(InMemoryChunkStore::new(
+                metadata.clone(),
+            )))
             .insert_resource(ChunkLoadBudget(usize::MAX))
             .insert_resource(ChunkSpawnBudget(usize::MAX));
         add_chunk_lifecycle_systems(&mut app);
@@ -273,7 +277,9 @@ mod tests {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins)
             .insert_resource(metadata.clone())
-            .insert_resource(ChunkRepository::default())
+            .insert_resource(ChunkRepository::new(InMemoryChunkStore::new(
+                metadata.clone(),
+            )))
             .insert_resource(ChunkLoadBudget(1))
             .insert_resource(ChunkSpawnBudget(0));
         add_chunk_lifecycle_systems(&mut app);
@@ -304,15 +310,16 @@ mod tests {
         );
     }
 
-    #[derive(Default)]
-    struct FailingLoadStore;
+    struct FailingLoadStore {
+        metadata: WorldMetadata,
+    }
 
     impl ChunkStore for FailingLoadStore {
-        fn load_chunk(
-            &self,
-            _pos: IVec3,
-            _metadata: &WorldMetadata,
-        ) -> ChunkStoreResult<Option<Chunk>> {
+        fn metadata(&self) -> &WorldMetadata {
+            &self.metadata
+        }
+
+        fn load_chunk(&self, _pos: IVec3) -> ChunkStoreResult<Option<Chunk>> {
             Err(ChunkStoreError::WorldMetadataMismatch {
                 key: "seed".to_owned(),
                 expected: "1".to_owned(),
@@ -320,12 +327,7 @@ mod tests {
             })
         }
 
-        fn save_chunk(
-            &self,
-            _pos: IVec3,
-            _chunk: &Chunk,
-            _metadata: &WorldMetadata,
-        ) -> ChunkStoreResult<()> {
+        fn save_chunk(&self, _pos: IVec3, _chunk: &Chunk) -> ChunkStoreResult<()> {
             Ok(())
         }
     }
@@ -336,8 +338,10 @@ mod tests {
         metadata.height_chunks = 1;
         let mut app = App::new();
         app.add_plugins(MinimalPlugins)
-            .insert_resource(metadata)
-            .insert_resource(ChunkRepository::new(FailingLoadStore))
+            .insert_resource(metadata.clone())
+            .insert_resource(ChunkRepository::new(FailingLoadStore {
+                metadata: metadata.clone(),
+            }))
             .insert_resource(ChunkLoadBudget(1))
             .insert_resource(ChunkSpawnBudget(usize::MAX));
         add_chunk_lifecycle_systems(&mut app);
@@ -369,24 +373,20 @@ mod tests {
         assert!(!load_tasks.tasks.contains_key(&IVec3::ZERO));
     }
 
-    #[derive(Default)]
-    struct FailingSaveStore;
+    struct FailingSaveStore {
+        metadata: WorldMetadata,
+    }
 
     impl ChunkStore for FailingSaveStore {
-        fn load_chunk(
-            &self,
-            _pos: IVec3,
-            _metadata: &WorldMetadata,
-        ) -> ChunkStoreResult<Option<Chunk>> {
+        fn metadata(&self) -> &WorldMetadata {
+            &self.metadata
+        }
+
+        fn load_chunk(&self, _pos: IVec3) -> ChunkStoreResult<Option<Chunk>> {
             Ok(None)
         }
 
-        fn save_chunk(
-            &self,
-            _pos: IVec3,
-            _chunk: &Chunk,
-            _metadata: &WorldMetadata,
-        ) -> ChunkStoreResult<()> {
+        fn save_chunk(&self, _pos: IVec3, _chunk: &Chunk) -> ChunkStoreResult<()> {
             Err(ChunkStoreError::Io {
                 kind: std::io::ErrorKind::Other,
                 message: "intentional test failure".to_owned(),
@@ -397,7 +397,9 @@ mod tests {
     #[test]
     fn dirty_chunks_stay_loaded_when_unload_save_fails() {
         let metadata = test_metadata();
-        let repository = ChunkRepository::new(FailingSaveStore);
+        let repository = ChunkRepository::new(FailingSaveStore {
+            metadata: metadata.clone(),
+        });
         let pos = IVec3::ZERO;
         let mut app = App::new();
         app.add_plugins(MinimalPlugins)

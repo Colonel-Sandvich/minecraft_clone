@@ -6,7 +6,6 @@ use bevy::{
 
 use crate::world::{
     chunk::{Chunk, ChunkNeedsSave, ChunkPosition},
-    generation::WorldMetadata,
     storage::{ChunkRepository, ChunkStoreError, ChunkStoreResult},
 };
 
@@ -89,7 +88,6 @@ struct ChunkSaveRequest {
     entity: Entity,
     pos: IVec3,
     chunk: Chunk,
-    metadata: WorldMetadata,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -143,7 +141,6 @@ pub(crate) fn finish_chunk_save_tasks(
 pub(crate) fn start_chunk_save_tasks(
     dirty_chunks: Query<(Entity, &Chunk, &ChunkPosition), With<ChunkNeedsSave>>,
     repository: Res<ChunkRepository>,
-    metadata: Res<WorldMetadata>,
     save_budget: Res<ChunkSaveBudget>,
     mut save_tasks: ResMut<ChunkSaveTasks>,
 ) {
@@ -172,7 +169,6 @@ pub(crate) fn start_chunk_save_tasks(
             entity,
             pos: position.0,
             chunk: chunk.clone(),
-            metadata: metadata.clone(),
         };
         let repository = repository.clone();
         let task = thread_pool.spawn(async move { save_chunk_snapshot(request, repository) });
@@ -182,7 +178,7 @@ pub(crate) fn start_chunk_save_tasks(
 }
 
 fn save_chunk_snapshot(request: ChunkSaveRequest, repository: ChunkRepository) -> ChunkSaveOutput {
-    let result = repository.save_chunk(request.pos, &request.chunk, &request.metadata);
+    let result = repository.save_chunk(request.pos, &request.chunk);
 
     ChunkSaveOutput {
         entity: request.entity,
@@ -197,7 +193,10 @@ mod tests {
     use super::*;
     use crate::{
         block::BlockType,
-        world::storage::{ChunkRepository, ChunkStore, ChunkStoreError},
+        world::{
+            generation::WorldMetadata,
+            storage::{ChunkRepository, ChunkStore, ChunkStoreError, InMemoryChunkStore},
+        },
     };
 
     fn update_until(app: &mut App, mut predicate: impl FnMut(&World) -> bool) {
@@ -226,24 +225,20 @@ mod tests {
         }
     }
 
-    #[derive(Default)]
-    struct FailingSaveStore;
+    struct FailingSaveStore {
+        metadata: WorldMetadata,
+    }
 
     impl ChunkStore for FailingSaveStore {
-        fn load_chunk(
-            &self,
-            _pos: IVec3,
-            _metadata: &WorldMetadata,
-        ) -> ChunkStoreResult<Option<Chunk>> {
+        fn metadata(&self) -> &WorldMetadata {
+            &self.metadata
+        }
+
+        fn load_chunk(&self, _pos: IVec3) -> ChunkStoreResult<Option<Chunk>> {
             Ok(None)
         }
 
-        fn save_chunk(
-            &self,
-            _pos: IVec3,
-            _chunk: &Chunk,
-            _metadata: &WorldMetadata,
-        ) -> ChunkStoreResult<()> {
+        fn save_chunk(&self, _pos: IVec3, _chunk: &Chunk) -> ChunkStoreResult<()> {
             Err(test_save_error())
         }
     }
@@ -271,7 +266,7 @@ mod tests {
     #[test]
     fn dirty_chunks_are_persisted_and_marked_clean() {
         let metadata = WorldMetadata::with_seed(9);
-        let repository = ChunkRepository::default();
+        let repository = ChunkRepository::new(InMemoryChunkStore::new(metadata.clone()));
         let pos = ivec3(2, 0, -1);
         let mut chunk = Chunk::default();
         chunk.blocks[0][0][0] = BlockType::OakLog;
@@ -292,13 +287,13 @@ mod tests {
             world.get::<ChunkNeedsSave>(chunk_entity).is_none()
         });
 
-        assert_eq!(repository.load_chunk(pos, &metadata).unwrap(), Some(chunk));
+        assert_eq!(repository.load_chunk(pos).unwrap(), Some(chunk));
     }
 
     #[test]
     fn save_budget_limits_in_flight_chunks() {
         let metadata = WorldMetadata::with_seed(9);
-        let repository = ChunkRepository::default();
+        let repository = ChunkRepository::new(InMemoryChunkStore::new(metadata.clone()));
         let mut app = App::new();
         app.add_plugins(MinimalPlugins)
             .insert_resource(metadata)
@@ -322,7 +317,7 @@ mod tests {
     #[test]
     fn changed_chunks_stay_dirty_until_latest_snapshot_is_saved() {
         let metadata = WorldMetadata::with_seed(9);
-        let repository = ChunkRepository::default();
+        let repository = ChunkRepository::new(InMemoryChunkStore::new(metadata.clone()));
         let pos = ivec3(2, 0, -1);
         let mut chunk = Chunk::default();
         chunk.blocks[0][0][0] = BlockType::OakLog;
@@ -351,16 +346,15 @@ mod tests {
 
         let mut expected = Chunk::default();
         expected.blocks[0][0][0] = BlockType::Stone;
-        assert_eq!(
-            repository.load_chunk(pos, &metadata).unwrap(),
-            Some(expected)
-        );
+        assert_eq!(repository.load_chunk(pos).unwrap(), Some(expected));
     }
 
     #[test]
     fn failed_saves_back_off_before_retrying() {
         let metadata = WorldMetadata::with_seed(9);
-        let repository = ChunkRepository::new(FailingSaveStore);
+        let repository = ChunkRepository::new(FailingSaveStore {
+            metadata: metadata.clone(),
+        });
         let mut app = App::new();
         app.add_plugins(MinimalPlugins)
             .insert_resource(metadata)
