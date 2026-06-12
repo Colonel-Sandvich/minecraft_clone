@@ -25,6 +25,34 @@ pub const CHUNK_ISIZE: i32 = 16;
 pub const CHUNK_VOLUME: usize = CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE;
 pub const CHUNK_BLOCK_STORAGE_BYTES: usize = CHUNK_VOLUME * std::mem::size_of::<u16>();
 
+pub(crate) fn chunk_neighbor_offsets() -> impl Iterator<Item = IVec3> {
+    (-1..=1).flat_map(|x| {
+        (-1..=1).flat_map(move |y| {
+            (-1..=1).filter_map(move |z| {
+                let offset = ivec3(x, y, z);
+                (offset != IVec3::ZERO).then_some(offset)
+            })
+        })
+    })
+}
+
+pub(crate) fn chunk_neighbor_offsets_for_block(block: UVec3) -> impl Iterator<Item = IVec3> {
+    chunk_neighbor_offsets().filter(move |offset| {
+        neighbor_axis_can_sample_block(offset.x, block.x)
+            && neighbor_axis_can_sample_block(offset.y, block.y)
+            && neighbor_axis_can_sample_block(offset.z, block.z)
+    })
+}
+
+fn neighbor_axis_can_sample_block(offset: i32, coord: u32) -> bool {
+    match offset {
+        -1 => coord == 0,
+        0 => true,
+        1 => coord == CHUNK_SIZE as u32 - 1,
+        _ => false,
+    }
+}
+
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ChunkPosition(pub IVec3);
 
@@ -207,6 +235,33 @@ impl<'a> Iterator for BlockIterator<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn chunk_neighbor_offsets_cover_all_adjacent_chunks() {
+        let offsets = chunk_neighbor_offsets().collect::<Vec<_>>();
+
+        assert_eq!(offsets.len(), 26);
+        assert!(!offsets.contains(&IVec3::ZERO));
+        assert!(offsets.contains(&IVec3::NEG_X));
+        assert!(offsets.contains(&ivec3(1, 1, 1)));
+    }
+
+    #[test]
+    fn block_boundary_neighbor_offsets_cover_faces_edges_and_corners() {
+        assert_eq!(chunk_neighbor_offsets_for_block(uvec3(1, 2, 3)).count(), 0);
+        assert_eq!(
+            chunk_neighbor_offsets_for_block(uvec3(0, 2, 3)).collect::<Vec<_>>(),
+            vec![IVec3::NEG_X]
+        );
+
+        let edge_offsets = chunk_neighbor_offsets_for_block(uvec3(0, 0, 3)).collect::<Vec<_>>();
+        assert_eq!(edge_offsets.len(), 3);
+        assert!(edge_offsets.contains(&IVec3::NEG_X));
+        assert!(edge_offsets.contains(&IVec3::NEG_Y));
+        assert!(edge_offsets.contains(&ivec3(-1, -1, 0)));
+
+        assert_eq!(chunk_neighbor_offsets_for_block(UVec3::ZERO).count(), 7);
+    }
 
     #[test]
     fn chunk_storage_bytes_roundtrip_in_iteration_order() {

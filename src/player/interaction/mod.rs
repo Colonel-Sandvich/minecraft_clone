@@ -8,7 +8,10 @@ use crate::{
     block::{BlockPos, BlockType, BlockUpdateKind, BlockUpdateMessage},
     world::{
         ACTOR_LAYER, WORLD_LAYER,
-        chunk::{Chunk, ChunkNeedsColliderRebuild, ChunkNeedsMeshRebuild, ChunkNeedsSave},
+        chunk::{
+            Chunk, ChunkNeedsColliderRebuild, ChunkNeedsMeshRebuild, ChunkNeedsSave,
+            chunk_neighbor_offsets_for_block,
+        },
         dimension::Dimension,
     },
 };
@@ -206,6 +209,7 @@ fn apply_block_interaction_requests(
                     ChunkNeedsMeshRebuild,
                     ChunkNeedsColliderRebuild,
                 ));
+                mark_boundary_neighbor_meshes_dirty(&mut commands, &dimension, pos);
             }
             BlockInteractionKind::Place => {
                 if block_place_would_intersect(pos, &spatial_query) {
@@ -226,8 +230,23 @@ fn apply_block_interaction_requests(
                     ChunkNeedsMeshRebuild,
                     ChunkNeedsColliderRebuild,
                 ));
+                mark_boundary_neighbor_meshes_dirty(&mut commands, &dimension, pos);
             }
         }
+    }
+}
+
+fn mark_boundary_neighbor_meshes_dirty(
+    commands: &mut Commands,
+    dimension: &Dimension,
+    pos: BlockPos,
+) {
+    for offset in chunk_neighbor_offsets_for_block(pos.block) {
+        let Some(entity) = dimension.chunk_entity(pos.chunk + offset) else {
+            continue;
+        };
+
+        commands.entity(entity).insert(ChunkNeedsMeshRebuild);
     }
 }
 

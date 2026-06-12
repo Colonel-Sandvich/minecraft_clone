@@ -4,6 +4,7 @@ use bevy::math::UVec3;
 use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
+use bevy::utils::Parallel;
 use strum::IntoEnumIterator;
 
 use crate::textures::{BlockStandardMaterials, TextureState};
@@ -18,13 +19,16 @@ use crate::{
 };
 
 use super::{
-    CHUNK_ISIZE, Chunk, ChunkNeedsMeshRebuild,
+    CHUNK_ISIZE, CHUNK_SIZE, Chunk, ChunkNeedsMeshRebuild, ChunkPosition,
     ambient_occlusion::{AO_BRIGHTNESS, AmbientOcclusionSettings},
+    chunk_neighbor_offsets,
 };
 
 const SKY_FACE_BRIGHTNESS: f32 = 1.0;
 const HORIZON_FACE_BRIGHTNESS: f32 = 0.86;
 const GROUND_BOUNCE_FACE_BRIGHTNESS: f32 = 0.68;
+const PADDED_CHUNK_SIZE: usize = CHUNK_SIZE + 2;
+const PADDED_CHUNK_VOLUME: usize = PADDED_CHUNK_SIZE * PADDED_CHUNK_SIZE * PADDED_CHUNK_SIZE;
 
 pub struct ChunkMeshPlugin;
 
@@ -51,42 +55,73 @@ fn rebuild_chunk_meshes(
     block_materials: Res<BlockStandardMaterials>,
     block_texture_map: Res<BlockTextureMap>,
     ao_settings: Res<AmbientOcclusionSettings>,
-    chunks_q: Query<(&Chunk, Entity, Option<&Children>), With<ChunkNeedsMeshRebuild>>,
+    dirty_chunks_q: Query<(&ChunkPosition, Entity), (With<Chunk>, With<ChunkNeedsMeshRebuild>)>,
+    all_chunks_q: Query<(&ChunkPosition, &Chunk)>,
+    children_q: Query<&Children>,
     mesh_children_q: Query<(Entity, &ChunkMaterialLayerMarker), With<Mesh3d>>,
     mut mesh_q: Query<&mut Mesh3d>,
 ) {
-    let ao_brightness = ao_settings.brightness_curve();
+    if dirty_chunks_q.is_empty() {
+        return;
+    }
 
-    for (chunk, chunk_entity, children) in chunks_q.iter() {
+    let ao_brightness = ao_settings.brightness_curve();
+    let chunks_by_pos = all_chunks_q
+        .iter()
+        .map(|(pos, chunk)| (pos.0, chunk))
+        .collect::<HashMap<_, _>>();
+    let mut build_queue = Parallel::<Vec<ChunkMeshBuild>>::default();
+
+    dirty_chunks_q.par_iter().for_each_init(
+        || build_queue.borrow_local_mut(),
+        |builds, (chunk_pos, chunk_entity)| {
+            let padded_blocks = PaddedChunkBlocks::from_chunks(chunk_pos.0, &chunks_by_pos);
+            let meshes = make_chunk_meshes_from_blocks_with_ao_brightness(
+                &padded_blocks,
+                &block_texture_map,
+                ao_brightness,
+            );
+            builds.push(ChunkMeshBuild {
+                entity: chunk_entity,
+                meshes,
+            });
+        },
+    );
+
+    let mut builds = Vec::new();
+    build_queue.drain_into(&mut builds);
+
+    for build in builds {
         update_chunk_mesh_children(
             &mut commands,
             &mut meshes,
             &block_materials,
-            &block_texture_map,
-            ao_brightness,
             &mesh_children_q,
             &mut mesh_q,
-            chunk,
-            chunk_entity,
-            children,
+            build.entity,
+            children_q.get(build.entity).ok(),
+            build.meshes,
         );
         commands
-            .entity(chunk_entity)
+            .entity(build.entity)
             .remove::<ChunkNeedsMeshRebuild>();
     }
+}
+
+struct ChunkMeshBuild {
+    entity: Entity,
+    meshes: Vec<(BlockMaterialLayer, Mesh)>,
 }
 
 fn update_chunk_mesh_children(
     commands: &mut Commands,
     meshes: &mut Assets<Mesh>,
     block_materials: &BlockStandardMaterials,
-    block_texture_map: &BlockTextureMap,
-    ao_brightness: [f32; 4],
     mesh_children_q: &Query<(Entity, &ChunkMaterialLayerMarker), With<Mesh3d>>,
     mesh_q: &mut Query<&mut Mesh3d>,
-    chunk: &Chunk,
     chunk_entity: Entity,
     children: Option<&Children>,
+    chunk_meshes: Vec<(BlockMaterialLayer, Mesh)>,
 ) {
     let existing_mesh_children = children
         .map(|children| {
@@ -98,9 +133,7 @@ fn update_chunk_mesh_children(
         .unwrap_or_default();
 
     let mut updated_layers = Vec::new();
-    for (layer, mesh) in
-        make_chunk_meshes_with_ao_brightness(chunk, block_texture_map, ao_brightness)
-    {
+    for (layer, mesh) in chunk_meshes {
         let mesh_handle = meshes.add(mesh);
         updated_layers.push(layer);
 
@@ -140,7 +173,15 @@ fn make_chunk_meshes_with_ao_brightness(
     block_texture_map: &BlockTextureMap,
     ao_brightness: [f32; 4],
 ) -> Vec<(BlockMaterialLayer, Mesh)> {
-    let quad_groups = make_layered_quad_groups(chunk, block_texture_map);
+    make_chunk_meshes_from_blocks_with_ao_brightness(chunk, block_texture_map, ao_brightness)
+}
+
+fn make_chunk_meshes_from_blocks_with_ao_brightness(
+    blocks: &(impl BlockSampler + ?Sized),
+    block_texture_map: &BlockTextureMap,
+    ao_brightness: [f32; 4],
+) -> Vec<(BlockMaterialLayer, Mesh)> {
+    let quad_groups = make_layered_quad_groups_from_blocks(blocks, block_texture_map);
     BlockMaterialLayer::ALL
         .into_iter()
         .filter_map(|layer| {
@@ -157,32 +198,35 @@ pub fn make_layered_quad_groups(
     chunk: &Chunk,
     block_texture_map: &BlockTextureMap,
 ) -> LayeredQuadGroups {
+    make_layered_quad_groups_from_blocks(chunk, block_texture_map)
+}
+
+fn make_layered_quad_groups_from_blocks(
+    blocks: &(impl BlockSampler + ?Sized),
+    block_texture_map: &BlockTextureMap,
+) -> LayeredQuadGroups {
     let mut buffer = LayeredQuadGroups::default();
 
     for x in 0..CHUNK_ISIZE {
         for y in 0..CHUNK_ISIZE {
             for z in 0..CHUNK_ISIZE {
-                let Some(block) = chunk.get_i(x, y, z) else {
-                    continue;
-                };
+                let block = blocks.get_block(x, y, z);
 
                 let Some(profile) = block.render_profile() else {
                     continue;
                 };
 
-                let neighbours = [
-                    chunk.get_i(x - 1, y, z),
-                    chunk.get_i(x + 1, y, z),
-                    chunk.get_i(x, y - 1, z),
-                    chunk.get_i(x, y + 1, z),
-                    chunk.get_i(x, y, z - 1),
-                    chunk.get_i(x, y, z + 1),
+                let neighbors = [
+                    blocks.get_block(x - 1, y, z),
+                    blocks.get_block(x + 1, y, z),
+                    blocks.get_block(x, y - 1, z),
+                    blocks.get_block(x, y + 1, z),
+                    blocks.get_block(x, y, z - 1),
+                    blocks.get_block(x, y, z + 1),
                 ];
 
-                for (neighbour, side) in neighbours.into_iter().zip(Direction::iter()) {
-                    let neighbour = neighbour.unwrap_or(BlockType::Air);
-
-                    if !should_emit_face(block, neighbour, side) {
+                for (neighbor, side) in neighbors.into_iter().zip(Direction::iter()) {
+                    if !should_emit_face(block, neighbor, side) {
                         continue;
                     }
 
@@ -193,7 +237,7 @@ pub fn make_layered_quad_groups(
                             voxel,
                             uv: block_texture_map.block_to_mesh(block, side),
                             color: block_to_colour(block, side),
-                            ao: face_ao(chunk, IVec3::new(x, y, z), side),
+                            ao: face_ao(blocks, IVec3::new(x, y, z), side),
                         },
                     );
                 }
@@ -204,21 +248,21 @@ pub fn make_layered_quad_groups(
     buffer
 }
 
-fn should_emit_face(block: BlockType, neighbour: BlockType, side: Direction) -> bool {
+fn should_emit_face(block: BlockType, neighbor: BlockType, side: Direction) -> bool {
     let Some(block_profile) = block.render_profile() else {
         return false;
     };
-    let Some(neighbour_profile) = neighbour.render_profile() else {
+    let Some(neighbor_profile) = neighbor.render_profile() else {
         return true;
     };
 
-    if neighbour_profile.occlusion == FaceOcclusion::FullCube {
+    if neighbor_profile.occlusion == FaceOcclusion::FullCube {
         return false;
     }
 
-    if block == neighbour
+    if block == neighbor
         && block_profile.occlusion == FaceOcclusion::None
-        && neighbour_profile.occlusion == FaceOcclusion::None
+        && neighbor_profile.occlusion == FaceOcclusion::None
     {
         return block_profile.sidedness == FaceSidedness::Double && is_positive_side(side);
     }
@@ -226,11 +270,95 @@ fn should_emit_face(block: BlockType, neighbour: BlockType, side: Direction) -> 
     true
 }
 
+trait BlockSampler: Sync {
+    fn get_block(&self, x: i32, y: i32, z: i32) -> BlockType;
+}
+
+impl BlockSampler for Chunk {
+    fn get_block(&self, x: i32, y: i32, z: i32) -> BlockType {
+        self.get_i(x, y, z).unwrap_or(BlockType::Air)
+    }
+}
+
+struct PaddedChunkBlocks {
+    blocks: Box<[BlockType; PADDED_CHUNK_VOLUME]>,
+}
+
+impl PaddedChunkBlocks {
+    fn from_chunks(center_pos: IVec3, chunks: &HashMap<IVec3, &Chunk>) -> Self {
+        let mut padded_blocks = Self {
+            blocks: Box::new([BlockType::Air; PADDED_CHUNK_VOLUME]),
+        };
+
+        for offset in std::iter::once(IVec3::ZERO).chain(chunk_neighbor_offsets()) {
+            let Some(chunk) = chunks.get(&(center_pos + offset)).copied() else {
+                continue;
+            };
+
+            for x in source_range_for_neighbor_axis(offset.x) {
+                for y in source_range_for_neighbor_axis(offset.y) {
+                    for z in source_range_for_neighbor_axis(offset.z) {
+                        padded_blocks.set_block(
+                            x as i32 + offset.x * CHUNK_ISIZE,
+                            y as i32 + offset.y * CHUNK_ISIZE,
+                            z as i32 + offset.z * CHUNK_ISIZE,
+                            chunk.blocks[x][z][y],
+                        );
+                    }
+                }
+            }
+        }
+
+        padded_blocks
+    }
+
+    fn set_block(&mut self, x: i32, y: i32, z: i32, block: BlockType) {
+        debug_assert!(is_in_padded_chunk(x));
+        debug_assert!(is_in_padded_chunk(y));
+        debug_assert!(is_in_padded_chunk(z));
+
+        let x = (x + 1) as usize;
+        let y = (y + 1) as usize;
+        let z = (z + 1) as usize;
+        self.blocks[padded_chunk_index(x, y, z)] = block;
+    }
+}
+
+impl BlockSampler for PaddedChunkBlocks {
+    fn get_block(&self, x: i32, y: i32, z: i32) -> BlockType {
+        if !is_in_padded_chunk(x) || !is_in_padded_chunk(y) || !is_in_padded_chunk(z) {
+            return BlockType::Air;
+        }
+
+        let x = (x + 1) as usize;
+        let y = (y + 1) as usize;
+        let z = (z + 1) as usize;
+        self.blocks[padded_chunk_index(x, y, z)]
+    }
+}
+
+fn source_range_for_neighbor_axis(delta: i32) -> std::ops::Range<usize> {
+    match delta {
+        -1 => CHUNK_SIZE - 1..CHUNK_SIZE,
+        0 => 0..CHUNK_SIZE,
+        1 => 0..1,
+        _ => unreachable!("invalid neighbor offset"),
+    }
+}
+
+fn is_in_padded_chunk(value: i32) -> bool {
+    (-1..=CHUNK_ISIZE).contains(&value)
+}
+
+fn padded_chunk_index(x: usize, y: usize, z: usize) -> usize {
+    x + PADDED_CHUNK_SIZE * (z + PADDED_CHUNK_SIZE * y)
+}
+
 fn is_positive_side(side: Direction) -> bool {
     matches!(side, Direction::Right | Direction::Up | Direction::Backward)
 }
 
-fn face_ao(chunk: &Chunk, voxel: IVec3, side: Direction) -> [u8; 4] {
+fn face_ao(blocks: &(impl BlockSampler + ?Sized), voxel: IVec3, side: Direction) -> [u8; 4] {
     let normal = direction_offset(side);
     let tangent_axes = tangent_axes(side);
 
@@ -239,9 +367,9 @@ fn face_ao(chunk: &Chunk, voxel: IVec3, side: Direction) -> [u8; 4] {
         let side2 = sample_axis_offset(vertex_offset, tangent_axes[1]);
 
         vertex_ao(
-            ao_occludes(chunk, voxel + normal + side1),
-            ao_occludes(chunk, voxel + normal + side2),
-            ao_occludes(chunk, voxel + normal + side1 + side2),
+            ao_occludes(blocks, voxel + normal + side1),
+            ao_occludes(blocks, voxel + normal + side2),
+            ao_occludes(blocks, voxel + normal + side1 + side2),
         )
     })
 }
@@ -254,10 +382,8 @@ fn vertex_ao(side1: bool, side2: bool, corner: bool) -> u8 {
     }
 }
 
-fn ao_occludes(chunk: &Chunk, pos: IVec3) -> bool {
-    chunk
-        .get_i(pos.x, pos.y, pos.z)
-        .is_some_and(block_occludes_ambient_light)
+fn ao_occludes(blocks: &(impl BlockSampler + ?Sized), pos: IVec3) -> bool {
+    block_occludes_ambient_light(blocks.get_block(pos.x, pos.y, pos.z))
 }
 
 fn block_occludes_ambient_light(block: BlockType) -> bool {
@@ -419,6 +545,13 @@ mod tests {
         groups.groups.iter().map(Vec::len).sum()
     }
 
+    fn padded_chunk_blocks<'a>(
+        chunks: impl IntoIterator<Item = (IVec3, &'a Chunk)>,
+    ) -> PaddedChunkBlocks {
+        let chunks = chunks.into_iter().collect::<HashMap<_, _>>();
+        PaddedChunkBlocks::from_chunks(IVec3::ZERO, &chunks)
+    }
+
     #[test]
     fn vertex_ao_uses_four_symmetric_levels() {
         let cases = [
@@ -452,6 +585,75 @@ mod tests {
             face_ao(&chunk, IVec3::new(1, 1, 1), Direction::Up),
             [0, 2, 2, 3]
         );
+    }
+
+    #[test]
+    fn face_ao_samples_loaded_face_neighbor_chunk() {
+        let mut centre = Chunk::default();
+        centre.blocks[1][1][15] = BlockType::Stone;
+
+        let mut above = Chunk::default();
+        above.blocks[0][1][0] = BlockType::Stone;
+        above.blocks[1][2][0] = BlockType::Stone;
+        above.blocks[0][2][0] = BlockType::Stone;
+
+        let padded_blocks = padded_chunk_blocks([(IVec3::ZERO, &centre), (IVec3::Y, &above)]);
+
+        assert_eq!(
+            face_ao(&padded_blocks, IVec3::new(1, 15, 1), Direction::Up),
+            [0, 2, 2, 3]
+        );
+    }
+
+    #[test]
+    fn face_ao_samples_loaded_edge_neighbor_chunk() {
+        let mut centre = Chunk::default();
+        centre.blocks[0][1][15] = BlockType::Stone;
+
+        let mut edge = Chunk::default();
+        edge.blocks[15][1][0] = BlockType::Stone;
+        edge.blocks[15][2][0] = BlockType::Stone;
+
+        let padded_blocks = padded_chunk_blocks([(IVec3::ZERO, &centre), (ivec3(-1, 1, 0), &edge)]);
+
+        assert_eq!(
+            face_ao(&padded_blocks, IVec3::new(0, 15, 1), Direction::Up),
+            [1, 2, 3, 3]
+        );
+    }
+
+    #[test]
+    fn face_ao_samples_loaded_corner_neighbor_chunk() {
+        let mut centre = Chunk::default();
+        centre.blocks[0][15][15] = BlockType::Stone;
+
+        let mut corner = Chunk::default();
+        corner.blocks[15][0][0] = BlockType::Stone;
+
+        let padded_blocks =
+            padded_chunk_blocks([(IVec3::ZERO, &centre), (ivec3(-1, 1, 1), &corner)]);
+
+        assert_eq!(
+            face_ao(&padded_blocks, IVec3::new(0, 15, 15), Direction::Up),
+            [2, 3, 3, 3]
+        );
+    }
+
+    #[test]
+    fn boundary_faces_are_culled_against_loaded_neighbor_chunks() {
+        let texture_map = test_texture_map();
+        let mut centre = Chunk::default();
+        centre.blocks[15][0][0] = BlockType::Stone;
+
+        let mut right = Chunk::default();
+        right.blocks[0][0][0] = BlockType::Stone;
+
+        let padded_blocks = padded_chunk_blocks([(IVec3::ZERO, &centre), (IVec3::X, &right)]);
+        let groups = make_layered_quad_groups_from_blocks(&padded_blocks, &texture_map);
+        let opaque_groups = &groups.layers[BlockMaterialLayer::Opaque.index()];
+
+        assert_eq!(quad_count(opaque_groups), 5);
+        assert_eq!(opaque_groups.groups[Direction::Right as usize].len(), 0);
     }
 
     #[test]
@@ -562,7 +764,10 @@ mod tests {
 
         let mut chunk = Chunk::default();
         chunk.blocks[0][0][0] = BlockType::Stone;
-        let chunk_entity = app.world_mut().spawn((chunk, ChunkNeedsMeshRebuild)).id();
+        let chunk_entity = app
+            .world_mut()
+            .spawn((ChunkPosition(IVec3::ZERO), chunk, ChunkNeedsMeshRebuild))
+            .id();
 
         app.update();
 

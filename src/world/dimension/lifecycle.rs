@@ -11,7 +11,7 @@ use crate::{
     world::{
         chunk::{
             CHUNK_SIZE, ChunkNeedsColliderRebuild, ChunkNeedsMeshRebuild, ChunkNeedsSave,
-            ChunkPosition,
+            ChunkPosition, chunk_neighbor_offsets,
         },
         generation::WorldMetadata,
         loading::{ChunkLoadRequest, load_or_generate_chunk},
@@ -56,6 +56,7 @@ pub(crate) fn maintain_chunk_view(
             continue;
         }
 
+        mark_loaded_neighbor_meshes_dirty(&mut commands, &dim, pos);
         dim.chunks.remove(&pos);
         commands.entity(entity).despawn();
     }
@@ -176,6 +177,17 @@ pub(crate) fn finish_chunk_load_tasks(
             .id();
 
         dim.chunks.insert(pos, chunk_entity);
+        mark_loaded_neighbor_meshes_dirty(&mut commands, &dim, pos);
+    }
+}
+
+fn mark_loaded_neighbor_meshes_dirty(commands: &mut Commands, dimension: &Dimension, pos: IVec3) {
+    for offset in chunk_neighbor_offsets() {
+        let Some(entity) = dimension.chunk_entity(pos + offset) else {
+            continue;
+        };
+
+        commands.entity(entity).insert(ChunkNeedsMeshRebuild);
     }
 }
 
@@ -185,6 +197,7 @@ mod tests {
     use bevy::platform::collections::HashMap;
 
     use crate::world::chunk::Chunk;
+    use crate::world::loading::{ChunkLoadOutput, ChunkLoadSource, LoadedChunk};
     use crate::world::storage::{
         ChunkStore, ChunkStoreError, ChunkStoreResult, InMemoryChunkStore,
     };
@@ -223,6 +236,139 @@ mod tests {
         }
 
         panic!("condition was not met after 100 updates");
+    }
+
+    fn spawn_chunk(app: &mut App, pos: IVec3) -> Entity {
+        app.world_mut()
+            .spawn((ChunkPosition(pos), Chunk::default()))
+            .id()
+    }
+
+    fn spawn_dimension_with_chunks(
+        app: &mut App,
+        positions: impl IntoIterator<Item = IVec3>,
+    ) -> (Entity, HashMap<IVec3, Entity>) {
+        let chunks = positions
+            .into_iter()
+            .map(|pos| (pos, spawn_chunk(app, pos)))
+            .collect::<HashMap<_, _>>();
+        let dimension_entity = app
+            .world_mut()
+            .spawn((
+                Dimension {
+                    chunks: chunks.clone(),
+                },
+                Transform::default(),
+                Visibility::default(),
+                Active,
+            ))
+            .id();
+
+        (dimension_entity, chunks)
+    }
+
+    fn insert_chunk_load_task(app: &mut App, pos: IVec3) {
+        let output = ChunkLoadOutput {
+            pos,
+            result: Ok(LoadedChunk {
+                chunk: Chunk::default(),
+                source: ChunkLoadSource::Generated,
+            }),
+        };
+        let task = AsyncComputeTaskPool::get().spawn(async move { output });
+        app.world_mut()
+            .resource_mut::<ChunkLoadTasks>()
+            .tasks
+            .insert(pos, task);
+    }
+
+    #[test]
+    fn chunk_load_marks_loaded_face_and_diagonal_neighbors_for_mesh_rebuild() {
+        let metadata = test_metadata();
+        let loaded_pos = IVec3::ZERO;
+        let face_neighbor = IVec3::X;
+        let diagonal_neighbor = ivec3(1, 1, 1);
+        let non_neighbor = ivec3(2, 0, 0);
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(metadata.clone())
+            .insert_resource(ViewDistance::new(TEST_VIEW_DISTANCE))
+            .insert_resource(ChunkSpawnBudget(usize::MAX))
+            .insert_resource(ChunkLoadTasks::default())
+            .add_systems(Update, finish_chunk_load_tasks);
+
+        let (dimension_entity, chunks) =
+            spawn_dimension_with_chunks(&mut app, [face_neighbor, diagonal_neighbor, non_neighbor]);
+        insert_chunk_load_task(&mut app, loaded_pos);
+
+        update_until(&mut app, |world| {
+            world
+                .get::<Dimension>(dimension_entity)
+                .unwrap()
+                .chunk_entity(loaded_pos)
+                .is_some()
+        });
+
+        let world = app.world();
+        assert!(
+            world
+                .get::<ChunkNeedsMeshRebuild>(chunks[&face_neighbor])
+                .is_some()
+        );
+        assert!(
+            world
+                .get::<ChunkNeedsMeshRebuild>(chunks[&diagonal_neighbor])
+                .is_some()
+        );
+        assert!(
+            world
+                .get::<ChunkNeedsMeshRebuild>(chunks[&non_neighbor])
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn chunk_unload_marks_loaded_face_and_diagonal_neighbors_for_mesh_rebuild() {
+        let mut metadata = test_metadata();
+        metadata.height_chunks = 2;
+        let unloaded_pos = ivec3(1, 0, 1);
+        let face_neighbor = ivec3(1, 0, 0);
+        let diagonal_neighbor = ivec3(0, 1, 0);
+        let non_neighbor = ivec3(-1, 0, 0);
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(metadata)
+            .insert_resource(ChunkLoadTasks::default())
+            .insert_resource(ViewDistance::new(1))
+            .add_systems(Update, maintain_chunk_view);
+
+        let (dimension_entity, chunks) = spawn_dimension_with_chunks(
+            &mut app,
+            [unloaded_pos, face_neighbor, diagonal_neighbor, non_neighbor],
+        );
+        let unloaded_entity = chunks[&unloaded_pos];
+
+        app.update();
+
+        let world = app.world();
+        let dimension = world.get::<Dimension>(dimension_entity).unwrap();
+        assert!(dimension.chunk_entity(unloaded_pos).is_none());
+        assert!(world.get_entity(unloaded_entity).is_err());
+        assert!(
+            world
+                .get::<ChunkNeedsMeshRebuild>(chunks[&face_neighbor])
+                .is_some()
+        );
+        assert!(
+            world
+                .get::<ChunkNeedsMeshRebuild>(chunks[&diagonal_neighbor])
+                .is_some()
+        );
+        assert!(
+            world
+                .get::<ChunkNeedsMeshRebuild>(chunks[&non_neighbor])
+                .is_none()
+        );
     }
 
     #[test]
