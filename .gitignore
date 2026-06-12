@@ -1,3 +1,7 @@
 /target
 /assets
 /saves
+perf.data.old
+flamegraph_reference_full.svg
+flamegraph_direct_full.svg
+perf.data
