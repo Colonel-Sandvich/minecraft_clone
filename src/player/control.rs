@@ -1,6 +1,9 @@
 use crate::{
     mob::controller::{FlyController, Flying, Velocity},
-    world::{dimension::ViewDistance, generation::WorldMetadata},
+    world::{
+        chunk::ambient_occlusion::AmbientOcclusionSettings, dimension::ViewDistance,
+        generation::WorldMetadata,
+    },
 };
 
 use super::{
@@ -19,6 +22,7 @@ impl Plugin for ControlPlayerPlugin {
 
         app.add_systems(PreUpdate, change_gamemode);
         app.add_systems(PreUpdate, toggle_fly);
+        app.add_systems(PreUpdate, toggle_ambient_occlusion_mode);
         app.add_systems(PreUpdate, debug_reset_character);
         app.add_systems(PreUpdate, adjust_view_distance);
         app.add_systems(PreUpdate, toggle_grab_cursor);
@@ -38,6 +42,7 @@ pub struct KeyBindings {
     pub toggle_grab_cursor: KeyCode,
     pub toggle_fly: KeyCode,
     pub change_gamemode: KeyCode,
+    pub toggle_ambient_occlusion: KeyCode,
     pub debug_reset_character: KeyCode,
     pub view_distance_decrease: KeyCode,
     pub view_distance_increase: KeyCode,
@@ -102,6 +107,7 @@ impl Default for KeyBindings {
             toggle_grab_cursor: KeyCode::Escape,
             toggle_fly: KeyCode::KeyF,
             change_gamemode: KeyCode::F4,
+            toggle_ambient_occlusion: KeyCode::F6,
             debug_reset_character: KeyCode::KeyR,
             view_distance_decrease: KeyCode::BracketLeft,
             view_distance_increase: KeyCode::BracketRight,
@@ -153,6 +159,19 @@ fn toggle_fly(
             false => entity.insert(Flying),
         };
     }
+}
+
+fn toggle_ambient_occlusion_mode(
+    keys: Res<ButtonInput<KeyCode>>,
+    key_bindings: Res<KeyBindings>,
+    mut settings: ResMut<AmbientOcclusionSettings>,
+) {
+    if !keys.just_pressed(key_bindings.toggle_ambient_occlusion) {
+        return;
+    }
+
+    settings.cycle_mode();
+    info!(mode = ?settings.mode, "Ambient occlusion mode changed");
 }
 
 fn debug_reset_character(
@@ -207,5 +226,35 @@ fn toggle_grab_cursor(
                 next_mouse_state.set(MouseState::Free);
             }
         };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::world::chunk::ambient_occlusion::AmbientOcclusionMode;
+
+    #[test]
+    fn ambient_occlusion_key_cycles_mode() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .init_resource::<KeyBindings>()
+            .init_resource::<AmbientOcclusionSettings>()
+            .insert_resource(ButtonInput::<KeyCode>::default())
+            .add_systems(Update, toggle_ambient_occlusion_mode);
+
+        let toggle_key = app
+            .world()
+            .resource::<KeyBindings>()
+            .toggle_ambient_occlusion;
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(toggle_key);
+        app.update();
+
+        assert_eq!(
+            app.world().resource::<AmbientOcclusionSettings>().mode,
+            AmbientOcclusionMode::Contrast
+        );
     }
 }

@@ -1,4 +1,4 @@
-use bevy::math::{Rect, UVec3, Vec2, Vec3, Vec4, vec2};
+use bevy::math::{IVec3, Rect, UVec3, Vec2, Vec3, Vec4, vec2};
 use strum::EnumIter;
 
 #[derive(Copy, Clone, Debug)]
@@ -6,6 +6,7 @@ pub struct Quad {
     pub voxel: UVec3,
     pub color: Vec4,
     pub uv: Rect,
+    pub ao: [u8; 4],
     // pub width: u32,
     // pub height: u32,
 }
@@ -20,48 +21,49 @@ pub fn get_indices(start: u32) -> [u32; 6] {
 }
 
 pub fn get_positions(quad: &Quad, side: &Direction, voxel_size: f32) -> [Vec3; 4] {
+    get_vertex_offsets(*side).map(|pos| (pos.as_vec3() + quad.voxel.as_vec3()) * voxel_size)
+}
+
+pub fn get_vertex_offsets(side: Direction) -> [IVec3; 4] {
     use Direction::*;
-    let positions = match *side {
+    match side {
         Left => [
-            [0.0, 0.0, 1.0],
-            [0.0, 0.0, 0.0],
-            [0.0, 1.0, 1.0],
-            [0.0, 1.0, 0.0],
+            IVec3::new(0, 0, 1),
+            IVec3::new(0, 0, 0),
+            IVec3::new(0, 1, 1),
+            IVec3::new(0, 1, 0),
         ],
         Right => [
-            [1.0, 0.0, 0.0],
-            [1.0, 0.0, 1.0],
-            [1.0, 1.0, 0.0],
-            [1.0, 1.0, 1.0],
+            IVec3::new(1, 0, 0),
+            IVec3::new(1, 0, 1),
+            IVec3::new(1, 1, 0),
+            IVec3::new(1, 1, 1),
         ],
         Down => [
-            [0.0, 0.0, 1.0],
-            [1.0, 0.0, 1.0],
-            [0.0, 0.0, 0.0],
-            [1.0, 0.0, 0.0],
+            IVec3::new(0, 0, 1),
+            IVec3::new(1, 0, 1),
+            IVec3::new(0, 0, 0),
+            IVec3::new(1, 0, 0),
         ],
         Up => [
-            [0.0, 1.0, 1.0],
-            [0.0, 1.0, 0.0],
-            [1.0, 1.0, 1.0],
-            [1.0, 1.0, 0.0],
+            IVec3::new(0, 1, 1),
+            IVec3::new(0, 1, 0),
+            IVec3::new(1, 1, 1),
+            IVec3::new(1, 1, 0),
         ],
         Forward => [
-            [0.0, 0.0, 0.0],
-            [1.0, 0.0, 0.0],
-            [0.0, 1.0, 0.0],
-            [1.0, 1.0, 0.0],
+            IVec3::new(0, 0, 0),
+            IVec3::new(1, 0, 0),
+            IVec3::new(0, 1, 0),
+            IVec3::new(1, 1, 0),
         ],
         Backward => [
-            [1.0, 0.0, 1.0],
-            [0.0, 0.0, 1.0],
-            [1.0, 1.0, 1.0],
-            [0.0, 1.0, 1.0],
+            IVec3::new(1, 0, 1),
+            IVec3::new(0, 0, 1),
+            IVec3::new(1, 1, 1),
+            IVec3::new(0, 1, 1),
         ],
     }
-    .map(|pos| Vec3::from_slice(&pos));
-
-    positions.map(|pos| (pos + quad.voxel.as_vec3()) * voxel_size)
 }
 
 pub type Normals = [Vec3; 4];

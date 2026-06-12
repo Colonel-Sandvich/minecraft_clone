@@ -2,16 +2,24 @@ use bevy::prelude::*;
 
 pub struct LightPlugin;
 
+const SKY_FILL_BRIGHTNESS: f32 = 500.0;
+
 impl Plugin for LightPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, spawn_point_light);
+        app.insert_resource(GlobalAmbientLight {
+            color: Color::srgb(0.78, 0.86, 1.0),
+            brightness: SKY_FILL_BRIGHTNESS,
+            affects_lightmapped_meshes: true,
+        })
+        .add_systems(Startup, spawn_sun_light);
     }
 }
 
-fn spawn_point_light(mut commands: Commands) {
+fn spawn_sun_light(mut commands: Commands) {
     commands.spawn((
         DirectionalLight {
             illuminance: light_consts::lux::AMBIENT_DAYLIGHT,
+            color: Color::srgb(1.0, 0.96, 0.9),
             // shadows_enabled: true,
             ..default()
         },

@@ -1,6 +1,8 @@
+pub mod ambient_occlusion;
 pub mod collider;
 pub mod mesh;
 
+use ambient_occlusion::AmbientOcclusionPlugin;
 use bevy::prelude::*;
 use collider::ChunkColliderPlugin;
 use mesh::ChunkMeshPlugin;
@@ -11,6 +13,7 @@ pub struct ChunkPlugin;
 
 impl Plugin for ChunkPlugin {
     fn build(&self, app: &mut App) {
+        app.add_plugins(AmbientOcclusionPlugin);
         app.add_plugins(ChunkMeshPlugin);
         app.add_plugins(ChunkColliderPlugin);
     }
