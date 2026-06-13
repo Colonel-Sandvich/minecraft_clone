@@ -1,6 +1,7 @@
 use bevy::{asset::LoadedFolder, image::ImageSampler, platform::collections::HashMap, prelude::*};
 
 use crate::block::{BlockMaterialLayer, BlockTextureMap};
+use crate::block_material::BlockMaterial;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, States)]
 pub enum TextureState {
@@ -51,63 +52,57 @@ fn setup(
     asset_server: Res<AssetServer>,
     loaded_folders: Res<Assets<LoadedFolder>>,
     mut textures: ResMut<Assets<Image>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut materials: ResMut<Assets<BlockMaterial>>,
 ) {
     let loaded_folder = loaded_folders.get(&block_texture_handles.0).unwrap();
 
     // TODO: Look into mipmaps
     // Look into padding for MipMaps
-    let (texture_atlas_nearest, texture_atlas_sources, nearest_texture) =
+    let (texture_atlas_layout, texture_atlas_sources, nearest_texture) =
         create_texture_atlas(loaded_folder, None, ImageSampler::nearest(), &mut textures);
-
-    commands.insert_resource(BlockStandardMaterials {
-        opaque: materials.add(StandardMaterial {
-            base_color_texture: Some(nearest_texture.clone()),
-            metallic: 0.,
-            reflectance: 0.,
-            ..default()
-        }),
-        cutout_single_sided: materials.add(StandardMaterial {
-            base_color_texture: Some(nearest_texture.clone()),
-            metallic: 0.,
-            reflectance: 0.,
-            alpha_mode: AlphaMode::Mask(0.5),
-            ..default()
-        }),
-        cutout_double_sided: materials.add(StandardMaterial {
-            base_color_texture: Some(nearest_texture),
-            metallic: 0.,
-            reflectance: 0.,
-            alpha_mode: AlphaMode::Mask(0.5),
-            double_sided: true,
-            cull_mode: None,
-            ..default()
-        }),
-    });
 
     let block_texture_map = create_texture_map(
         loaded_folder,
-        asset_server,
-        texture_atlas_sources,
-        texture_atlas_nearest,
+        &asset_server,
+        &texture_atlas_sources,
+        &texture_atlas_layout,
     );
+
+    // Compute tile_size from the atlas. All block textures are 16x16,
+    // so any block's tex rect gives the correct tile UV size.
+    let stone_rect = block_texture_map.get("textures/block/stone.png")
+        .expect("stone.png must be in texture map");
+    let tile_size = Vec2::new(stone_rect.width(), stone_rect.height());
+
+    info!("Atlas tile_size: {:.6} x {:.6}", tile_size.x, tile_size.y);
+
+    commands.insert_resource(BlockStandardMaterials {
+        opaque: materials.add(BlockMaterial {
+            texture: Some(nearest_texture.clone()),
+            tile_size,
+            alpha_mode: AlphaMode::Opaque,
+        }),
+        cutout: materials.add(BlockMaterial {
+            texture: Some(nearest_texture),
+            tile_size,
+            alpha_mode: AlphaMode::Mask(0.5),
+        }),
+    });
 
     commands.insert_resource(BlockTextureMap(block_texture_map));
 }
 
 #[derive(Resource)]
 pub struct BlockStandardMaterials {
-    opaque: Handle<StandardMaterial>,
-    cutout_single_sided: Handle<StandardMaterial>,
-    cutout_double_sided: Handle<StandardMaterial>,
+    opaque: Handle<BlockMaterial>,
+    cutout: Handle<BlockMaterial>,
 }
 
 impl BlockStandardMaterials {
-    pub fn get(&self, layer: BlockMaterialLayer) -> Handle<StandardMaterial> {
+    pub fn get(&self, layer: BlockMaterialLayer) -> Handle<BlockMaterial> {
         match layer {
             BlockMaterialLayer::Opaque => self.opaque.clone(),
-            BlockMaterialLayer::CutoutSingleSided => self.cutout_single_sided.clone(),
-            BlockMaterialLayer::CutoutDoubleSided => self.cutout_double_sided.clone(),
+            BlockMaterialLayer::Cutout => self.cutout.clone(),
         }
     }
 
@@ -115,8 +110,7 @@ impl BlockStandardMaterials {
     pub(crate) fn test_handles() -> Self {
         Self {
             opaque: Handle::default(),
-            cutout_single_sided: Handle::default(),
-            cutout_double_sided: Handle::default(),
+            cutout: Handle::default(),
         }
     }
 }
@@ -158,9 +152,9 @@ fn create_texture_atlas(
 
 fn create_texture_map(
     loaded_folder: &LoadedFolder,
-    asset_server: Res<AssetServer>,
-    texture_atlas_sources: TextureAtlasSources,
-    texture_atlas_nearest: TextureAtlasLayout,
+    asset_server: &Res<AssetServer>,
+    texture_atlas_sources: &TextureAtlasSources,
+    texture_atlas_layout: &TextureAtlasLayout,
 ) -> HashMap<String, Rect> {
     let mut block_texture_map = HashMap::with_capacity(loaded_folder.handles.len());
 
@@ -170,7 +164,7 @@ fn create_texture_map(
         let path = asset_server.get_path(id).unwrap();
 
         let tex_rect = texture_atlas_sources
-            .uv_rect(&texture_atlas_nearest, id)
+            .uv_rect(texture_atlas_layout, id)
             .unwrap();
 
         block_texture_map.insert(path.to_string(), tex_rect);

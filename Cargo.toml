@@ -18,6 +18,8 @@ turso = { version = "0.7.0-pre.7", default-features = false, optional = true }
 strum = { version = "0.28.0", features = ["derive"] }
 itertools = "0.14.0"
 bevy_framepace = "0.21.0"
+bevy_shader = "0.18.1"
+bevy_mesh = "0.18.1"
 
 [dev-dependencies]
 criterion = "0.8.2"

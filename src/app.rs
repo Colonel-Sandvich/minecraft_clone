@@ -8,8 +8,11 @@ use bevy::{
 use bevy_framepace::FramepacePlugin;
 use bevy_inspector_egui::{bevy_egui::EguiPlugin, quick::WorldInspectorPlugin};
 
+use bevy::pbr::MaterialPlugin;
+
 use crate::{
     block::BlockPlugin,
+    block_material::BlockMaterial,
     game_state::GameStatePlugin,
     light::LightPlugin,
     mob::MobControllerPlugin,
@@ -40,6 +43,7 @@ impl Plugin for AppPlugin {
         .add_plugins(PlayerPlugin)
         .add_plugins(BlockPlugin)
         .add_plugins(BlockTextureAtlasPlugin)
+        .add_plugins(MaterialPlugin::<BlockMaterial>::default())
         .insert_resource(WorldConfig::development_sqlite(WorldMetadata::default()))
         .add_plugins(WorldPlugin)
         .add_plugins(UIPlugin)

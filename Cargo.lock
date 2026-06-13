@@ -4459,6 +4459,8 @@ dependencies = [
  "bevy",
  "bevy-inspector-egui",
  "bevy_framepace",
+ "bevy_mesh",
+ "bevy_shader",
  "criterion 0.8.2",
  "itertools 0.14.0",
  "rusqlite",

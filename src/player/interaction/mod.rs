@@ -55,7 +55,7 @@ pub struct SelectedBlock(pub BlockType);
 
 impl Default for SelectedBlock {
     fn default() -> Self {
-        Self(BlockType::default())
+        Self(BlockType::Glass)
     }
 }
 
