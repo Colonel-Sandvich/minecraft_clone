@@ -102,10 +102,7 @@ fn compute_ao(blocks: &[BlockType; PADDED_CHUNK_VOLUME], pi: usize, dir: usize) 
     })
 }
 
-fn count_faces(
-    blocks: &[BlockType; PADDED_CHUNK_VOLUME],
-    data: &HybridData,
-) -> [usize; BlockMaterialLayer::COUNT] {
+fn count_faces(data: &HybridData) -> [usize; BlockMaterialLayer::COUNT] {
     let mut counts = [0; BlockMaterialLayer::COUNT];
 
     for axis in 0..3usize {
@@ -124,29 +121,7 @@ fn count_faces(
         }
     }
 
-    if data.transparent_count > 0 {
-        for px in 1..=CHUNK_SIZE {
-            for py in 1..=CHUNK_SIZE {
-                for pz in 1..=CHUNK_SIZE {
-                    let pi = padded_chunk_index(px, py, pz);
-                    let block = blocks[pi];
-
-                    if block.is_full_cube() || !block.is_rendered() {
-                        continue;
-                    }
-
-                    for dir in 0..6usize {
-                        let neighbor =
-                            blocks[(pi as isize + DIRECTION_INDEX_OFFSETS[dir]) as usize];
-                        if should_emit_face_from_indices(block, neighbor) {
-                            counts[block.material_layer_index()] += 1;
-                        }
-                    }
-                }
-            }
-        }
-    }
-
+    counts[1] = data.transparent_count * 6;
     counts
 }
 
@@ -305,7 +280,7 @@ fn make_hybrid_chunk_meshes(input: ChunkMeshInput<'_>) -> ChunkLayerMeshes {
     let blocks = &input.blocks.blocks;
 
     let data = build_bitmasks(blocks);
-    let face_counts = count_faces(blocks, &data);
+    let face_counts = count_faces(&data);
     let mut builders: [MeshBufferBuilder; BlockMaterialLayer::COUNT] =
         std::array::from_fn(|i| MeshBufferBuilder::with_face_capacity(face_counts[i]));
 
