@@ -343,9 +343,9 @@ mod tests {
 
         apply_oak_tree_to_chunk(tree, ivec3(1, 0, 0), &mut neighbor);
 
-        assert_eq!(neighbor.get(uvec3(0, 14, 8)), BlockType::OakLeaves);
-        assert_eq!(neighbor.get(uvec3(1, 14, 8)), BlockType::OakLeaves);
-        assert_eq!(neighbor.get(uvec3(15, 14, 8)), BlockType::Air);
+        assert_eq!(neighbor.get_block(uvec3(0, 14, 8)), BlockType::OakLeaves);
+        assert_eq!(neighbor.get_block(uvec3(1, 14, 8)), BlockType::OakLeaves);
+        assert_eq!(neighbor.get_block(uvec3(15, 14, 8)), BlockType::Air);
     }
 
     #[test]

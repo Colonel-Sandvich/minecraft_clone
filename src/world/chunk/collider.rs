@@ -1,4 +1,4 @@
-use super::{CHUNK_VOLUME, Chunk, ChunkNeedsColliderRebuild};
+use super::{Chunk, ChunkNeedsColliderRebuild, ChunkBlockCounts};
 use crate::world::WORLD_COLLISION_LAYERS;
 use avian3d::prelude::*;
 use bevy::math::vec3;
@@ -12,8 +12,13 @@ impl Plugin for ChunkColliderPlugin {
     }
 }
 
-fn insert_one(commands: &mut Commands, chunk: &Chunk, chunk_entity: Entity) {
-    let mut cubes = Vec::with_capacity(CHUNK_VOLUME);
+fn insert_one(commands: &mut Commands, chunk: &Chunk, chunk_entity: Entity, meta: &ChunkBlockCounts) {
+    let solid = (meta.rendered - meta.translucent) as usize;
+    if solid == 0 {
+        return;
+    }
+
+    let mut cubes = Vec::with_capacity(solid);
     for (block, (x, y, z)) in chunk.iter() {
         if !block.is_solid() {
             continue;
@@ -40,17 +45,17 @@ fn insert_one(commands: &mut Commands, chunk: &Chunk, chunk_entity: Entity) {
 
 fn rebuild_chunk_colliders(
     mut commands: Commands,
-    chunks_q: Query<(&Chunk, Entity, Option<&Children>), With<ChunkNeedsColliderRebuild>>,
+    chunks_q: Query<(&Chunk, &ChunkBlockCounts, Entity, Option<&Children>), With<ChunkNeedsColliderRebuild>>,
     collider_q: Query<Entity, With<Collider>>,
 ) {
-    for (chunk, chunk_entity, children) in chunks_q.iter() {
+    for (chunk, meta, chunk_entity, children) in chunks_q.iter() {
         if let Some(children) = children {
             for collider_entity in collider_q.iter_many(children) {
                 commands.get_entity(collider_entity).unwrap().despawn();
             }
         }
 
-        insert_one(&mut commands, chunk, chunk_entity);
+        insert_one(&mut commands, chunk, chunk_entity, meta);
         commands
             .entity(chunk_entity)
             .remove::<ChunkNeedsColliderRebuild>();
@@ -70,9 +75,10 @@ mod tests {
 
         let mut chunk = Chunk::default();
         chunk.blocks[0][0][0] = BlockType::Stone;
+        let meta = chunk.compute_block_counts();
         let chunk_entity = app
             .world_mut()
-            .spawn((chunk, ChunkNeedsColliderRebuild))
+            .spawn((chunk, meta, ChunkNeedsColliderRebuild))
             .id();
 
         app.update();

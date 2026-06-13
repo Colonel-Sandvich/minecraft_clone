@@ -55,8 +55,8 @@ fn placing_air_is_ignored() {
     let mut chunk = Chunk::default();
     let pos = uvec3(1, 2, 3);
 
-    assert!(!chunk.place_block(pos, BlockType::Air));
-    assert_eq!(chunk.get(pos), BlockType::Air);
+    assert!(chunk.place_block(pos, BlockType::Air).is_none());
+    assert_eq!(chunk.get_block(pos), BlockType::Air);
 }
 
 fn app_with_request_emitter() -> App {

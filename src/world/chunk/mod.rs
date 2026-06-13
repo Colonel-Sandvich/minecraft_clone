@@ -9,6 +9,7 @@ use mesh::ChunkMeshPlugin;
 
 use crate::block::BlockType;
 
+
 pub struct ChunkPlugin;
 
 impl Plugin for ChunkPlugin {
@@ -24,6 +25,35 @@ pub const CHUNK_ISIZE: i32 = 16;
 
 pub const CHUNK_VOLUME: usize = CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE;
 pub const CHUNK_BLOCK_STORAGE_BYTES: usize = CHUNK_VOLUME * std::mem::size_of::<u16>();
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BlockDelta {
+    pub old: BlockType,
+    pub new: BlockType,
+}
+
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ChunkBlockCounts {
+    pub rendered: u16,
+    pub full_cubes: u16,
+    pub translucent: u16,
+}
+
+impl ChunkBlockCounts {
+    pub fn apply_delta(&mut self, delta: BlockDelta) {
+        let (old_rendered, old_full, old_trans) = block_counts(delta.old);
+        let (new_rendered, new_full, new_trans) = block_counts(delta.new);
+        self.rendered = self.rendered.wrapping_add(new_rendered).wrapping_sub(old_rendered);
+        self.full_cubes = self.full_cubes.wrapping_add(new_full).wrapping_sub(old_full);
+        self.translucent = self.translucent.wrapping_add(new_trans).wrapping_sub(old_trans);
+    }
+}
+
+fn block_counts(block: BlockType) -> (u16, u16, u16) {
+    let rendered = block.is_rendered() as u16;
+    let full_cubes = block.is_full_cube() as u16;
+    (rendered, full_cubes, rendered.saturating_sub(full_cubes))
+}
 
 pub(crate) fn chunk_neighbor_offsets() -> impl Iterator<Item = IVec3> {
     (-1..=1).flat_map(|x| {
@@ -79,8 +109,14 @@ impl Default for Chunk {
 }
 
 impl Chunk {
-    pub fn get(&self, pos: UVec3) -> BlockType {
+    pub fn get_block(&self, pos: UVec3) -> BlockType {
         self.blocks[pos.x as usize][pos.z as usize][pos.y as usize]
+    }
+
+    pub fn set_block(&mut self, pos: UVec3, block: BlockType) -> BlockDelta {
+        let old = self.blocks[pos.x as usize][pos.z as usize][pos.y as usize];
+        self.blocks[pos.x as usize][pos.z as usize][pos.y as usize] = block;
+        BlockDelta { old, new: block }
     }
 
     pub fn get_i(&self, x: i32, y: i32, z: i32) -> Option<BlockType> {
@@ -92,7 +128,7 @@ impl Chunk {
         Some(self.blocks[x as usize][z as usize][y as usize])
     }
 
-    pub fn get_mut(&mut self, x: u32, y: u32, z: u32) -> Option<&mut BlockType> {
+    pub(crate) fn get_mut(&mut self, x: u32, y: u32, z: u32) -> Option<&mut BlockType> {
         let outside = |a: u32| !(0..CHUNK_SIZE).contains(&(a as usize));
         if outside(x) || outside(y) || outside(z) {
             return None;
@@ -101,36 +137,52 @@ impl Chunk {
         Some(&mut self.blocks[x as usize][z as usize][y as usize])
     }
 
-    pub fn get_mut_uvec(&mut self, pos: UVec3) -> &mut BlockType {
+    pub(crate) fn get_mut_uvec(&mut self, pos: UVec3) -> &mut BlockType {
         self.get_mut(pos.x, pos.y, pos.z).unwrap()
     }
 
-    pub fn place_block(&mut self, pos: UVec3, block: BlockType) -> bool {
-        let old_block = self.get_mut_uvec(pos);
-
+    pub fn place_block(&mut self, pos: UVec3, block: BlockType) -> Option<BlockDelta> {
         if !block.is_solid() {
-            return false;
+            return None;
         }
 
+        let old_block = self.get_mut_uvec(pos);
+
         if old_block.is_solid() {
-            return false;
+            return None;
         };
 
+        let old = *old_block;
         *old_block = block;
 
-        true
+        Some(BlockDelta { old, new: block })
     }
 
-    pub fn break_block(&mut self, pos: UVec3) -> bool {
+    pub fn break_block(&mut self, pos: UVec3) -> Option<BlockDelta> {
         let block = self.get_mut_uvec(pos);
 
         if !block.is_solid() {
-            return false;
+            return None;
         };
 
+        let old = *block;
         *block = BlockType::Air;
 
-        true
+        Some(BlockDelta {
+            old,
+            new: BlockType::Air,
+        })
+    }
+
+    pub fn compute_block_counts(&self) -> ChunkBlockCounts {
+        let mut counts = ChunkBlockCounts::default();
+        for (block, _) in self.iter() {
+            let (r, fc, t) = block_counts(*block);
+            counts.rendered += r;
+            counts.full_cubes += fc;
+            counts.translucent += t;
+        }
+        counts
     }
 
     pub fn iter(&self) -> BlockIterator<'_> {

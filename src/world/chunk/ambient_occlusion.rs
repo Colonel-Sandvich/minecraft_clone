@@ -1,6 +1,6 @@
 use bevy::prelude::*;
 
-use super::{Chunk, ChunkNeedsMeshRebuild};
+use super::{Chunk, ChunkNeedsMeshRebuild, ChunkBlockCounts};
 
 pub(crate) const AO_BRIGHTNESS: [f32; 4] = [0.45, 0.65, 0.82, 1.0];
 const AO_CONTRAST_BRIGHTNESS: [f32; 4] = [0.0, 0.25, 0.6, 1.0];
@@ -69,20 +69,23 @@ impl AmbientOcclusionMode {
 fn mark_chunk_meshes_dirty_on_ao_settings_change(
     mut commands: Commands,
     settings: Res<AmbientOcclusionSettings>,
-    chunks: Query<Entity, With<Chunk>>,
+    chunks: Query<(Entity, &ChunkBlockCounts), With<Chunk>>,
 ) {
     if !settings.is_changed() {
         return;
     }
 
-    for entity in chunks.iter() {
-        commands.entity(entity).insert(ChunkNeedsMeshRebuild);
+    for (entity, meta) in chunks.iter() {
+        if meta.rendered > 0 {
+            commands.entity(entity).insert(ChunkNeedsMeshRebuild);
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::block::BlockType;
 
     #[test]
     fn ambient_occlusion_modes_cycle_and_expose_brightness_curves() {
@@ -116,7 +119,10 @@ mod tests {
         app.add_plugins(MinimalPlugins)
             .init_resource::<AmbientOcclusionSettings>()
             .add_systems(Update, mark_chunk_meshes_dirty_on_ao_settings_change);
-        let chunk_entity = app.world_mut().spawn(Chunk::default()).id();
+        let mut chunk = Chunk::default();
+        chunk.blocks[8][8][8] = BlockType::Stone;
+        let meta = chunk.compute_block_counts();
+        let chunk_entity = app.world_mut().spawn((chunk, meta)).id();
 
         app.world_mut()
             .resource_mut::<AmbientOcclusionSettings>()

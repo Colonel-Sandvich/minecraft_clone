@@ -10,7 +10,7 @@ use crate::{
         ACTOR_LAYER, WORLD_LAYER,
         chunk::{
             Chunk, ChunkNeedsColliderRebuild, ChunkNeedsMeshRebuild, ChunkNeedsSave,
-            chunk_neighbor_offsets_for_block,
+            ChunkBlockCounts, chunk_neighbor_offsets_for_block,
         },
         dimension::Dimension,
     },
@@ -174,6 +174,7 @@ fn apply_block_interaction_requests(
     mut requests: MessageReader<BlockInteractionRequest>,
     dimension: Single<&Dimension>,
     mut chunks: Query<&mut Chunk>,
+    mut meta_q: Query<&mut ChunkBlockCounts>,
     mut block_updates: MessageWriter<BlockUpdateMessage>,
     mut selected_block: ResMut<SelectedBlock>,
     spatial_query: SpatialQuery,
@@ -192,11 +193,14 @@ fn apply_block_interaction_requests(
 
         match request.kind {
             BlockInteractionKind::Pick => {
-                selected_block.0 = chunk.get(pos.block);
+                selected_block.0 = chunk.get_block(pos.block);
             }
             BlockInteractionKind::Break => {
-                if !chunk.break_block(pos.block) {
+                let Some(delta) = chunk.break_block(pos.block) else {
                     continue;
+                };
+                if let Ok(mut meta) = meta_q.get_mut(chunk_entity) {
+                    meta.apply_delta(delta);
                 }
 
                 block_updates.write(BlockUpdateMessage {
@@ -216,8 +220,11 @@ fn apply_block_interaction_requests(
                     continue;
                 }
 
-                if !chunk.place_block(pos.block, selected_block.0) {
+                let Some(delta) = chunk.place_block(pos.block, selected_block.0) else {
                     continue;
+                };
+                if let Ok(mut meta) = meta_q.get_mut(chunk_entity) {
+                    meta.apply_delta(delta);
                 }
 
                 block_updates.write(BlockUpdateMessage {

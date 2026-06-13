@@ -164,17 +164,22 @@ pub(crate) fn finish_chunk_load_tasks(
         };
 
         load_tasks.record_success(pos);
-        let chunk_entity = commands
-            .spawn((
-                ChildOf(dimension_entity),
-                ChunkPosition(pos),
+        let meta = loaded.chunk.compute_block_counts();
+        let mut entity_commands = commands.spawn((
+            ChildOf(dimension_entity),
+            ChunkPosition(pos),
+            loaded.chunk,
+            meta,
+            Transform::from_translation(pos.as_vec3().mul(CHUNK_SIZE as f32)),
+            Visibility::default(),
+        ));
+        if meta.rendered > 0 {
+            entity_commands.insert((
                 ChunkNeedsMeshRebuild,
                 ChunkNeedsColliderRebuild,
-                loaded.chunk,
-                Transform::from_translation(pos.as_vec3().mul(CHUNK_SIZE as f32)),
-                Visibility::default(),
-            ))
-            .id();
+            ));
+        }
+        let chunk_entity = entity_commands.id();
 
         dim.chunks.insert(pos, chunk_entity);
         mark_loaded_neighbor_meshes_dirty(&mut commands, &dim, pos);
