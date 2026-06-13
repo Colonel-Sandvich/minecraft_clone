@@ -79,7 +79,7 @@ fn y_count(
                 if has_fwd {
                     let bi = blocks[pi] as usize;
                     if BLOCK_IS_RENDERED[bi]
-                        && should_emit_face_from_indices(bi, blocks[(pi as isize + PADDED_CHUNK_LAYER_SIZE as isize) as usize] as usize, DIR_UP)
+                        && should_emit_face_from_indices(bi, blocks[(pi as isize + PADDED_CHUNK_LAYER_SIZE as isize) as usize] as usize)
                     {
                         counts[BLOCK_MATERIAL_LAYER_INDEX[bi]] += 1;
                     }
@@ -88,7 +88,7 @@ fn y_count(
                     let b2pi = (pi as isize + PADDED_CHUNK_LAYER_SIZE as isize) as usize;
                     let b2i = blocks[b2pi] as usize;
                     if BLOCK_IS_RENDERED[b2i]
-                        && should_emit_face_from_indices(b2i, blocks[pi] as usize, DIR_DOWN)
+                        && should_emit_face_from_indices(b2i, blocks[pi] as usize)
                     {
                         counts[BLOCK_MATERIAL_LAYER_INDEX[b2i]] += 1;
                     }
@@ -117,7 +117,7 @@ fn y_emit(
                 if has_fwd {
                     let bi = blocks[pi] as usize;
                     if BLOCK_IS_RENDERED[bi]
-                        && should_emit_face_from_indices(bi, blocks[(pi as isize + PADDED_CHUNK_LAYER_SIZE as isize) as usize] as usize, DIR_UP)
+                        && should_emit_face_from_indices(bi, blocks[(pi as isize + PADDED_CHUNK_LAYER_SIZE as isize) as usize] as usize)
                     {
                         let ao = compute_ao(blocks, pi, DIR_UP);
                         emit_face(builders, tables, ao_brightness, bi,
@@ -128,7 +128,7 @@ fn y_emit(
                     let b2pi = (pi as isize + PADDED_CHUNK_LAYER_SIZE as isize) as usize;
                     let b2i = blocks[b2pi] as usize;
                     if BLOCK_IS_RENDERED[b2i]
-                        && should_emit_face_from_indices(b2i, blocks[pi] as usize, DIR_DOWN)
+                        && should_emit_face_from_indices(b2i, blocks[pi] as usize)
                     {
                         let ao = compute_ao(blocks, b2pi, DIR_DOWN);
                         emit_face(builders, tables, ao_brightness, b2i,
@@ -159,7 +159,7 @@ fn x_count(
                 if has_fwd {
                     let bi = blocks[pi] as usize;
                     if BLOCK_IS_RENDERED[bi]
-                        && should_emit_face_from_indices(bi, blocks[(pi + 1) as usize] as usize, DIR_RIGHT)
+                        && should_emit_face_from_indices(bi, blocks[(pi + 1) as usize] as usize)
                     {
                         counts[BLOCK_MATERIAL_LAYER_INDEX[bi]] += 1;
                     }
@@ -167,7 +167,7 @@ fn x_count(
                 if has_back {
                     let b2i = blocks[pi + 1] as usize;
                     if BLOCK_IS_RENDERED[b2i]
-                        && should_emit_face_from_indices(b2i, blocks[pi] as usize, DIR_LEFT)
+                        && should_emit_face_from_indices(b2i, blocks[pi] as usize)
                     {
                         counts[BLOCK_MATERIAL_LAYER_INDEX[b2i]] += 1;
                     }
@@ -196,7 +196,7 @@ fn x_emit(
                 if has_fwd {
                     let bi = blocks[pi] as usize;
                     if BLOCK_IS_RENDERED[bi]
-                        && should_emit_face_from_indices(bi, blocks[(pi + 1) as usize] as usize, DIR_RIGHT)
+                        && should_emit_face_from_indices(bi, blocks[(pi + 1) as usize] as usize)
                     {
                         let ao = compute_ao(blocks, pi, DIR_RIGHT);
                         emit_face(builders, tables, ao_brightness, bi,
@@ -206,7 +206,7 @@ fn x_emit(
                 if has_back {
                     let b2i = blocks[pi + 1] as usize;
                     if BLOCK_IS_RENDERED[b2i]
-                        && should_emit_face_from_indices(b2i, blocks[pi] as usize, DIR_LEFT)
+                        && should_emit_face_from_indices(b2i, blocks[pi] as usize)
                     {
                         let ao = compute_ao(blocks, pi + 1, DIR_LEFT);
                         emit_face(builders, tables, ao_brightness, b2i,
@@ -237,7 +237,7 @@ fn z_count(
                 if has_fwd {
                     let bi = blocks[pi] as usize;
                     if BLOCK_IS_RENDERED[bi]
-                        && should_emit_face_from_indices(bi, blocks[(pi as isize + PADDED_CHUNK_SIZE as isize) as usize] as usize, DIR_BACK)
+                        && should_emit_face_from_indices(bi, blocks[(pi as isize + PADDED_CHUNK_SIZE as isize) as usize] as usize)
                     {
                         counts[BLOCK_MATERIAL_LAYER_INDEX[bi]] += 1;
                     }
@@ -246,7 +246,7 @@ fn z_count(
                     let b2pi = (pi as isize + PADDED_CHUNK_SIZE as isize) as usize;
                     let b2i = blocks[b2pi] as usize;
                     if BLOCK_IS_RENDERED[b2i]
-                        && should_emit_face_from_indices(b2i, blocks[pi] as usize, DIR_FWD)
+                        && should_emit_face_from_indices(b2i, blocks[pi] as usize)
                     {
                         counts[BLOCK_MATERIAL_LAYER_INDEX[b2i]] += 1;
                     }
@@ -275,7 +275,7 @@ fn z_emit(
                 if has_fwd {
                     let bi = blocks[pi] as usize;
                     if BLOCK_IS_RENDERED[bi]
-                        && should_emit_face_from_indices(bi, blocks[(pi as isize + PADDED_CHUNK_SIZE as isize) as usize] as usize, DIR_BACK)
+                        && should_emit_face_from_indices(bi, blocks[(pi as isize + PADDED_CHUNK_SIZE as isize) as usize] as usize)
                     {
                         let ao = compute_ao(blocks, pi, DIR_BACK);
                         emit_face(builders, tables, ao_brightness, bi,
@@ -286,7 +286,7 @@ fn z_emit(
                     let b2pi = (pi as isize + PADDED_CHUNK_SIZE as isize) as usize;
                     let b2i = blocks[b2pi] as usize;
                     if BLOCK_IS_RENDERED[b2i]
-                        && should_emit_face_from_indices(b2i, blocks[pi] as usize, DIR_FWD)
+                        && should_emit_face_from_indices(b2i, blocks[pi] as usize)
                     {
                         let ao = compute_ao(blocks, b2pi, DIR_FWD);
                         emit_face(builders, tables, ao_brightness, b2i,

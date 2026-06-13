@@ -1,13 +1,15 @@
-mod bitmask;
+mod adaptive;
 mod direct;
+mod greedy;
 mod hybrid;
 mod reference;
 mod shell;
 mod sweep;
 
 use self::reference::make_layered_quad_groups_from_blocks;
-pub use bitmask::BitmaskChunkMesher;
+pub use adaptive::AdaptiveChunkMesher;
 pub use direct::DirectChunkMesher;
+pub use greedy::GreedyChunkMesher;
 pub use hybrid::HybridChunkMesher;
 pub use reference::ReferenceChunkMesher;
 pub use shell::FullCubeShellChunkMesher;
@@ -52,9 +54,9 @@ pub(crate) const BLOCK_IS_RENDERED: [bool; BLOCK_TYPE_COUNT] =
     [false, true, true, true, true, true, true, true];
 pub(crate) const BLOCK_IS_FULL_CUBE: [bool; BLOCK_TYPE_COUNT] =
     [false, true, true, true, true, false, true, false];
-pub(crate) const BLOCK_IS_DOUBLE_SIDED: [bool; BLOCK_TYPE_COUNT] =
+pub(crate) const BLOCK_EMITS_INTERNAL_FACES: [bool; BLOCK_TYPE_COUNT] =
     [false, false, false, false, false, false, false, true];
-pub(crate) const BLOCK_MATERIAL_LAYER_INDEX: [usize; BLOCK_TYPE_COUNT] = [0, 0, 0, 0, 0, 1, 0, 2];
+pub(crate) const BLOCK_MATERIAL_LAYER_INDEX: [usize; BLOCK_TYPE_COUNT] = [0, 0, 0, 0, 0, 1, 0, 1];
 pub(crate) const VERTEX_AO: [u8; 8] = [3, 2, 2, 0, 2, 1, 1, 0];
 pub(crate) const AO_SAMPLE_INDEX_OFFSETS: [[[isize; 3]; 4]; DIRECTION_COUNT] = [
     [
@@ -207,6 +209,7 @@ pub(crate) struct MeshBufferBuilder {
     positions: Vec<[f32; 3]>,
     normals: Vec<[f32; 3]>,
     uvs: Vec<[f32; 2]>,
+    uv1s: Vec<[f32; 2]>,
     colours: Vec<[f32; 4]>,
 }
 
@@ -217,6 +220,7 @@ impl MeshBufferBuilder {
             positions: Vec::with_capacity(face_count * 4),
             normals: Vec::with_capacity(face_count * 4),
             uvs: Vec::with_capacity(face_count * 4),
+            uv1s: Vec::with_capacity(face_count * 4),
             colours: Vec::with_capacity(face_count * 4),
         }
     }
@@ -244,7 +248,80 @@ impl MeshBufferBuilder {
         }
 
         self.normals.extend_from_slice(&NORMALS[side_index]);
-        self.uvs.extend_from_slice(&uvs_for_rect(uv));
+        self.uvs
+            .extend_from_slice(&uvs_for_rect(Rect::new(0.0, 0.0, 1.0, 1.0)));
+        let tile_offset = [uv.min.x, uv.min.y];
+        self.uv1s.extend_from_slice(&[tile_offset; 4]);
+
+        let face_light = face_brightness(DIRECTIONS[side_index]);
+        self.colours.extend(ao.map(|ao| {
+            let brightness = face_light * ao_brightness[ao as usize];
+            [
+                color.x * brightness,
+                color.y * brightness,
+                color.z * brightness,
+                color.w,
+            ]
+        }));
+    }
+
+    pub(crate) fn push_merged_face(
+        &mut self,
+        x: usize, y: usize, z: usize,
+        w: usize, h: usize,
+        side_index: usize,
+        uv: Rect,
+        color: Vec4,
+        ao: [u8; 4],
+        ao_brightness: [f32; 4],
+    ) {
+        let base = self.positions.len() as u32;
+        self.indices.extend_from_slice(&get_ao_indices(base, ao));
+
+        match side_index {
+            0 => {
+                self.positions.push([x as f32, y as f32, (z + w) as f32]);
+                self.positions.push([x as f32, y as f32, z as f32]);
+                self.positions.push([x as f32, (y + h) as f32, (z + w) as f32]);
+                self.positions.push([x as f32, (y + h) as f32, z as f32]);
+            }
+            1 => {
+                self.positions.push([(x + 1) as f32, y as f32, z as f32]);
+                self.positions.push([(x + 1) as f32, y as f32, (z + w) as f32]);
+                self.positions.push([(x + 1) as f32, (y + h) as f32, z as f32]);
+                self.positions.push([(x + 1) as f32, (y + h) as f32, (z + w) as f32]);
+            }
+            2 => {
+                self.positions.push([x as f32, y as f32, (z + h) as f32]);
+                self.positions.push([(x + w) as f32, y as f32, (z + h) as f32]);
+                self.positions.push([x as f32, y as f32, z as f32]);
+                self.positions.push([(x + w) as f32, y as f32, z as f32]);
+            }
+            3 => {
+                self.positions.push([x as f32, (y + 1) as f32, (z + h) as f32]);
+                self.positions.push([x as f32, (y + 1) as f32, z as f32]);
+                self.positions.push([(x + w) as f32, (y + 1) as f32, (z + h) as f32]);
+                self.positions.push([(x + w) as f32, (y + 1) as f32, z as f32]);
+            }
+            4 => {
+                self.positions.push([x as f32, y as f32, z as f32]);
+                self.positions.push([(x + w) as f32, y as f32, z as f32]);
+                self.positions.push([x as f32, (y + h) as f32, z as f32]);
+                self.positions.push([(x + w) as f32, (y + h) as f32, z as f32]);
+            }
+            5 => {
+                self.positions.push([(x + w) as f32, y as f32, (z + 1) as f32]);
+                self.positions.push([x as f32, y as f32, (z + 1) as f32]);
+                self.positions.push([(x + w) as f32, (y + h) as f32, (z + 1) as f32]);
+                self.positions.push([x as f32, (y + h) as f32, (z + 1) as f32]);
+            }
+            _ => unreachable!(),
+        }
+
+        self.normals.extend_from_slice(&NORMALS[side_index]);
+        self.uvs.extend_from_slice(&uvs_for_rect(Rect::new(0.0, 0.0, w as f32, h as f32)));
+        let tile_offset = [uv.min.x, uv.min.y];
+        self.uv1s.extend_from_slice(&[tile_offset; 4]);
 
         let face_light = face_brightness(DIRECTIONS[side_index]);
         self.colours.extend(ao.map(|ao| {
@@ -272,6 +349,7 @@ impl MeshBufferBuilder {
         mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, self.positions);
         mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, self.normals);
         mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, self.uvs);
+        mesh.insert_attribute(Mesh::ATTRIBUTE_UV_1, self.uv1s);
         mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, self.colours);
 
         Some(mesh)
@@ -280,8 +358,8 @@ impl MeshBufferBuilder {
 
 pub struct ChunkMeshBlocks {
     pub(crate) blocks: Box<[BlockType; PADDED_CHUNK_VOLUME]>,
-    center_rendered_blocks: u16,
-    center_full_cube_blocks: u16,
+    pub(crate) center_rendered_blocks: u16,
+    pub(crate) center_full_cube_blocks: u16,
 }
 
 impl ChunkMeshBlocks {
@@ -448,7 +526,7 @@ fn rebuild_chunk_meshes(
         || build_queue.borrow_local_mut(),
         |builds, (chunk_pos, chunk_entity)| {
             let blocks = ChunkMeshBlocks::from_chunks(chunk_pos.0, &chunks_by_pos);
-            let meshes = DirectChunkMesher.mesh(ChunkMeshInput {
+            let meshes = AdaptiveChunkMesher.mesh(ChunkMeshInput {
                 blocks: &blocks,
                 block_texture_map: &block_texture_map,
                 ao_brightness,
@@ -634,7 +712,6 @@ pub(crate) fn block_is_full_cube_fast(block: BlockType) -> bool {
 pub(crate) fn should_emit_face_from_indices(
     block_index: usize,
     neighbor_index: usize,
-    side_index: usize,
 ) -> bool {
     if !BLOCK_IS_RENDERED[neighbor_index] {
         return true;
@@ -648,7 +725,7 @@ pub(crate) fn should_emit_face_from_indices(
         && !BLOCK_IS_FULL_CUBE[block_index]
         && !BLOCK_IS_FULL_CUBE[neighbor_index]
     {
-        return BLOCK_IS_DOUBLE_SIDED[block_index] && is_positive_side(DIRECTIONS[side_index]);
+        return BLOCK_EMITS_INTERNAL_FACES[block_index];
     }
 
     true
@@ -703,10 +780,6 @@ fn is_in_padded_chunk(value: i32) -> bool {
 
 pub(crate) fn padded_chunk_index(x: usize, y: usize, z: usize) -> usize {
     x + PADDED_CHUNK_SIZE * (z + PADDED_CHUNK_SIZE * y)
-}
-
-fn is_positive_side(side: Direction) -> bool {
-    matches!(side, Direction::Right | Direction::Up | Direction::Backward)
 }
 
 fn get_ao_indices(start: u32, ao: [u8; 4]) -> [u32; 6] {

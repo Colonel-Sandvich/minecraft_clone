@@ -47,7 +47,7 @@ fn make_direct_chunk_meshes(input: ChunkMeshInput<'_>) -> ChunkLayerMeshes {
                         [(padded_index as isize + DIRECTION_INDEX_OFFSETS[side_index]) as usize];
                     let neighbor_index = block_mesh_index(neighbor);
 
-                    if !should_emit_face_from_indices(block_index, neighbor_index, side_index) {
+                    if !should_emit_face_from_indices(block_index, neighbor_index) {
                         continue;
                     }
 
@@ -104,7 +104,7 @@ fn count_direct_faces(
                     let neighbor_index = block_mesh_index(neighbor);
 
                     counts[BLOCK_MATERIAL_LAYER_INDEX[block_index]] +=
-                        should_emit_face_from_indices(block_index, neighbor_index, side_index)
+                        should_emit_face_from_indices(block_index, neighbor_index)
                             as usize;
                 }
 

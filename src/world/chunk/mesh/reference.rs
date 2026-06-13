@@ -2,7 +2,7 @@ use bevy::math::IVec3;
 use strum::IntoEnumIterator;
 
 use crate::block::{
-    BlockMaterialLayer, BlockTextureMap, BlockType, FaceOcclusion, FaceSidedness, block_to_colour,
+    BlockMaterialLayer, BlockTextureMap, BlockType, FaceOcclusion, block_to_colour,
 };
 use crate::quad::{Direction, Quad};
 use crate::world::chunk::{CHUNK_ISIZE, Chunk};
@@ -119,7 +119,7 @@ pub(crate) fn face_ao(
     })
 }
 
-fn should_emit_face(block: BlockType, neighbor: BlockType, side: Direction) -> bool {
+fn should_emit_face(block: BlockType, neighbor: BlockType, _side: Direction) -> bool {
     let Some(block_profile) = block.render_profile() else {
         return false;
     };
@@ -135,10 +135,14 @@ fn should_emit_face(block: BlockType, neighbor: BlockType, side: Direction) -> b
         && block_profile.occlusion == FaceOcclusion::None
         && neighbor_profile.occlusion == FaceOcclusion::None
     {
-        return block_profile.sidedness == FaceSidedness::Double && is_positive_side(side);
+        return block_is_leaf(block);
     }
 
     true
+}
+
+fn block_is_leaf(block: BlockType) -> bool {
+    matches!(block, BlockType::OakLeaves)
 }
 
 pub(crate) fn vertex_ao(side1: bool, side2: bool, corner: bool) -> u8 {
@@ -200,10 +204,6 @@ fn axis_component(offset: IVec3, axis: usize) -> i32 {
         2 => offset.z,
         _ => unreachable!("invalid axis"),
     }
-}
-
-fn is_positive_side(side: Direction) -> bool {
-    matches!(side, Direction::Right | Direction::Up | Direction::Backward)
 }
 
 pub(crate) trait BlockSampler: Sync {

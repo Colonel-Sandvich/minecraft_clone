@@ -1,10 +1,10 @@
 use crate::block::BlockMaterialLayer;
 
 use super::{
-    BLOCK_IS_DOUBLE_SIDED, BLOCK_IS_FULL_CUBE, BLOCK_IS_RENDERED, BLOCK_MATERIAL_LAYER_INDEX,
+    BLOCK_EMITS_INTERNAL_FACES, BLOCK_IS_FULL_CUBE, BLOCK_IS_RENDERED, BLOCK_MATERIAL_LAYER_INDEX,
     AO_SAMPLE_INDEX_OFFSETS, BlockMeshTables, BlockType, CHUNK_SIZE, ChunkLayerMeshes,
-    ChunkMeshInput, ChunkMesher, DIRECTION_INDEX_OFFSETS, DIRECTIONS, MeshBufferBuilder,
-    PADDED_CHUNK_SIZE, PADDED_CHUNK_VOLUME, VERTEX_AO, padded_chunk_index,
+    ChunkMeshInput, ChunkMesher, DIRECTION_INDEX_OFFSETS, MeshBufferBuilder, PADDED_CHUNK_SIZE,
+    PADDED_CHUNK_VOLUME, VERTEX_AO, padded_chunk_index,
 };
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -100,7 +100,7 @@ fn compute_ao(blocks: &[BlockType; PADDED_CHUNK_VOLUME], pi: usize, dir: usize) 
     })
 }
 
-fn should_emit_transparent(block_index: usize, neighbor_index: usize, side_index: usize) -> bool {
+fn should_emit_transparent(block_index: usize, neighbor_index: usize) -> bool {
     if !BLOCK_IS_RENDERED[neighbor_index] {
         return true;
     }
@@ -111,13 +111,7 @@ fn should_emit_transparent(block_index: usize, neighbor_index: usize, side_index
         && !BLOCK_IS_FULL_CUBE[block_index]
         && !BLOCK_IS_FULL_CUBE[neighbor_index]
     {
-        return BLOCK_IS_DOUBLE_SIDED[block_index]
-            && matches!(
-                DIRECTIONS[side_index],
-                crate::quad::Direction::Right
-                    | crate::quad::Direction::Up
-                    | crate::quad::Direction::Backward
-            );
+        return BLOCK_EMITS_INTERNAL_FACES[block_index];
     }
     true
 }
@@ -155,7 +149,7 @@ fn count_faces(
 
                     for dir in 0..6usize {
                         let ni = blocks[(pi as isize + DIRECTION_INDEX_OFFSETS[dir]) as usize] as usize;
-                        if should_emit_transparent(bi, ni, dir) {
+                        if should_emit_transparent(bi, ni) {
                             counts[BLOCK_MATERIAL_LAYER_INDEX[bi]] += 1;
                         }
                     }
@@ -205,7 +199,7 @@ fn emit_faces(
 
                     for dir in 0..6usize {
                         let ni = blocks[(pi as isize + DIRECTION_INDEX_OFFSETS[dir]) as usize] as usize;
-                        if should_emit_transparent(bi, ni, dir) {
+                        if should_emit_transparent(bi, ni) {
                             let ao = compute_ao(blocks, pi, dir);
                             builders[BLOCK_MATERIAL_LAYER_INDEX[bi]].push_face(
                                 wx, wy, wz, dir,
@@ -241,6 +235,10 @@ fn emit_plane_opaque(
             let bit_idx = wi * 64 + tz as usize;
             let t1 = bit_idx / PADDED_CHUNK_SIZE;
             let t2 = bit_idx % PADDED_CHUNK_SIZE;
+            if t1 < 1 || t1 > CHUNK_SIZE || t2 < 1 || t2 > CHUNK_SIZE {
+                bits &= bits - 1;
+                continue;
+            }
 
             let mut coords = pad;
             let mut w = world;

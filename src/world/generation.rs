@@ -56,6 +56,19 @@ pub struct OakTree {
 pub fn generate_chunk(metadata: &WorldMetadata, chunk_pos: IVec3) -> Chunk {
     let mut chunk = generate_terrain_chunk(metadata, chunk_pos);
     apply_oak_trees_for_chunk(metadata, chunk_pos, &mut chunk);
+
+    if chunk_pos == IVec3::ZERO {
+        let surface_y = terrain_height(metadata, 8, 8);
+        let local_y = surface_y + 1;
+        if local_y >= 0 && local_y < CHUNK_ISIZE {
+            chunk.blocks[8][8][local_y as usize] = BlockType::Glass;
+            chunk.blocks[7][8][local_y as usize] = BlockType::Glass;
+            chunk.blocks[9][8][local_y as usize] = BlockType::Glass;
+            chunk.blocks[8][7][local_y as usize] = BlockType::Glass;
+            chunk.blocks[8][9][local_y as usize] = BlockType::Glass;
+        }
+    }
+
     chunk
 }
 

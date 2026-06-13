@@ -13,7 +13,7 @@ use crate::world::chunk::mesh::{
 };
 use crate::world::chunk::{CHUNK_SIZE, Chunk, ChunkNeedsMeshRebuild, ChunkPosition};
 
-use super::{BitmaskChunkMesher, DirectChunkMesher, FullCubeShellChunkMesher, HybridChunkMesher, ReferenceChunkMesher, SweepChunkMesher};
+use super::{AdaptiveChunkMesher, DirectChunkMesher, FullCubeShellChunkMesher, GreedyChunkMesher, HybridChunkMesher, ReferenceChunkMesher, SweepChunkMesher};
 use super::{
     GROUND_BOUNCE_FACE_BRIGHTNESS, HORIZON_FACE_BRIGHTNESS, SKY_FACE_BRIGHTNESS, face_brightness,
 };
@@ -175,12 +175,6 @@ fn all_fast_meshers_match_direct_for_all_chunks() {
         let direct = mesh_signature(DirectChunkMesher.mesh(input));
         assert_eq!(
             direct,
-            mesh_signature(BitmaskChunkMesher.mesh(input)),
-            "bitmask vs direct: {}",
-            case.name
-        );
-        assert_eq!(
-            direct,
             mesh_signature(HybridChunkMesher.mesh(input)),
             "hybrid vs direct: {}",
             case.name
@@ -209,12 +203,6 @@ fn all_meshers_match_reference_for_all_chunks() {
         );
         assert_eq!(
             reference,
-            mesh_signature(BitmaskChunkMesher.mesh(input)),
-            "bitmask vs reference: {}",
-            case.name
-        );
-        assert_eq!(
-            reference,
             mesh_signature(HybridChunkMesher.mesh(input)),
             "hybrid vs reference: {}",
             case.name
@@ -226,6 +214,122 @@ fn all_meshers_match_reference_for_all_chunks() {
             case.name
         );
     }
+}
+
+#[test]
+fn greedy_matches_direct_for_checkerboard_no_adjacent_faces_to_merge() {
+    let texture_map = test_texture_map();
+    let mut chunk = Chunk::default();
+    for x in 0..CHUNK_SIZE {
+        for y in 0..CHUNK_SIZE {
+            for z in 0..CHUNK_SIZE {
+                if (x + y + z) % 2 == 0 {
+                    chunk.blocks[x][z][y] = BlockType::Stone;
+                }
+            }
+        }
+    }
+
+    let blocks = ChunkMeshBlocks::from_chunk(&chunk);
+    let input = ChunkMeshInput {
+        blocks: &blocks,
+        block_texture_map: &texture_map,
+        ao_brightness: AO_BRIGHTNESS,
+    };
+
+    assert_eq!(
+        mesh_signature(DirectChunkMesher.mesh(input)),
+        mesh_signature(GreedyChunkMesher.mesh(input)),
+        "greedy should match direct for checkerboard (no adjacent same-type faces to merge)"
+    );
+}
+
+#[test]
+fn greedy_has_fewer_vertices_than_direct_for_full_stone() {
+    let texture_map = test_texture_map();
+    let mut chunk = Chunk::default();
+    chunk.blocks = [[[BlockType::Stone; CHUNK_SIZE]; CHUNK_SIZE]; CHUNK_SIZE];
+
+    let blocks = ChunkMeshBlocks::from_chunk(&chunk);
+    let input = ChunkMeshInput {
+        blocks: &blocks,
+        block_texture_map: &texture_map,
+        ao_brightness: AO_BRIGHTNESS,
+    };
+
+    let direct_sig = mesh_signature(DirectChunkMesher.mesh(input));
+    let greedy_sig = mesh_signature(GreedyChunkMesher.mesh(input));
+
+    assert_eq!(direct_sig.len(), greedy_sig.len(), "same number of layers");
+    for ((dlayer, dverts, _), (glayer, gverts, _)) in direct_sig.iter().zip(greedy_sig.iter()) {
+        assert_eq!(dlayer, glayer, "same layer order");
+        assert!(
+            gverts <= dverts,
+            "greedy ({gverts}) should have <= vertices than direct ({dverts}) for layer {dlayer:?}"
+        );
+    }
+}
+
+#[test]
+fn greedy_does_not_crash_on_any_test_chunk() {
+    let texture_map = test_texture_map();
+
+    for case in test_chunks() {
+        let blocks = ChunkMeshBlocks::from_chunk(&case.chunk);
+        let input = ChunkMeshInput {
+            blocks: &blocks,
+            block_texture_map: &texture_map,
+            ao_brightness: AO_BRIGHTNESS,
+        };
+
+        let result = GreedyChunkMesher.mesh(input);
+        let direct_result = DirectChunkMesher.mesh(input);
+
+        assert_eq!(
+            result.len(),
+            direct_result.len(),
+            "greedy should produce same number of layers as direct for {}",
+            case.name
+        );
+    }
+}
+
+#[test]
+fn adaptive_delegates_to_greedy_for_all_full_cube_chunks() {
+    let texture_map = test_texture_map();
+    let mut chunk = Chunk::default();
+    chunk.blocks = [[[BlockType::Stone; CHUNK_SIZE]; CHUNK_SIZE]; CHUNK_SIZE];
+
+    let blocks = ChunkMeshBlocks::from_chunk(&chunk);
+    let input = ChunkMeshInput {
+        blocks: &blocks,
+        block_texture_map: &texture_map,
+        ao_brightness: AO_BRIGHTNESS,
+    };
+
+    let greedy = mesh_signature(GreedyChunkMesher.mesh(input));
+    let adaptive = mesh_signature(AdaptiveChunkMesher.mesh(input));
+
+    assert_eq!(greedy, adaptive, "adaptive should delegate to greedy for all-full-cube chunks");
+}
+
+#[test]
+fn adaptive_delegates_to_direct_for_sparse_chunks() {
+    let texture_map = test_texture_map();
+    let mut chunk = Chunk::default();
+    chunk.blocks[8][8][8] = BlockType::Stone;
+
+    let blocks = ChunkMeshBlocks::from_chunk(&chunk);
+    let input = ChunkMeshInput {
+        blocks: &blocks,
+        block_texture_map: &texture_map,
+        ao_brightness: AO_BRIGHTNESS,
+    };
+
+    let direct = mesh_signature(DirectChunkMesher.mesh(input));
+    let adaptive = mesh_signature(AdaptiveChunkMesher.mesh(input));
+
+    assert_eq!(direct, adaptive, "adaptive should delegate to direct for sparse chunks (<64 rendered)");
 }
 
 #[test]
@@ -459,16 +563,16 @@ fn mesh_rebuild_marker_is_removed_after_rebuild() {
 }
 
 #[test]
-fn adjacent_leaves_emit_one_shared_double_sided_face() {
+fn adjacent_leaves_emit_internal_faces_both_directions() {
     let texture_map = test_texture_map();
     let mut chunk = Chunk::default();
     chunk.blocks[0][0][0] = BlockType::OakLeaves;
     chunk.blocks[1][0][0] = BlockType::OakLeaves;
 
     let groups = make_layered_quad_groups_from_blocks(&chunk, &texture_map);
-    let leaf_groups = &groups.layers[BlockMaterialLayer::CutoutDoubleSided.index()];
+    let leaf_groups = &groups.layers[BlockMaterialLayer::Cutout.index()];
 
-    assert_eq!(quad_count(leaf_groups), 11);
+    assert_eq!(quad_count(leaf_groups), 12);
     assert_eq!(
         groups.layers[BlockMaterialLayer::Opaque.index()]
             .groups
@@ -478,7 +582,7 @@ fn adjacent_leaves_emit_one_shared_double_sided_face() {
         0
     );
     assert_eq!(leaf_groups.groups[Direction::Right as usize].len(), 2);
-    assert_eq!(leaf_groups.groups[Direction::Left as usize].len(), 1);
+    assert_eq!(leaf_groups.groups[Direction::Left as usize].len(), 2);
 }
 
 #[test]
@@ -507,10 +611,196 @@ fn chunk_meshes_are_split_by_render_layer() {
     chunk.blocks[4][4][6] = BlockType::Glass;
 
     let meshes = make_chunk_meshes(&chunk, &texture_map);
-    assert_eq!(meshes.len(), 3, "should produce three layer meshes");
+    assert_eq!(meshes.len(), 2, "should produce two layer meshes");
 
     let layers: Vec<_> = meshes.iter().map(|(layer, _)| *layer).collect();
     assert!(layers.contains(&BlockMaterialLayer::Opaque));
-    assert!(layers.contains(&BlockMaterialLayer::CutoutSingleSided));
-    assert!(layers.contains(&BlockMaterialLayer::CutoutDoubleSided));
+    assert!(layers.contains(&BlockMaterialLayer::Cutout));
+}
+
+#[test]
+fn greedy_uv0_spans_merged_quads() {
+    let mut texture_map = test_texture_map();
+    texture_map.0.insert(
+        "textures/block/stone.png".to_owned(),
+        Rect::new(0.0, 0.0, 1.0, 1.0),
+    );
+
+    let mut chunk = Chunk::default();
+    chunk.blocks[8][0][8] = BlockType::Stone;
+    chunk.blocks[8][0][9] = BlockType::Stone;
+
+    let blocks = ChunkMeshBlocks::from_chunk(&chunk);
+    let meshes = GreedyChunkMesher.mesh(ChunkMeshInput {
+        blocks: &blocks,
+        block_texture_map: &texture_map,
+        ao_brightness: AO_BRIGHTNESS,
+    });
+
+    for (_layer, mesh) in &meshes {
+        let Some(VertexAttributeValues::Float32x2(uvs)) = mesh.attribute(Mesh::ATTRIBUTE_UV_0)
+        else {
+            panic!("missing UV_0");
+        };
+        let max_x: f32 = uvs.iter().map(|[u, _v]| *u).fold(0.0_f32, f32::max);
+        let max_y: f32 = uvs.iter().map(|[_u, v]| *v).fold(0.0_f32, f32::max);
+        assert!(
+            max_x > 1.0 || max_y > 1.0,
+            "merged quads should have UV_0 > 1.0 in at least one axis, got max_x={max_x}, max_y={max_y}"
+        );
+    }
+}
+
+#[test]
+fn greedy_uv1_uses_tile_offset() {
+    let mut texture_map = test_texture_map();
+    // Use a non-trivial tile offset to verify UV_1 is correctly encoded
+    texture_map.0.insert(
+        "textures/block/stone.png".to_owned(),
+        Rect::new(0.1, 0.2, 0.15, 0.25),
+    );
+
+    let mut chunk = Chunk::default();
+    chunk.blocks[8][0][8] = BlockType::Stone;
+    chunk.blocks[8][0][9] = BlockType::Stone;
+
+    let blocks = ChunkMeshBlocks::from_chunk(&chunk);
+    let meshes = GreedyChunkMesher.mesh(ChunkMeshInput {
+        blocks: &blocks,
+        block_texture_map: &texture_map,
+        ao_brightness: AO_BRIGHTNESS,
+    });
+
+    for (_layer, mesh) in &meshes {
+        let Some(VertexAttributeValues::Float32x2(uv1s)) = mesh.attribute(Mesh::ATTRIBUTE_UV_1)
+        else {
+            panic!("missing UV_1");
+        };
+        for &[u, v] in uv1s {
+            assert!(
+                (u - 0.1).abs() < 1e-6,
+                "UV_1.x should be tile_offset.x=0.1, got {u}"
+            );
+            assert!(
+                (v - 0.2).abs() < 1e-6,
+                "UV_1.y should be tile_offset.y=0.2, got {v}"
+            );
+        }
+    }
+}
+
+#[test]
+fn greedy_uv1_is_set_on_all_vertices() {
+    let mut texture_map = test_texture_map();
+    texture_map.0.insert(
+        "textures/block/stone.png".to_owned(),
+        Rect::new(0.5, 0.25, 0.6, 0.35),
+    );
+
+    let mut chunk = Chunk::default();
+    chunk.blocks[8][0][8] = BlockType::Stone;
+
+    let blocks = ChunkMeshBlocks::from_chunk(&chunk);
+    let meshes = GreedyChunkMesher.mesh(ChunkMeshInput {
+        blocks: &blocks,
+        block_texture_map: &texture_map,
+        ao_brightness: AO_BRIGHTNESS,
+    });
+
+    for (layer, mesh) in &meshes {
+        let Some(VertexAttributeValues::Float32x2(uv1s)) = mesh.attribute(Mesh::ATTRIBUTE_UV_1)
+        else {
+            panic!("missing UV_1");
+        };
+        for &[u, v] in uv1s {
+            assert!(
+                (u - 0.5).abs() < 1e-6,
+                "UV_1.x should be tile_offset.x=0.5, got {u}"
+            );
+            assert!(
+                (v - 0.25).abs() < 1e-6,
+                "UV_1.y should be tile_offset.y=0.25, got {v}"
+            );
+        }
+    }
+}
+
+#[test]
+fn greedy_uv1_debug_all_values() {
+    let mut texture_map = test_texture_map();
+    texture_map.0.insert(
+        "textures/block/stone.png".to_owned(),
+        Rect::new(0.5, 0.25, 0.6, 0.35),
+    );
+
+    let mut chunk = Chunk::default();
+    chunk.blocks[8][0][8] = BlockType::Stone;
+
+    let blocks = ChunkMeshBlocks::from_chunk(&chunk);
+    let meshes = GreedyChunkMesher.mesh(ChunkMeshInput {
+        blocks: &blocks,
+        block_texture_map: &texture_map,
+        ao_brightness: AO_BRIGHTNESS,
+    });
+
+    for (layer, mesh) in &meshes {
+        let Some(VertexAttributeValues::Float32x2(uv1s)) = mesh.attribute(Mesh::ATTRIBUTE_UV_1)
+        else {
+            panic!("missing UV_1 in {layer:?}");
+        };
+
+        for &[u, v] in uv1s {
+            assert!(
+                (u - 0.5).abs() < 1e-6,
+                "UV_1.x should be tile_offset.x=0.5, got {u}"
+            );
+            assert!(
+                (v - 0.25).abs() < 1e-6,
+                "UV_1.y should be tile_offset.y=0.25, got {v}"
+            );
+        }
+    }
+}
+
+#[test]
+fn greedy_vertex_count_less_than_direct_for_adjacent_blocks() {
+    let mut texture_map = test_texture_map();
+    texture_map.0.insert(
+        "textures/block/stone.png".to_owned(),
+        Rect::new(0.0, 0.0, 1.0, 1.0),
+    );
+
+    let mut chunk = Chunk::default();
+    chunk.blocks[8][0][8] = BlockType::Stone;
+    chunk.blocks[8][0][9] = BlockType::Stone;
+
+    let blocks = ChunkMeshBlocks::from_chunk(&chunk);
+    let input = ChunkMeshInput {
+        blocks: &blocks,
+        block_texture_map: &texture_map,
+        ao_brightness: AO_BRIGHTNESS,
+    };
+
+    let direct_verts: usize = DirectChunkMesher
+        .mesh(input)
+        .iter()
+        .map(|(_, m)| match m.attribute(Mesh::ATTRIBUTE_POSITION).unwrap() {
+            VertexAttributeValues::Float32x3(v) => v.len(),
+            _ => 0,
+        })
+        .sum();
+
+    let greedy_verts: usize = GreedyChunkMesher
+        .mesh(input)
+        .iter()
+        .map(|(_, m)| match m.attribute(Mesh::ATTRIBUTE_POSITION).unwrap() {
+            VertexAttributeValues::Float32x3(v) => v.len(),
+            _ => 0,
+        })
+        .sum();
+
+    assert!(
+        greedy_verts < direct_verts,
+        "greedy ({greedy_verts}) should merge faces and have fewer vertices than direct ({direct_verts})"
+    );
 }
