@@ -9,7 +9,7 @@ impl Plugin for InspectorPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(
             FilterQueryInspectorPlugin::<With<Player>>::default()
-                .run_if(input_toggle_active(false, KeyCode::F3)),
+                .run_if(input_toggle_active(false, KeyCode::F10)),
         );
     }
 }
