@@ -1,8 +1,8 @@
 use crate::block::BlockMaterialLayer;
 
 use super::{
-    BLOCK_EMITS_INTERNAL_FACES, BLOCK_IS_FULL_CUBE, BLOCK_IS_RENDERED, BLOCK_MATERIAL_LAYER_INDEX,
-    AO_SAMPLE_INDEX_OFFSETS, BlockMeshTables, BlockType, CHUNK_SIZE, ChunkLayerMeshes,
+    AO_SAMPLE_INDEX_OFFSETS, BLOCK_EMITS_INTERNAL_FACES, BLOCK_IS_FULL_CUBE, BLOCK_IS_RENDERED,
+    BLOCK_MATERIAL_LAYER_INDEX, BlockMeshTables, BlockType, CHUNK_SIZE, ChunkLayerMeshes,
     ChunkMeshInput, ChunkMesher, DIRECTION_INDEX_OFFSETS, MeshBufferBuilder, PADDED_CHUNK_SIZE,
     PADDED_CHUNK_VOLUME, VERTEX_AO, padded_chunk_index,
 };
@@ -82,7 +82,10 @@ fn build_bitmasks(blocks: &[BlockType; PADDED_CHUNK_VOLUME]) -> HybridData {
         }
     }
 
-    HybridData { masks, transparent_count }
+    HybridData {
+        masks,
+        transparent_count,
+    }
 }
 
 #[inline(always)]
@@ -126,8 +129,10 @@ fn count_faces(
         let axis_masks = &data.masks[axis];
 
         for c in 1..=CHUNK_SIZE {
-            let emit_first = bitwise_and_not(&axis_masks.full_cube[c], &axis_masks.full_cube[c - 1]);
-            let emit_second = bitwise_and_not(&axis_masks.full_cube[c], &axis_masks.full_cube[c + 1]);
+            let emit_first =
+                bitwise_and_not(&axis_masks.full_cube[c], &axis_masks.full_cube[c - 1]);
+            let emit_second =
+                bitwise_and_not(&axis_masks.full_cube[c], &axis_masks.full_cube[c + 1]);
 
             for wi in 0..PLANE_U64S {
                 counts[0] += emit_first[wi].count_ones() as usize;
@@ -148,7 +153,8 @@ fn count_faces(
                     }
 
                     for dir in 0..6usize {
-                        let ni = blocks[(pi as isize + DIRECTION_INDEX_OFFSETS[dir]) as usize] as usize;
+                        let ni =
+                            blocks[(pi as isize + DIRECTION_INDEX_OFFSETS[dir]) as usize] as usize;
                         if should_emit_transparent(bi, ni) {
                             counts[BLOCK_MATERIAL_LAYER_INDEX[bi]] += 1;
                         }
@@ -174,11 +180,31 @@ fn emit_faces(
         let second_dir = axis * 2 + 1;
 
         for c in 1..=CHUNK_SIZE {
-            let emit_first = bitwise_and_not(&axis_masks.full_cube[c], &axis_masks.full_cube[c - 1]);
-            let emit_second = bitwise_and_not(&axis_masks.full_cube[c], &axis_masks.full_cube[c + 1]);
+            let emit_first =
+                bitwise_and_not(&axis_masks.full_cube[c], &axis_masks.full_cube[c - 1]);
+            let emit_second =
+                bitwise_and_not(&axis_masks.full_cube[c], &axis_masks.full_cube[c + 1]);
 
-            emit_plane_opaque(&emit_first, blocks, tables, ao_brightness, builders, c, axis, first_dir);
-            emit_plane_opaque(&emit_second, blocks, tables, ao_brightness, builders, c, axis, second_dir);
+            emit_plane_opaque(
+                &emit_first,
+                blocks,
+                tables,
+                ao_brightness,
+                builders,
+                c,
+                axis,
+                first_dir,
+            );
+            emit_plane_opaque(
+                &emit_second,
+                blocks,
+                tables,
+                ao_brightness,
+                builders,
+                c,
+                axis,
+                second_dir,
+            );
         }
     }
 
@@ -198,12 +224,19 @@ fn emit_faces(
                     let wz = pz - 1;
 
                     for dir in 0..6usize {
-                        let ni = blocks[(pi as isize + DIRECTION_INDEX_OFFSETS[dir]) as usize] as usize;
+                        let ni =
+                            blocks[(pi as isize + DIRECTION_INDEX_OFFSETS[dir]) as usize] as usize;
                         if should_emit_transparent(bi, ni) {
                             let ao = compute_ao(blocks, pi, dir);
                             builders[BLOCK_MATERIAL_LAYER_INDEX[bi]].push_face(
-                                wx, wy, wz, dir,
-                                tables.uvs[bi][dir], tables.colors[bi][dir], ao, ao_brightness,
+                                wx,
+                                wy,
+                                wz,
+                                dir,
+                                tables.uvs[bi][dir],
+                                tables.colors[bi][dir],
+                                ao,
+                                ao_brightness,
                             );
                         }
                     }
@@ -235,7 +268,7 @@ fn emit_plane_opaque(
             let bit_idx = wi * 64 + tz as usize;
             let t1 = bit_idx / PADDED_CHUNK_SIZE;
             let t2 = bit_idx % PADDED_CHUNK_SIZE;
-            if t1 < 1 || t1 > CHUNK_SIZE || t2 < 1 || t2 > CHUNK_SIZE {
+            if !(1..=CHUNK_SIZE).contains(&t1) || !(1..=CHUNK_SIZE).contains(&t2) {
                 bits &= bits - 1;
                 continue;
             }
@@ -244,16 +277,22 @@ fn emit_plane_opaque(
             let mut w = world;
             match axis {
                 0 => {
-                    coords[1] = t1; coords[2] = t2;
-                    w[1] = t1 - 1; w[2] = t2 - 1;
+                    coords[1] = t1;
+                    coords[2] = t2;
+                    w[1] = t1 - 1;
+                    w[2] = t2 - 1;
                 }
                 1 => {
-                    coords[0] = t1; coords[2] = t2;
-                    w[0] = t1 - 1; w[2] = t2 - 1;
+                    coords[0] = t1;
+                    coords[2] = t2;
+                    w[0] = t1 - 1;
+                    w[2] = t2 - 1;
                 }
                 _ => {
-                    coords[0] = t1; coords[1] = t2;
-                    w[0] = t1 - 1; w[1] = t2 - 1;
+                    coords[0] = t1;
+                    coords[1] = t2;
+                    w[0] = t1 - 1;
+                    w[1] = t2 - 1;
                 }
             }
 
@@ -261,8 +300,14 @@ fn emit_plane_opaque(
             let bi = blocks[pi] as usize;
             let ao = compute_ao(blocks, pi, dir);
             builders[BLOCK_MATERIAL_LAYER_INDEX[bi]].push_face(
-                w[0], w[1], w[2], dir,
-                tables.uvs[bi][dir], tables.colors[bi][dir], ao, ao_brightness,
+                w[0],
+                w[1],
+                w[2],
+                dir,
+                tables.uvs[bi][dir],
+                tables.colors[bi][dir],
+                ao,
+                ao_brightness,
             );
 
             bits &= bits - 1;

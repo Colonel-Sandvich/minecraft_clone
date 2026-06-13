@@ -5,3 +5,5 @@ perf.data.old
 flamegraph_reference_full.svg
 flamegraph_direct_full.svg
 perf.data
+benches/chunk_meshing
+benches/bench_to_html.py

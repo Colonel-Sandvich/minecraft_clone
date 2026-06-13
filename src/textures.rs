@@ -70,7 +70,8 @@ fn setup(
 
     // Compute tile_size from the atlas. All block textures are 16x16,
     // so any block's tex rect gives the correct tile UV size.
-    let stone_rect = block_texture_map.get("textures/block/stone.png")
+    let stone_rect = block_texture_map
+        .get("textures/block/stone.png")
         .expect("stone.png must be in texture map");
     let tile_size = Vec2::new(stone_rect.width(), stone_rect.height());
 

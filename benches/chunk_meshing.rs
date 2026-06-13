@@ -12,9 +12,9 @@ use minecraft_clone::{
             CHUNK_SIZE, Chunk,
             ambient_occlusion::AmbientOcclusionSettings,
             mesh::{
-                AdaptiveChunkMesher, ChunkMeshBlocks, ChunkMeshInput,
-                ChunkMesher, DirectChunkMesher, GreedyChunkMesher, HybridChunkMesher,
-                ReferenceChunkMesher, SweepChunkMesher, make_reference_layered_quad_groups,
+                AdaptiveChunkMesher, ChunkMeshBlocks, ChunkMeshInput, ChunkMesher,
+                DirectChunkMesher, GreedyChunkMesher, HybridChunkMesher, ReferenceChunkMesher,
+                SweepChunkMesher, make_reference_layered_quad_groups,
             },
         },
         generation::generate_chunk,
@@ -331,13 +331,21 @@ fn realistic_terrain_scenario() -> ChunkMeshingScenario {
                     BlockType::Grass
                 } else if y >= 7 && y <= 11 && x >= 6 && x <= 9 && z >= 6 && z <= 9 {
                     BlockType::OakLog
-                } else if y == 12 && x >= 5 && x <= 10 && z >= 5 && z <= 10
+                } else if y == 12
+                    && x >= 5
+                    && x <= 10
+                    && z >= 5
+                    && z <= 10
                     && !(x >= 7 && x <= 8 && z >= 7 && z <= 8)
                 {
                     BlockType::OakLeaves
                 } else if y == 11 && x >= 5 && x <= 10 && z >= 5 && z <= 10 {
                     BlockType::OakLeaves
-                } else if y == 10 && x >= 5 && x <= 10 && z >= 5 && z <= 10
+                } else if y == 10
+                    && x >= 5
+                    && x <= 10
+                    && z >= 5
+                    && z <= 10
                     && (x == 5 || x == 10 || z == 5 || z == 10)
                 {
                     BlockType::OakLeaves

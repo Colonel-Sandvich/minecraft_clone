@@ -194,8 +194,10 @@ fn collide_and_slide(
 
     let normal_position = position;
 
-    if grounded && had_horizontal_collision && config.autostep > 0.0 {
-        if let Some((autostep_position, autostep_velocity)) = try_autostep(
+    if grounded
+        && had_horizontal_collision
+        && config.autostep > 0.0
+        && let Some((autostep_position, autostep_velocity)) = try_autostep(
             spatial_query,
             collider,
             rotation,
@@ -205,10 +207,10 @@ fn collide_and_slide(
             original_velocity,
             intended_xz,
             normal_position,
-        ) {
-            *velocity = autostep_velocity;
-            return (autostep_position, true);
-        }
+        )
+    {
+        *velocity = autostep_velocity;
+        return (autostep_position, true);
     }
 
     *velocity = normal_velocity;

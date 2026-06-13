@@ -60,7 +60,7 @@ pub fn generate_chunk(metadata: &WorldMetadata, chunk_pos: IVec3) -> Chunk {
     if chunk_pos == IVec3::ZERO {
         let surface_y = terrain_height(metadata, 8, 8);
         let local_y = surface_y + 1;
-        if local_y >= 0 && local_y < CHUNK_ISIZE {
+        if (0..CHUNK_ISIZE).contains(&local_y) {
             chunk.blocks[8][8][local_y as usize] = BlockType::Glass;
             chunk.blocks[7][8][local_y as usize] = BlockType::Glass;
             chunk.blocks[9][8][local_y as usize] = BlockType::Glass;

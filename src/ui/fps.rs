@@ -41,11 +41,11 @@ fn setup(mut commands: Commands) {
 
 fn update_fps_text(diagnostics: Res<DiagnosticsStore>, mut query: Query<&mut Text, With<FpsText>>) {
     for mut text in &mut query {
-        if let Some(fps) = diagnostics.get(&FrameTimeDiagnosticsPlugin::FPS) {
-            if let Some(value) = fps.smoothed() {
-                // Update the value of the second section
-                text.0 = format!("FPS: {value:.2}");
-            }
+        if let Some(fps) = diagnostics.get(&FrameTimeDiagnosticsPlugin::FPS)
+            && let Some(value) = fps.smoothed()
+        {
+            // Update the value of the second section
+            text.0 = format!("FPS: {value:.2}");
         }
     }
 }

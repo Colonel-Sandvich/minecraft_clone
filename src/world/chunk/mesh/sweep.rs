@@ -1,7 +1,7 @@
 use crate::block::BlockMaterialLayer;
 
 use super::{
-    BLOCK_IS_FULL_CUBE, BLOCK_IS_RENDERED, BLOCK_MATERIAL_LAYER_INDEX, AO_SAMPLE_INDEX_OFFSETS,
+    AO_SAMPLE_INDEX_OFFSETS, BLOCK_IS_FULL_CUBE, BLOCK_IS_RENDERED, BLOCK_MATERIAL_LAYER_INDEX,
     BlockMeshTables, BlockType, CHUNK_SIZE, ChunkLayerMeshes, ChunkMeshInput, ChunkMesher,
     MeshBufferBuilder, PADDED_CHUNK_LAYER_SIZE, PADDED_CHUNK_SIZE, PADDED_CHUNK_VOLUME, VERTEX_AO,
     padded_chunk_index, should_emit_face_from_indices,
@@ -56,8 +56,14 @@ fn emit_face(
     ao: [u8; 4],
 ) {
     builders[BLOCK_MATERIAL_LAYER_INDEX[bi]].push_face(
-        x, y, z, dir,
-        tables.uvs[bi][dir], tables.colors[bi][dir], ao, ao_brightness,
+        x,
+        y,
+        z,
+        dir,
+        tables.uvs[bi][dir],
+        tables.colors[bi][dir],
+        ao,
+        ao_brightness,
     );
 }
 
@@ -69,7 +75,7 @@ fn y_count(
 ) {
     for center in 0..=CHUNK_SIZE {
         let has_fwd = center >= 1;
-        let has_back = center <= CHUNK_SIZE - 1;
+        let has_back = center < CHUNK_SIZE;
         if !has_fwd && !has_back {
             continue;
         }
@@ -79,7 +85,11 @@ fn y_count(
                 if has_fwd {
                     let bi = blocks[pi] as usize;
                     if BLOCK_IS_RENDERED[bi]
-                        && should_emit_face_from_indices(bi, blocks[(pi as isize + PADDED_CHUNK_LAYER_SIZE as isize) as usize] as usize)
+                        && should_emit_face_from_indices(
+                            bi,
+                            blocks[(pi as isize + PADDED_CHUNK_LAYER_SIZE as isize) as usize]
+                                as usize,
+                        )
                     {
                         counts[BLOCK_MATERIAL_LAYER_INDEX[bi]] += 1;
                     }
@@ -107,7 +117,7 @@ fn y_emit(
 ) {
     for center in 0..=CHUNK_SIZE {
         let has_fwd = center >= 1;
-        let has_back = center <= CHUNK_SIZE - 1;
+        let has_back = center < CHUNK_SIZE;
         if !has_fwd && !has_back {
             continue;
         }
@@ -117,11 +127,24 @@ fn y_emit(
                 if has_fwd {
                     let bi = blocks[pi] as usize;
                     if BLOCK_IS_RENDERED[bi]
-                        && should_emit_face_from_indices(bi, blocks[(pi as isize + PADDED_CHUNK_LAYER_SIZE as isize) as usize] as usize)
+                        && should_emit_face_from_indices(
+                            bi,
+                            blocks[(pi as isize + PADDED_CHUNK_LAYER_SIZE as isize) as usize]
+                                as usize,
+                        )
                     {
                         let ao = compute_ao(blocks, pi, DIR_UP);
-                        emit_face(builders, tables, ao_brightness, bi,
-                            inner - 1, center - 1, outer - 1, DIR_UP, ao);
+                        emit_face(
+                            builders,
+                            tables,
+                            ao_brightness,
+                            bi,
+                            inner - 1,
+                            center - 1,
+                            outer - 1,
+                            DIR_UP,
+                            ao,
+                        );
                     }
                 }
                 if has_back {
@@ -131,8 +154,17 @@ fn y_emit(
                         && should_emit_face_from_indices(b2i, blocks[pi] as usize)
                     {
                         let ao = compute_ao(blocks, b2pi, DIR_DOWN);
-                        emit_face(builders, tables, ao_brightness, b2i,
-                            inner - 1, center, outer - 1, DIR_DOWN, ao);
+                        emit_face(
+                            builders,
+                            tables,
+                            ao_brightness,
+                            b2i,
+                            inner - 1,
+                            center,
+                            outer - 1,
+                            DIR_DOWN,
+                            ao,
+                        );
                     }
                 }
                 pi += 1;
@@ -149,7 +181,7 @@ fn x_count(
 ) {
     for center in 0..=CHUNK_SIZE {
         let has_fwd = center >= 1;
-        let has_back = center <= CHUNK_SIZE - 1;
+        let has_back = center < CHUNK_SIZE;
         if !has_fwd && !has_back {
             continue;
         }
@@ -159,7 +191,7 @@ fn x_count(
                 if has_fwd {
                     let bi = blocks[pi] as usize;
                     if BLOCK_IS_RENDERED[bi]
-                        && should_emit_face_from_indices(bi, blocks[(pi + 1) as usize] as usize)
+                        && should_emit_face_from_indices(bi, blocks[pi + 1] as usize)
                     {
                         counts[BLOCK_MATERIAL_LAYER_INDEX[bi]] += 1;
                     }
@@ -186,7 +218,7 @@ fn x_emit(
 ) {
     for center in 0..=CHUNK_SIZE {
         let has_fwd = center >= 1;
-        let has_back = center <= CHUNK_SIZE - 1;
+        let has_back = center < CHUNK_SIZE;
         if !has_fwd && !has_back {
             continue;
         }
@@ -196,11 +228,20 @@ fn x_emit(
                 if has_fwd {
                     let bi = blocks[pi] as usize;
                     if BLOCK_IS_RENDERED[bi]
-                        && should_emit_face_from_indices(bi, blocks[(pi + 1) as usize] as usize)
+                        && should_emit_face_from_indices(bi, blocks[pi + 1] as usize)
                     {
                         let ao = compute_ao(blocks, pi, DIR_RIGHT);
-                        emit_face(builders, tables, ao_brightness, bi,
-                            center - 1, inner - 1, outer - 1, DIR_RIGHT, ao);
+                        emit_face(
+                            builders,
+                            tables,
+                            ao_brightness,
+                            bi,
+                            center - 1,
+                            inner - 1,
+                            outer - 1,
+                            DIR_RIGHT,
+                            ao,
+                        );
                     }
                 }
                 if has_back {
@@ -209,8 +250,17 @@ fn x_emit(
                         && should_emit_face_from_indices(b2i, blocks[pi] as usize)
                     {
                         let ao = compute_ao(blocks, pi + 1, DIR_LEFT);
-                        emit_face(builders, tables, ao_brightness, b2i,
-                            center, inner - 1, outer - 1, DIR_LEFT, ao);
+                        emit_face(
+                            builders,
+                            tables,
+                            ao_brightness,
+                            b2i,
+                            center,
+                            inner - 1,
+                            outer - 1,
+                            DIR_LEFT,
+                            ao,
+                        );
                     }
                 }
                 pi += PADDED_CHUNK_LAYER_SIZE;
@@ -227,7 +277,7 @@ fn z_count(
 ) {
     for center in 0..=CHUNK_SIZE {
         let has_fwd = center >= 1;
-        let has_back = center <= CHUNK_SIZE - 1;
+        let has_back = center < CHUNK_SIZE;
         if !has_fwd && !has_back {
             continue;
         }
@@ -237,7 +287,10 @@ fn z_count(
                 if has_fwd {
                     let bi = blocks[pi] as usize;
                     if BLOCK_IS_RENDERED[bi]
-                        && should_emit_face_from_indices(bi, blocks[(pi as isize + PADDED_CHUNK_SIZE as isize) as usize] as usize)
+                        && should_emit_face_from_indices(
+                            bi,
+                            blocks[(pi as isize + PADDED_CHUNK_SIZE as isize) as usize] as usize,
+                        )
                     {
                         counts[BLOCK_MATERIAL_LAYER_INDEX[bi]] += 1;
                     }
@@ -265,7 +318,7 @@ fn z_emit(
 ) {
     for center in 0..=CHUNK_SIZE {
         let has_fwd = center >= 1;
-        let has_back = center <= CHUNK_SIZE - 1;
+        let has_back = center < CHUNK_SIZE;
         if !has_fwd && !has_back {
             continue;
         }
@@ -275,11 +328,23 @@ fn z_emit(
                 if has_fwd {
                     let bi = blocks[pi] as usize;
                     if BLOCK_IS_RENDERED[bi]
-                        && should_emit_face_from_indices(bi, blocks[(pi as isize + PADDED_CHUNK_SIZE as isize) as usize] as usize)
+                        && should_emit_face_from_indices(
+                            bi,
+                            blocks[(pi as isize + PADDED_CHUNK_SIZE as isize) as usize] as usize,
+                        )
                     {
                         let ao = compute_ao(blocks, pi, DIR_BACK);
-                        emit_face(builders, tables, ao_brightness, bi,
-                            inner - 1, outer - 1, center - 1, DIR_BACK, ao);
+                        emit_face(
+                            builders,
+                            tables,
+                            ao_brightness,
+                            bi,
+                            inner - 1,
+                            outer - 1,
+                            center - 1,
+                            DIR_BACK,
+                            ao,
+                        );
                     }
                 }
                 if has_back {
@@ -289,8 +354,17 @@ fn z_emit(
                         && should_emit_face_from_indices(b2i, blocks[pi] as usize)
                     {
                         let ao = compute_ao(blocks, b2pi, DIR_FWD);
-                        emit_face(builders, tables, ao_brightness, b2i,
-                            inner - 1, outer - 1, center, DIR_FWD, ao);
+                        emit_face(
+                            builders,
+                            tables,
+                            ao_brightness,
+                            b2i,
+                            inner - 1,
+                            outer - 1,
+                            center,
+                            DIR_FWD,
+                            ao,
+                        );
                     }
                 }
                 pi += 1;
