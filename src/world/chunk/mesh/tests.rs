@@ -13,7 +13,7 @@ use crate::world::chunk::mesh::{
 };
 use crate::world::chunk::{CHUNK_SIZE, Chunk, ChunkNeedsMeshRebuild, ChunkPosition};
 
-use super::{DirectChunkMesher, FullCubeShellChunkMesher, ReferenceChunkMesher};
+use super::{BitmaskChunkMesher, DirectChunkMesher, FullCubeShellChunkMesher, HybridChunkMesher, ReferenceChunkMesher, SweepChunkMesher};
 use super::{
     GROUND_BOUNCE_FACE_BRIGHTNESS, HORIZON_FACE_BRIGHTNESS, SKY_FACE_BRIGHTNESS, face_brightness,
 };
@@ -86,10 +86,12 @@ fn vertex_ao_uses_four_symmetric_levels() {
     }
 }
 
-#[test]
-fn direct_mesh_counts_match_reference_for_representative_chunks() {
-    let texture_map = test_texture_map();
+struct TestChunkCase {
+    name: &'static str,
+    chunk: Chunk,
+}
 
+fn test_chunks() -> Vec<TestChunkCase> {
     let mut single = Chunk::default();
     single.blocks[8][8][8] = BlockType::Stone;
 
@@ -118,30 +120,110 @@ fn direct_mesh_counts_match_reference_for_representative_chunks() {
     let mut leaves = Chunk::default();
     leaves.blocks = [[[BlockType::OakLeaves; CHUNK_SIZE]; CHUNK_SIZE]; CHUNK_SIZE];
 
+    let empty = Chunk::default();
+
     let mut full_stone = Chunk::default();
     full_stone.blocks = [[[BlockType::Stone; CHUNK_SIZE]; CHUNK_SIZE]; CHUNK_SIZE];
 
-    for (name, chunk) in [
-        ("full_stone", &full_stone),
-        ("single", &single),
-        ("checkerboard", &checkerboard),
-        ("mixed", &mixed),
-        ("leaves", &leaves),
-    ] {
-        let blocks = ChunkMeshBlocks::from_chunk(chunk);
+    let mut all_glass = Chunk::default();
+    all_glass.blocks = [[[BlockType::Glass; CHUNK_SIZE]; CHUNK_SIZE]; CHUNK_SIZE];
+
+    vec![
+        TestChunkCase {
+            name: "empty",
+            chunk: empty,
+        },
+        TestChunkCase {
+            name: "full_stone",
+            chunk: full_stone,
+        },
+        TestChunkCase {
+            name: "all_glass",
+            chunk: all_glass,
+        },
+        TestChunkCase {
+            name: "single",
+            chunk: single,
+        },
+        TestChunkCase {
+            name: "checkerboard",
+            chunk: checkerboard,
+        },
+        TestChunkCase {
+            name: "mixed",
+            chunk: mixed,
+        },
+        TestChunkCase {
+            name: "leaves",
+            chunk: leaves,
+        },
+    ]
+}
+
+#[test]
+fn all_fast_meshers_match_direct_for_all_chunks() {
+    let texture_map = test_texture_map();
+
+    for case in test_chunks() {
+        let blocks = ChunkMeshBlocks::from_chunk(&case.chunk);
         let input = ChunkMeshInput {
             blocks: &blocks,
             block_texture_map: &texture_map,
             ao_brightness: AO_BRIGHTNESS,
         };
 
-        let reference = ReferenceChunkMesher.mesh(input);
-        let direct = DirectChunkMesher.mesh(input);
-
+        let direct = mesh_signature(DirectChunkMesher.mesh(input));
         assert_eq!(
-            mesh_signature(reference),
-            mesh_signature(direct),
-            "direct vs reference: {name}"
+            direct,
+            mesh_signature(BitmaskChunkMesher.mesh(input)),
+            "bitmask vs direct: {}",
+            case.name
+        );
+        assert_eq!(
+            direct,
+            mesh_signature(HybridChunkMesher.mesh(input)),
+            "hybrid vs direct: {}",
+            case.name
+        );
+    }
+}
+
+#[test]
+fn all_meshers_match_reference_for_all_chunks() {
+    let texture_map = test_texture_map();
+
+    for case in test_chunks() {
+        let blocks = ChunkMeshBlocks::from_chunk(&case.chunk);
+        let input = ChunkMeshInput {
+            blocks: &blocks,
+            block_texture_map: &texture_map,
+            ao_brightness: AO_BRIGHTNESS,
+        };
+
+        let reference = mesh_signature(ReferenceChunkMesher.mesh(input));
+        assert_eq!(
+            reference,
+            mesh_signature(DirectChunkMesher.mesh(input)),
+            "direct vs reference: {}",
+            case.name
+        );
+        assert_eq!(
+            reference,
+            mesh_signature(BitmaskChunkMesher.mesh(input)),
+            "bitmask vs reference: {}",
+            case.name
+        );
+        assert_eq!(
+            reference,
+            mesh_signature(HybridChunkMesher.mesh(input)),
+            "hybrid vs reference: {}",
+            case.name
+        );
+        assert_eq!(
+            reference,
+            mesh_signature(SweepChunkMesher.mesh(input)),
+            "sweep vs reference: {}",
+            case.name
         );
     }
 }

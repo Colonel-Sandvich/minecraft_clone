@@ -1,11 +1,17 @@
+mod bitmask;
 mod direct;
+mod hybrid;
 mod reference;
 mod shell;
+mod sweep;
 
 use self::reference::make_layered_quad_groups_from_blocks;
+pub use bitmask::BitmaskChunkMesher;
 pub use direct::DirectChunkMesher;
+pub use hybrid::HybridChunkMesher;
 pub use reference::ReferenceChunkMesher;
 pub use shell::FullCubeShellChunkMesher;
+pub use sweep::SweepChunkMesher;
 
 use bevy::asset::RenderAssetUsages;
 use bevy::camera::primitives::Aabb;

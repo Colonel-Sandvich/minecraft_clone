@@ -1,5 +1,8 @@
+use std::hint::black_box;
+use std::time::Duration;
+
 use bevy::{math::Rect, platform::collections::HashMap, prelude::*};
-use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use minecraft_clone::{
     block::{BlockTextureMap, BlockType, block_and_side_to_texture_path},
     quad::Direction,
@@ -9,8 +12,8 @@ use minecraft_clone::{
             CHUNK_SIZE, Chunk,
             ambient_occlusion::AmbientOcclusionSettings,
             mesh::{
-                ChunkMeshBlocks, ChunkMeshInput, ChunkMesher, DirectChunkMesher,
-                FullCubeShellChunkMesher, ReferenceChunkMesher, make_reference_layered_quad_groups,
+                BitmaskChunkMesher, ChunkMeshBlocks, ChunkMeshInput, ChunkMesher, DirectChunkMesher,
+                HybridChunkMesher, ReferenceChunkMesher, SweepChunkMesher, make_reference_layered_quad_groups,
             },
         },
         generation::generate_chunk,
@@ -97,8 +100,24 @@ fn bench_chunk_meshing(c: &mut Criterion) {
     );
     bench_mesher(
         c,
-        "full_cube_shell_full_meshes",
-        FullCubeShellChunkMesher,
+        "sweep_full_meshes",
+        SweepChunkMesher,
+        &inputs,
+        &texture_map,
+        ao_brightness,
+    );
+    bench_mesher(
+        c,
+        "bitmask_full_meshes",
+        BitmaskChunkMesher,
+        &inputs,
+        &texture_map,
+        ao_brightness,
+    );
+    bench_mesher(
+        c,
+        "hybrid_full_meshes",
+        HybridChunkMesher,
         &inputs,
         &texture_map,
         ao_brightness,
@@ -122,8 +141,24 @@ fn bench_chunk_meshing(c: &mut Criterion) {
     );
     bench_mesher_end_to_end(
         c,
-        "full_cube_shell_end_to_end",
-        FullCubeShellChunkMesher,
+        "sweep_end_to_end",
+        SweepChunkMesher,
+        &scenarios,
+        &texture_map,
+        ao_brightness,
+    );
+    bench_mesher_end_to_end(
+        c,
+        "bitmask_end_to_end",
+        BitmaskChunkMesher,
+        &scenarios,
+        &texture_map,
+        ao_brightness,
+    );
+    bench_mesher_end_to_end(
+        c,
+        "hybrid_end_to_end",
+        HybridChunkMesher,
         &scenarios,
         &texture_map,
         ao_brightness,
@@ -343,7 +378,10 @@ fn generated_neighborhood_scenario(name: &'static str, center_pos: IVec3) -> Chu
 
 criterion_group! {
     name = benches;
-    config = Criterion::default().sample_size(30);
+    config = Criterion::default()
+        .warm_up_time(Duration::from_secs(1))
+        .measurement_time(Duration::from_secs(2))
+        .sample_size(30);
     targets = bench_chunk_meshing
 }
 criterion_main!(benches);
