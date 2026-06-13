@@ -12,9 +12,9 @@ use minecraft_clone::{
             CHUNK_SIZE, Chunk,
             ambient_occlusion::AmbientOcclusionSettings,
             mesh::{
-                ChunkMeshBlocks, ChunkMeshInput, ChunkMesher,
-                DirectChunkMesher, GreedyChunkMesher, HybridChunkMesher, ReferenceChunkMesher,
-                SweepChunkMesher, make_reference_layered_quad_groups,
+                ChunkMeshBlocks, ChunkMeshInput, ChunkMesher, DirectChunkMesher, GreedyChunkMesher,
+                HybridChunkMesher, ReferenceChunkMesher, SweepChunkMesher,
+                make_reference_layered_quad_groups,
             },
         },
         generation::generate_chunk,

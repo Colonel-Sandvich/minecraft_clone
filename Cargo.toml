@@ -28,6 +28,10 @@ criterion = "0.8.2"
 name = "chunk_meshing"
 harness = false
 
+[[bench]]
+name = "chunk_mesh_pipeline"
+harness = false
+
 
 # Enable a small amount of optimization in debug mode
 [profile.dev]

@@ -174,10 +174,7 @@ pub(crate) fn finish_chunk_load_tasks(
             Visibility::default(),
         ));
         if meta.rendered > 0 {
-            entity_commands.insert((
-                ChunkNeedsMeshRebuild,
-                ChunkNeedsColliderRebuild,
-            ));
+            entity_commands.insert((ChunkNeedsMeshRebuild, ChunkNeedsColliderRebuild));
         }
         let chunk_entity = entity_commands.id();
 

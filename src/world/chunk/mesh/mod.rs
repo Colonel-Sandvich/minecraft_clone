@@ -400,8 +400,6 @@ pub(crate) fn make_mesh_from_quad_groups_with_ao_brightness(
     Some(mesh)
 }
 
-
-
 #[inline(always)]
 pub(crate) fn should_emit_face_from_indices(block: BlockType, neighbor: BlockType) -> bool {
     if !neighbor.is_rendered() {

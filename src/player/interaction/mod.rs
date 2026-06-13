@@ -9,8 +9,8 @@ use crate::{
     world::{
         ACTOR_LAYER, WORLD_LAYER,
         chunk::{
-            Chunk, ChunkNeedsColliderRebuild, ChunkNeedsMeshRebuild, ChunkNeedsSave,
-            ChunkBlockCounts, chunk_neighbor_offsets_for_block,
+            Chunk, ChunkBlockCounts, ChunkNeedsColliderRebuild, ChunkNeedsMeshRebuild,
+            ChunkNeedsSave, chunk_neighbor_offsets_for_block,
         },
         dimension::Dimension,
     },

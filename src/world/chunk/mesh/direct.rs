@@ -2,8 +2,8 @@ use crate::block::BlockMaterialLayer;
 
 use super::{
     BlockMeshTables, CHUNK_SIZE, CHUNK_VOLUME, ChunkLayerMeshes, ChunkMeshInput, ChunkMesher,
-    DIRECTION_COUNT, DIRECTION_INDEX_OFFSETS, MeshBufferBuilder,
-    face_ao_from_indices, padded_chunk_index, should_emit_face_from_indices,
+    DIRECTION_COUNT, DIRECTION_INDEX_OFFSETS, MeshBufferBuilder, face_ao_from_indices,
+    padded_chunk_index, should_emit_face_from_indices,
 };
 
 #[derive(Debug, Default, Clone, Copy)]

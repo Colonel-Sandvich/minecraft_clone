@@ -1,4 +1,4 @@
-use super::{Chunk, ChunkNeedsColliderRebuild, ChunkBlockCounts};
+use super::{Chunk, ChunkBlockCounts, ChunkNeedsColliderRebuild};
 use crate::world::WORLD_COLLISION_LAYERS;
 use avian3d::prelude::*;
 use bevy::math::vec3;
@@ -12,7 +12,12 @@ impl Plugin for ChunkColliderPlugin {
     }
 }
 
-fn insert_one(commands: &mut Commands, chunk: &Chunk, chunk_entity: Entity, meta: &ChunkBlockCounts) {
+fn insert_one(
+    commands: &mut Commands,
+    chunk: &Chunk,
+    chunk_entity: Entity,
+    meta: &ChunkBlockCounts,
+) {
     let solid = (meta.rendered - meta.translucent) as usize;
     if solid == 0 {
         return;
@@ -45,7 +50,10 @@ fn insert_one(commands: &mut Commands, chunk: &Chunk, chunk_entity: Entity, meta
 
 fn rebuild_chunk_colliders(
     mut commands: Commands,
-    chunks_q: Query<(&Chunk, &ChunkBlockCounts, Entity, Option<&Children>), With<ChunkNeedsColliderRebuild>>,
+    chunks_q: Query<
+        (&Chunk, &ChunkBlockCounts, Entity, Option<&Children>),
+        With<ChunkNeedsColliderRebuild>,
+    >,
     collider_q: Query<Entity, With<Collider>>,
 ) {
     for (chunk, meta, chunk_entity, children) in chunks_q.iter() {

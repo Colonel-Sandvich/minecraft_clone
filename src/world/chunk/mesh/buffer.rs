@@ -2,9 +2,7 @@ use bevy::asset::RenderAssetUsages;
 use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
 
-use super::{
-    DIRECTIONS, NORMALS, VERTEX_OFFSETS, face_brightness, get_ao_indices, uvs_for_rect,
-};
+use super::{DIRECTIONS, NORMALS, VERTEX_OFFSETS, face_brightness, get_ao_indices, uvs_for_rect};
 
 #[derive(Default)]
 pub(crate) struct MeshBufferBuilder {

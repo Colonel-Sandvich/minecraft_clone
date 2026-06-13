@@ -116,7 +116,10 @@ mod tests {
         assert_eq!(origin_column_count, metadata.height_chunks);
 
         assert_ne!(
-            ivec2(origin[metadata.height_chunks].x, origin[metadata.height_chunks].z),
+            ivec2(
+                origin[metadata.height_chunks].x,
+                origin[metadata.height_chunks].z
+            ),
             IVec2::ZERO
         );
     }

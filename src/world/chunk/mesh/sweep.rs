@@ -96,9 +96,7 @@ fn y_count(
                 if has_back {
                     let b2pi = (pi as isize + PADDED_CHUNK_LAYER_SIZE as isize) as usize;
                     let block2 = blocks[b2pi];
-                    if block2.is_rendered()
-                        && should_emit_face_from_indices(block2, blocks[pi])
-                    {
+                    if block2.is_rendered() && should_emit_face_from_indices(block2, blocks[pi]) {
                         counts[block2.material_layer_index()] += 1;
                     }
                 }
@@ -148,9 +146,7 @@ fn y_emit(
                 if has_back {
                     let b2pi = (pi as isize + PADDED_CHUNK_LAYER_SIZE as isize) as usize;
                     let block2 = blocks[b2pi];
-                    if block2.is_rendered()
-                        && should_emit_face_from_indices(block2, blocks[pi])
-                    {
+                    if block2.is_rendered() && should_emit_face_from_indices(block2, blocks[pi]) {
                         let ao = compute_ao(blocks, b2pi, DIR_DOWN);
                         emit_face(
                             builders,
@@ -188,17 +184,13 @@ fn x_count(
             for _inner in 0..CHUNK_SIZE {
                 if has_fwd {
                     let block = blocks[pi];
-                    if block.is_rendered()
-                        && should_emit_face_from_indices(block, blocks[pi + 1])
-                    {
+                    if block.is_rendered() && should_emit_face_from_indices(block, blocks[pi + 1]) {
                         counts[block.material_layer_index()] += 1;
                     }
                 }
                 if has_back {
                     let block2 = blocks[pi + 1];
-                    if block2.is_rendered()
-                        && should_emit_face_from_indices(block2, blocks[pi])
-                    {
+                    if block2.is_rendered() && should_emit_face_from_indices(block2, blocks[pi]) {
                         counts[block2.material_layer_index()] += 1;
                     }
                 }
@@ -225,9 +217,7 @@ fn x_emit(
             for inner in 1..=CHUNK_SIZE {
                 if has_fwd {
                     let block = blocks[pi];
-                    if block.is_rendered()
-                        && should_emit_face_from_indices(block, blocks[pi + 1])
-                    {
+                    if block.is_rendered() && should_emit_face_from_indices(block, blocks[pi + 1]) {
                         let ao = compute_ao(blocks, pi, DIR_RIGHT);
                         emit_face(
                             builders,
@@ -244,9 +234,7 @@ fn x_emit(
                 }
                 if has_back {
                     let block2 = blocks[pi + 1];
-                    if block2.is_rendered()
-                        && should_emit_face_from_indices(block2, blocks[pi])
-                    {
+                    if block2.is_rendered() && should_emit_face_from_indices(block2, blocks[pi]) {
                         let ao = compute_ao(blocks, pi + 1, DIR_LEFT);
                         emit_face(
                             builders,
@@ -296,9 +284,7 @@ fn z_count(
                 if has_back {
                     let b2pi = (pi as isize + PADDED_CHUNK_SIZE as isize) as usize;
                     let block2 = blocks[b2pi];
-                    if block2.is_rendered()
-                        && should_emit_face_from_indices(block2, blocks[pi])
-                    {
+                    if block2.is_rendered() && should_emit_face_from_indices(block2, blocks[pi]) {
                         counts[block2.material_layer_index()] += 1;
                     }
                 }
@@ -348,9 +334,7 @@ fn z_emit(
                 if has_back {
                     let b2pi = (pi as isize + PADDED_CHUNK_SIZE as isize) as usize;
                     let block2 = blocks[b2pi];
-                    if block2.is_rendered()
-                        && should_emit_face_from_indices(block2, blocks[pi])
-                    {
+                    if block2.is_rendered() && should_emit_face_from_indices(block2, blocks[pi]) {
                         let ao = compute_ao(blocks, b2pi, DIR_FWD);
                         emit_face(
                             builders,

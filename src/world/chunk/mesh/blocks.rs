@@ -4,8 +4,7 @@ use bevy::prelude::*;
 use crate::block::BlockType;
 
 use super::{
-    CHUNK_ISIZE, CHUNK_SIZE, CHUNK_VOLUME, PADDED_CHUNK_VOLUME, Chunk,
-    padded_chunk_index,
+    CHUNK_ISIZE, CHUNK_SIZE, CHUNK_VOLUME, Chunk, PADDED_CHUNK_VOLUME, padded_chunk_index,
 };
 
 use super::super::chunk_neighbor_offsets;

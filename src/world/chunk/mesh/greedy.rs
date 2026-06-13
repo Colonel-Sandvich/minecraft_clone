@@ -192,12 +192,12 @@ fn count_faces(data: &GreedyData) -> [usize; BlockMaterialLayer::COUNT] {
 }
 
 #[inline(always)]
-fn face_ao_key_from_pi(blocks: &[BlockType; PADDED_CHUNK_VOLUME], pi: usize, dir: usize) -> u16 {
-    let a0 = single_vertex_ao(blocks, pi, dir, 0) as u16;
-    let a1 = single_vertex_ao(blocks, pi, dir, 1) as u16;
-    let a2 = single_vertex_ao(blocks, pi, dir, 2) as u16;
-    let a3 = single_vertex_ao(blocks, pi, dir, 3) as u16;
-    a0 | (a1 << 3) | (a2 << 6) | (a3 << 9)
+fn face_ao_key_from_pi(blocks: &[BlockType; PADDED_CHUNK_VOLUME], pi: usize, dir: usize) -> u8 {
+    let a0 = single_vertex_ao(blocks, pi, dir, 0);
+    let a1 = single_vertex_ao(blocks, pi, dir, 1);
+    let a2 = single_vertex_ao(blocks, pi, dir, 2);
+    let a3 = single_vertex_ao(blocks, pi, dir, 3);
+    a0 | (a1 << 2) | (a2 << 4) | (a3 << 6)
 }
 
 fn emit_plane_opaque<const IS_TRANSPARENT: bool>(

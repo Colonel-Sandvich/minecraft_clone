@@ -14,8 +14,8 @@ use crate::world::chunk::mesh::{
 use crate::world::chunk::{CHUNK_SIZE, Chunk, ChunkNeedsMeshRebuild, ChunkPosition};
 
 use super::{
-    DirectChunkMesher, FullCubeShellChunkMesher, GreedyChunkMesher,
-    HybridChunkMesher, ReferenceChunkMesher, SweepChunkMesher,
+    DirectChunkMesher, FullCubeShellChunkMesher, GreedyChunkMesher, HybridChunkMesher,
+    ReferenceChunkMesher, SweepChunkMesher,
 };
 use super::{
     GROUND_BOUNCE_FACE_BRIGHTNESS, HORIZON_FACE_BRIGHTNESS, SKY_FACE_BRIGHTNESS, face_brightness,

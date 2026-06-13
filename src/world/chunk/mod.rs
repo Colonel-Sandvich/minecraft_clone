@@ -9,7 +9,6 @@ use mesh::ChunkMeshPlugin;
 
 use crate::block::BlockType;
 
-
 pub struct ChunkPlugin;
 
 impl Plugin for ChunkPlugin {
@@ -43,9 +42,18 @@ impl ChunkBlockCounts {
     pub fn apply_delta(&mut self, delta: BlockDelta) {
         let (old_rendered, old_full, old_trans) = block_counts(delta.old);
         let (new_rendered, new_full, new_trans) = block_counts(delta.new);
-        self.rendered = self.rendered.wrapping_add(new_rendered).wrapping_sub(old_rendered);
-        self.full_cubes = self.full_cubes.wrapping_add(new_full).wrapping_sub(old_full);
-        self.translucent = self.translucent.wrapping_add(new_trans).wrapping_sub(old_trans);
+        self.rendered = self
+            .rendered
+            .wrapping_add(new_rendered)
+            .wrapping_sub(old_rendered);
+        self.full_cubes = self
+            .full_cubes
+            .wrapping_add(new_full)
+            .wrapping_sub(old_full);
+        self.translucent = self
+            .translucent
+            .wrapping_add(new_trans)
+            .wrapping_sub(old_trans);
     }
 }
 
