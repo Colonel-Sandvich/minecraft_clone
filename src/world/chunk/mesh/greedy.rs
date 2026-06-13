@@ -1,10 +1,10 @@
 use crate::block::BlockMaterialLayer;
 
 use super::{
-    AO_SAMPLE_INDEX_OFFSETS, BLOCK_EMITS_INTERNAL_FACES, BLOCK_IS_FULL_CUBE, BLOCK_IS_RENDERED,
-    BLOCK_MATERIAL_LAYER_INDEX, BlockMeshTables, BlockType, CHUNK_SIZE, ChunkLayerMeshes,
+    AO_SAMPLE_INDEX_OFFSETS, BlockMeshTables, BlockType, CHUNK_SIZE, ChunkLayerMeshes,
     ChunkMeshInput, ChunkMesher, DIRECTION_INDEX_OFFSETS, MeshBufferBuilder,
     PADDED_CHUNK_LAYER_SIZE, PADDED_CHUNK_SIZE, PADDED_CHUNK_VOLUME, VERTEX_AO, padded_chunk_index,
+    should_emit_face_from_indices,
 };
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -66,14 +66,14 @@ fn build_bitmasks(blocks: &[BlockType; PADDED_CHUNK_VOLUME]) -> GreedyData {
         for pz in 0..PADDED_CHUNK_SIZE {
             let mut pi = padded_chunk_index(0, py, pz);
             for px in 0..PADDED_CHUNK_SIZE {
-                let i = blocks[pi] as usize;
+                let block = blocks[pi];
 
-                if BLOCK_IS_FULL_CUBE[i] {
+                if block.is_full_cube() {
                     let yz = plane_pack_index(py, pz);
                     plane_set(&mut masks[0].full_cube[px], yz);
                     plane_set(&mut masks[1].full_cube[py], plane_pack_index(px, pz));
                     plane_set(&mut masks[2].full_cube[pz], plane_pack_index(px, py));
-                } else if BLOCK_IS_RENDERED[i] {
+                } else if block.is_rendered() {
                     transparent_count += 1;
                 }
 
@@ -88,22 +88,6 @@ fn build_bitmasks(blocks: &[BlockType; PADDED_CHUNK_VOLUME]) -> GreedyData {
     }
 }
 
-fn should_emit_transparent(block_index: usize, neighbor_index: usize) -> bool {
-    if !BLOCK_IS_RENDERED[neighbor_index] {
-        return true;
-    }
-    if BLOCK_IS_FULL_CUBE[neighbor_index] {
-        return false;
-    }
-    if block_index == neighbor_index
-        && !BLOCK_IS_FULL_CUBE[block_index]
-        && !BLOCK_IS_FULL_CUBE[neighbor_index]
-    {
-        return BLOCK_EMITS_INTERNAL_FACES[block_index];
-    }
-    true
-}
-
 #[inline(always)]
 fn single_vertex_ao(
     blocks: &[BlockType; PADDED_CHUNK_VOLUME],
@@ -112,9 +96,9 @@ fn single_vertex_ao(
     vertex_index: usize,
 ) -> u8 {
     let offsets = AO_SAMPLE_INDEX_OFFSETS[side_index][vertex_index];
-    let s1 = BLOCK_IS_FULL_CUBE[blocks[(padded_index as isize + offsets[0]) as usize] as usize];
-    let s2 = BLOCK_IS_FULL_CUBE[blocks[(padded_index as isize + offsets[1]) as usize] as usize];
-    let co = BLOCK_IS_FULL_CUBE[blocks[(padded_index as isize + offsets[2]) as usize] as usize];
+    let s1 = blocks[(padded_index as isize + offsets[0]) as usize].is_full_cube();
+    let s2 = blocks[(padded_index as isize + offsets[1]) as usize].is_full_cube();
+    let co = blocks[(padded_index as isize + offsets[2]) as usize].is_full_cube();
     VERTEX_AO[s1 as usize | ((s2 as usize) << 1) | ((co as usize) << 2)]
 }
 
@@ -254,7 +238,7 @@ fn emit_plane_opaque(
                 _ => ([t1, t2, c], [t1 - 1, t2 - 1, c - 1]),
             };
             let pi = padded_chunk_index(pad[0], pad[1], pad[2]);
-            let bi = blocks[pi] as usize;
+            let block = blocks[pi];
             let base_ao_key = face_ao_key_from_pi(blocks, pi, dir);
 
             let wx = world[0];
@@ -278,7 +262,7 @@ fn emit_plane_opaque(
                 if face_ao_key_from_pi(blocks, np, dir) != base_ao_key {
                     break;
                 }
-                if blocks[np] as usize != bi {
+                if blocks[np] != block {
                     break;
                 }
                 w_ext += 1;
@@ -302,7 +286,7 @@ fn emit_plane_opaque(
                     if face_ao_key_from_pi(blocks, np, dir) != base_ao_key {
                         break 'vloop;
                     }
-                    if blocks[np] as usize != bi {
+                    if blocks[np] != block {
                         break 'vloop;
                     }
                 }
@@ -322,8 +306,9 @@ fn emit_plane_opaque(
                 _ => (h_ext, w_ext),
             };
 
+            let bi = block as usize;
             let ao = merged_ao(blocks, dir, wx, wy, wz, emit_w, emit_h);
-            builders[BLOCK_MATERIAL_LAYER_INDEX[bi]].push_merged_face(
+            builders[block.material_layer_index()].push_merged_face(
                 wx,
                 wy,
                 wz,
@@ -389,27 +374,28 @@ fn emit_faces(
             for py in 1..=CHUNK_SIZE {
                 for pz in 1..=CHUNK_SIZE {
                     let pi = padded_chunk_index(px, py, pz);
-                    let bi = blocks[pi] as usize;
+                    let block = blocks[pi];
 
-                    if BLOCK_IS_FULL_CUBE[bi] || !BLOCK_IS_RENDERED[bi] {
+                    if block.is_full_cube() || !block.is_rendered() {
                         continue;
                     }
 
                     let wx = px - 1;
                     let wy = py - 1;
                     let wz = pz - 1;
+                    let bi = block as usize;
 
                     for dir in 0..6usize {
-                        let ni =
-                            blocks[(pi as isize + DIRECTION_INDEX_OFFSETS[dir]) as usize] as usize;
-                        if should_emit_transparent(bi, ni) {
+                        let neighbor =
+                            blocks[(pi as isize + DIRECTION_INDEX_OFFSETS[dir]) as usize];
+                        if should_emit_face_from_indices(block, neighbor) {
                             let ao = [
                                 single_vertex_ao(blocks, pi, dir, 0),
                                 single_vertex_ao(blocks, pi, dir, 1),
                                 single_vertex_ao(blocks, pi, dir, 2),
                                 single_vertex_ao(blocks, pi, dir, 3),
                             ];
-                            builders[BLOCK_MATERIAL_LAYER_INDEX[bi]].push_face(
+                            builders[block.material_layer_index()].push_face(
                                 wx,
                                 wy,
                                 wz,

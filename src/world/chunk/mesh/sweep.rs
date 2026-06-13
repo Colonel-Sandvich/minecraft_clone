@@ -1,10 +1,9 @@
 use crate::block::BlockMaterialLayer;
 
 use super::{
-    AO_SAMPLE_INDEX_OFFSETS, BLOCK_IS_FULL_CUBE, BLOCK_IS_RENDERED, BLOCK_MATERIAL_LAYER_INDEX,
-    BlockMeshTables, BlockType, CHUNK_SIZE, ChunkLayerMeshes, ChunkMeshInput, ChunkMesher,
-    MeshBufferBuilder, PADDED_CHUNK_LAYER_SIZE, PADDED_CHUNK_SIZE, PADDED_CHUNK_VOLUME, VERTEX_AO,
-    padded_chunk_index, should_emit_face_from_indices,
+    AO_SAMPLE_INDEX_OFFSETS, BlockMeshTables, BlockType, CHUNK_SIZE, ChunkLayerMeshes,
+    ChunkMeshInput, ChunkMesher, MeshBufferBuilder, PADDED_CHUNK_LAYER_SIZE, PADDED_CHUNK_SIZE,
+    PADDED_CHUNK_VOLUME, VERTEX_AO, padded_chunk_index, should_emit_face_from_indices,
 };
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -31,7 +30,7 @@ const DIR_BACK: usize = 5;
 const DIR_FWD: usize = 4;
 
 fn block_occludes(blocks: &[BlockType; PADDED_CHUNK_VOLUME], pi: usize, offset: isize) -> bool {
-    BLOCK_IS_FULL_CUBE[blocks[(pi as isize + offset) as usize] as usize]
+    blocks[(pi as isize + offset) as usize].is_full_cube()
 }
 
 fn compute_ao(blocks: &[BlockType; PADDED_CHUNK_VOLUME], pi: usize, dir: usize) -> [u8; 4] {
@@ -48,14 +47,15 @@ fn emit_face(
     builders: &mut [MeshBufferBuilder; BlockMaterialLayer::COUNT],
     tables: &BlockMeshTables,
     ao_brightness: [f32; 4],
-    bi: usize,
+    block: BlockType,
     x: usize,
     y: usize,
     z: usize,
     dir: usize,
     ao: [u8; 4],
 ) {
-    builders[BLOCK_MATERIAL_LAYER_INDEX[bi]].push_face(
+    let bi = block as usize;
+    builders[block.material_layer_index()].push_face(
         x,
         y,
         z,
@@ -83,24 +83,23 @@ fn y_count(
             let mut pi = padded_chunk_index(1, center, outer);
             for _inner in 0..CHUNK_SIZE {
                 if has_fwd {
-                    let bi = blocks[pi] as usize;
-                    if BLOCK_IS_RENDERED[bi]
+                    let block = blocks[pi];
+                    if block.is_rendered()
                         && should_emit_face_from_indices(
-                            bi,
-                            blocks[(pi as isize + PADDED_CHUNK_LAYER_SIZE as isize) as usize]
-                                as usize,
+                            block,
+                            blocks[(pi as isize + PADDED_CHUNK_LAYER_SIZE as isize) as usize],
                         )
                     {
-                        counts[BLOCK_MATERIAL_LAYER_INDEX[bi]] += 1;
+                        counts[block.material_layer_index()] += 1;
                     }
                 }
                 if has_back {
                     let b2pi = (pi as isize + PADDED_CHUNK_LAYER_SIZE as isize) as usize;
-                    let b2i = blocks[b2pi] as usize;
-                    if BLOCK_IS_RENDERED[b2i]
-                        && should_emit_face_from_indices(b2i, blocks[pi] as usize)
+                    let block2 = blocks[b2pi];
+                    if block2.is_rendered()
+                        && should_emit_face_from_indices(block2, blocks[pi])
                     {
-                        counts[BLOCK_MATERIAL_LAYER_INDEX[b2i]] += 1;
+                        counts[block2.material_layer_index()] += 1;
                     }
                 }
                 pi += 1;
@@ -125,12 +124,11 @@ fn y_emit(
             let mut pi = padded_chunk_index(1, center, outer);
             for inner in 1..=CHUNK_SIZE {
                 if has_fwd {
-                    let bi = blocks[pi] as usize;
-                    if BLOCK_IS_RENDERED[bi]
+                    let block = blocks[pi];
+                    if block.is_rendered()
                         && should_emit_face_from_indices(
-                            bi,
-                            blocks[(pi as isize + PADDED_CHUNK_LAYER_SIZE as isize) as usize]
-                                as usize,
+                            block,
+                            blocks[(pi as isize + PADDED_CHUNK_LAYER_SIZE as isize) as usize],
                         )
                     {
                         let ao = compute_ao(blocks, pi, DIR_UP);
@@ -138,7 +136,7 @@ fn y_emit(
                             builders,
                             tables,
                             ao_brightness,
-                            bi,
+                            block,
                             inner - 1,
                             center - 1,
                             outer - 1,
@@ -149,16 +147,16 @@ fn y_emit(
                 }
                 if has_back {
                     let b2pi = (pi as isize + PADDED_CHUNK_LAYER_SIZE as isize) as usize;
-                    let b2i = blocks[b2pi] as usize;
-                    if BLOCK_IS_RENDERED[b2i]
-                        && should_emit_face_from_indices(b2i, blocks[pi] as usize)
+                    let block2 = blocks[b2pi];
+                    if block2.is_rendered()
+                        && should_emit_face_from_indices(block2, blocks[pi])
                     {
                         let ao = compute_ao(blocks, b2pi, DIR_DOWN);
                         emit_face(
                             builders,
                             tables,
                             ao_brightness,
-                            b2i,
+                            block2,
                             inner - 1,
                             center,
                             outer - 1,
@@ -189,19 +187,19 @@ fn x_count(
             let mut pi = padded_chunk_index(center, 1, outer);
             for _inner in 0..CHUNK_SIZE {
                 if has_fwd {
-                    let bi = blocks[pi] as usize;
-                    if BLOCK_IS_RENDERED[bi]
-                        && should_emit_face_from_indices(bi, blocks[pi + 1] as usize)
+                    let block = blocks[pi];
+                    if block.is_rendered()
+                        && should_emit_face_from_indices(block, blocks[pi + 1])
                     {
-                        counts[BLOCK_MATERIAL_LAYER_INDEX[bi]] += 1;
+                        counts[block.material_layer_index()] += 1;
                     }
                 }
                 if has_back {
-                    let b2i = blocks[pi + 1] as usize;
-                    if BLOCK_IS_RENDERED[b2i]
-                        && should_emit_face_from_indices(b2i, blocks[pi] as usize)
+                    let block2 = blocks[pi + 1];
+                    if block2.is_rendered()
+                        && should_emit_face_from_indices(block2, blocks[pi])
                     {
-                        counts[BLOCK_MATERIAL_LAYER_INDEX[b2i]] += 1;
+                        counts[block2.material_layer_index()] += 1;
                     }
                 }
                 pi += PADDED_CHUNK_LAYER_SIZE;
@@ -226,16 +224,16 @@ fn x_emit(
             let mut pi = padded_chunk_index(center, 1, outer);
             for inner in 1..=CHUNK_SIZE {
                 if has_fwd {
-                    let bi = blocks[pi] as usize;
-                    if BLOCK_IS_RENDERED[bi]
-                        && should_emit_face_from_indices(bi, blocks[pi + 1] as usize)
+                    let block = blocks[pi];
+                    if block.is_rendered()
+                        && should_emit_face_from_indices(block, blocks[pi + 1])
                     {
                         let ao = compute_ao(blocks, pi, DIR_RIGHT);
                         emit_face(
                             builders,
                             tables,
                             ao_brightness,
-                            bi,
+                            block,
                             center - 1,
                             inner - 1,
                             outer - 1,
@@ -245,16 +243,16 @@ fn x_emit(
                     }
                 }
                 if has_back {
-                    let b2i = blocks[pi + 1] as usize;
-                    if BLOCK_IS_RENDERED[b2i]
-                        && should_emit_face_from_indices(b2i, blocks[pi] as usize)
+                    let block2 = blocks[pi + 1];
+                    if block2.is_rendered()
+                        && should_emit_face_from_indices(block2, blocks[pi])
                     {
                         let ao = compute_ao(blocks, pi + 1, DIR_LEFT);
                         emit_face(
                             builders,
                             tables,
                             ao_brightness,
-                            b2i,
+                            block2,
                             center,
                             inner - 1,
                             outer - 1,
@@ -285,23 +283,23 @@ fn z_count(
             let mut pi = padded_chunk_index(1, outer, center);
             for _inner in 0..CHUNK_SIZE {
                 if has_fwd {
-                    let bi = blocks[pi] as usize;
-                    if BLOCK_IS_RENDERED[bi]
+                    let block = blocks[pi];
+                    if block.is_rendered()
                         && should_emit_face_from_indices(
-                            bi,
-                            blocks[(pi as isize + PADDED_CHUNK_SIZE as isize) as usize] as usize,
+                            block,
+                            blocks[(pi as isize + PADDED_CHUNK_SIZE as isize) as usize],
                         )
                     {
-                        counts[BLOCK_MATERIAL_LAYER_INDEX[bi]] += 1;
+                        counts[block.material_layer_index()] += 1;
                     }
                 }
                 if has_back {
                     let b2pi = (pi as isize + PADDED_CHUNK_SIZE as isize) as usize;
-                    let b2i = blocks[b2pi] as usize;
-                    if BLOCK_IS_RENDERED[b2i]
-                        && should_emit_face_from_indices(b2i, blocks[pi] as usize)
+                    let block2 = blocks[b2pi];
+                    if block2.is_rendered()
+                        && should_emit_face_from_indices(block2, blocks[pi])
                     {
-                        counts[BLOCK_MATERIAL_LAYER_INDEX[b2i]] += 1;
+                        counts[block2.material_layer_index()] += 1;
                     }
                 }
                 pi += 1;
@@ -326,11 +324,11 @@ fn z_emit(
             let mut pi = padded_chunk_index(1, outer, center);
             for inner in 1..=CHUNK_SIZE {
                 if has_fwd {
-                    let bi = blocks[pi] as usize;
-                    if BLOCK_IS_RENDERED[bi]
+                    let block = blocks[pi];
+                    if block.is_rendered()
                         && should_emit_face_from_indices(
-                            bi,
-                            blocks[(pi as isize + PADDED_CHUNK_SIZE as isize) as usize] as usize,
+                            block,
+                            blocks[(pi as isize + PADDED_CHUNK_SIZE as isize) as usize],
                         )
                     {
                         let ao = compute_ao(blocks, pi, DIR_BACK);
@@ -338,7 +336,7 @@ fn z_emit(
                             builders,
                             tables,
                             ao_brightness,
-                            bi,
+                            block,
                             inner - 1,
                             outer - 1,
                             center - 1,
@@ -349,16 +347,16 @@ fn z_emit(
                 }
                 if has_back {
                     let b2pi = (pi as isize + PADDED_CHUNK_SIZE as isize) as usize;
-                    let b2i = blocks[b2pi] as usize;
-                    if BLOCK_IS_RENDERED[b2i]
-                        && should_emit_face_from_indices(b2i, blocks[pi] as usize)
+                    let block2 = blocks[b2pi];
+                    if block2.is_rendered()
+                        && should_emit_face_from_indices(block2, blocks[pi])
                     {
                         let ao = compute_ao(blocks, b2pi, DIR_FWD);
                         emit_face(
                             builders,
                             tables,
                             ao_brightness,
-                            b2i,
+                            block2,
                             inner - 1,
                             outer - 1,
                             center,

@@ -1,10 +1,9 @@
 use crate::block::BlockMaterialLayer;
 
 use super::{
-    BLOCK_IS_RENDERED, BLOCK_MATERIAL_LAYER_INDEX, BlockMeshTables, CHUNK_SIZE, CHUNK_VOLUME,
-    ChunkLayerMeshes, ChunkMeshInput, ChunkMesher, DIRECTION_COUNT, DIRECTION_INDEX_OFFSETS,
-    MeshBufferBuilder, block_mesh_index, face_ao_from_indices, padded_chunk_index,
-    should_emit_face_from_indices,
+    BlockMeshTables, CHUNK_SIZE, CHUNK_VOLUME, ChunkLayerMeshes, ChunkMeshInput, ChunkMesher,
+    DIRECTION_COUNT, DIRECTION_INDEX_OFFSETS, MeshBufferBuilder,
+    face_ao_from_indices, padded_chunk_index, should_emit_face_from_indices,
 };
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -36,24 +35,25 @@ fn make_direct_chunk_meshes(input: ChunkMeshInput<'_>) -> ChunkLayerMeshes {
 
             for x in 0..CHUNK_SIZE {
                 let block = input.blocks.blocks[padded_index];
-                let block_index = block_mesh_index(block);
 
-                if !BLOCK_IS_RENDERED[block_index] {
+                if !block.is_rendered() {
                     padded_index += 1;
                     continue;
                 }
 
+                let block_index = block as usize;
+
                 for side_index in 0..DIRECTION_COUNT {
                     let neighbor = input.blocks.blocks
                         [(padded_index as isize + DIRECTION_INDEX_OFFSETS[side_index]) as usize];
-                    let neighbor_index = block_mesh_index(neighbor);
 
-                    if !should_emit_face_from_indices(block_index, neighbor_index) {
+                    if !should_emit_face_from_indices(block, neighbor) {
                         continue;
                     }
 
                     let ao = face_ao_from_indices(input.blocks, padded_index, side_index);
-                    builders[BLOCK_MATERIAL_LAYER_INDEX[block_index]].push_face(
+                    let layer_idx = block.material_layer_index();
+                    builders[layer_idx].push_face(
                         x,
                         y,
                         z,

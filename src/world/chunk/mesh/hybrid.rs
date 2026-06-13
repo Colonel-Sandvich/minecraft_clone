@@ -1,10 +1,9 @@
 use crate::block::BlockMaterialLayer;
 
 use super::{
-    AO_SAMPLE_INDEX_OFFSETS, BLOCK_EMITS_INTERNAL_FACES, BLOCK_IS_FULL_CUBE, BLOCK_IS_RENDERED,
-    BLOCK_MATERIAL_LAYER_INDEX, BlockMeshTables, BlockType, CHUNK_SIZE, ChunkLayerMeshes,
+    AO_SAMPLE_INDEX_OFFSETS, BlockMeshTables, BlockType, CHUNK_SIZE, ChunkLayerMeshes,
     ChunkMeshInput, ChunkMesher, DIRECTION_INDEX_OFFSETS, MeshBufferBuilder, PADDED_CHUNK_SIZE,
-    PADDED_CHUNK_VOLUME, VERTEX_AO, padded_chunk_index,
+    PADDED_CHUNK_VOLUME, VERTEX_AO, padded_chunk_index, should_emit_face_from_indices,
 };
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -62,9 +61,9 @@ fn build_bitmasks(blocks: &[BlockType; PADDED_CHUNK_VOLUME]) -> HybridData {
         for pz in 0..PADDED_CHUNK_SIZE {
             let mut pi = padded_chunk_index(0, py, pz);
             for px in 0..PADDED_CHUNK_SIZE {
-                let i = blocks[pi] as usize;
+                let block = blocks[pi];
 
-                if BLOCK_IS_FULL_CUBE[i] {
+                if block.is_full_cube() {
                     let yz = plane_pack_index(py, pz);
                     plane_set(&mut masks[0].full_cube[px], yz);
 
@@ -73,7 +72,7 @@ fn build_bitmasks(blocks: &[BlockType; PADDED_CHUNK_VOLUME]) -> HybridData {
 
                     let xy = plane_pack_index(px, py);
                     plane_set(&mut masks[2].full_cube[pz], xy);
-                } else if BLOCK_IS_RENDERED[i] {
+                } else if block.is_rendered() {
                     transparent_count += 1;
                 }
 
@@ -90,7 +89,7 @@ fn build_bitmasks(blocks: &[BlockType; PADDED_CHUNK_VOLUME]) -> HybridData {
 
 #[inline(always)]
 fn block_occludes(blocks: &[BlockType; PADDED_CHUNK_VOLUME], pi: usize, offset: isize) -> bool {
-    BLOCK_IS_FULL_CUBE[blocks[(pi as isize + offset) as usize] as usize]
+    blocks[(pi as isize + offset) as usize].is_full_cube()
 }
 
 #[inline(always)]
@@ -101,22 +100,6 @@ fn compute_ao(blocks: &[BlockType; PADDED_CHUNK_VOLUME], pi: usize, dir: usize) 
         let co = block_occludes(blocks, pi, o[2]);
         VERTEX_AO[s1 as usize | ((s2 as usize) << 1) | ((co as usize) << 2)]
     })
-}
-
-fn should_emit_transparent(block_index: usize, neighbor_index: usize) -> bool {
-    if !BLOCK_IS_RENDERED[neighbor_index] {
-        return true;
-    }
-    if BLOCK_IS_FULL_CUBE[neighbor_index] {
-        return false;
-    }
-    if block_index == neighbor_index
-        && !BLOCK_IS_FULL_CUBE[block_index]
-        && !BLOCK_IS_FULL_CUBE[neighbor_index]
-    {
-        return BLOCK_EMITS_INTERNAL_FACES[block_index];
-    }
-    true
 }
 
 fn count_faces(
@@ -146,17 +129,17 @@ fn count_faces(
             for py in 1..=CHUNK_SIZE {
                 for pz in 1..=CHUNK_SIZE {
                     let pi = padded_chunk_index(px, py, pz);
-                    let bi = blocks[pi] as usize;
+                    let block = blocks[pi];
 
-                    if BLOCK_IS_FULL_CUBE[bi] || !BLOCK_IS_RENDERED[bi] {
+                    if block.is_full_cube() || !block.is_rendered() {
                         continue;
                     }
 
                     for dir in 0..6usize {
-                        let ni =
-                            blocks[(pi as isize + DIRECTION_INDEX_OFFSETS[dir]) as usize] as usize;
-                        if should_emit_transparent(bi, ni) {
-                            counts[BLOCK_MATERIAL_LAYER_INDEX[bi]] += 1;
+                        let neighbor =
+                            blocks[(pi as isize + DIRECTION_INDEX_OFFSETS[dir]) as usize];
+                        if should_emit_face_from_indices(block, neighbor) {
+                            counts[block.material_layer_index()] += 1;
                         }
                     }
                 }
@@ -213,22 +196,23 @@ fn emit_faces(
             for py in 1..=CHUNK_SIZE {
                 for pz in 1..=CHUNK_SIZE {
                     let pi = padded_chunk_index(px, py, pz);
-                    let bi = blocks[pi] as usize;
+                    let block = blocks[pi];
 
-                    if BLOCK_IS_FULL_CUBE[bi] || !BLOCK_IS_RENDERED[bi] {
+                    if block.is_full_cube() || !block.is_rendered() {
                         continue;
                     }
 
                     let wx = px - 1;
                     let wy = py - 1;
                     let wz = pz - 1;
+                    let bi = block as usize;
 
                     for dir in 0..6usize {
-                        let ni =
-                            blocks[(pi as isize + DIRECTION_INDEX_OFFSETS[dir]) as usize] as usize;
-                        if should_emit_transparent(bi, ni) {
+                        let neighbor =
+                            blocks[(pi as isize + DIRECTION_INDEX_OFFSETS[dir]) as usize];
+                        if should_emit_face_from_indices(block, neighbor) {
                             let ao = compute_ao(blocks, pi, dir);
-                            builders[BLOCK_MATERIAL_LAYER_INDEX[bi]].push_face(
+                            builders[block.material_layer_index()].push_face(
                                 wx,
                                 wy,
                                 wz,
@@ -297,9 +281,10 @@ fn emit_plane_opaque(
             }
 
             let pi = padded_chunk_index(coords[0], coords[1], coords[2]);
-            let bi = blocks[pi] as usize;
+            let block = blocks[pi];
+            let bi = block as usize;
             let ao = compute_ao(blocks, pi, dir);
-            builders[BLOCK_MATERIAL_LAYER_INDEX[bi]].push_face(
+            builders[block.material_layer_index()].push_face(
                 w[0],
                 w[1],
                 w[2],

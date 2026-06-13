@@ -50,13 +50,6 @@ pub(crate) const DIRECTION_INDEX_OFFSETS: [isize; DIRECTION_COUNT] = [
     -(PADDED_CHUNK_SIZE as isize),
     PADDED_CHUNK_SIZE as isize,
 ];
-pub(crate) const BLOCK_IS_RENDERED: [bool; BLOCK_TYPE_COUNT] =
-    [false, true, true, true, true, true, true, true];
-pub(crate) const BLOCK_IS_FULL_CUBE: [bool; BLOCK_TYPE_COUNT] =
-    [false, true, true, true, true, false, true, false];
-pub(crate) const BLOCK_EMITS_INTERNAL_FACES: [bool; BLOCK_TYPE_COUNT] =
-    [false, false, false, false, false, false, false, true];
-pub(crate) const BLOCK_MATERIAL_LAYER_INDEX: [usize; BLOCK_TYPE_COUNT] = [0, 0, 0, 0, 0, 1, 0, 1];
 pub(crate) const VERTEX_AO: [u8; 8] = [3, 2, 2, 0, 2, 1, 1, 0];
 pub(crate) const AO_SAMPLE_INDEX_OFFSETS: [[[isize; 3]; 4]; DIRECTION_COUNT] = [
     [
@@ -187,8 +180,8 @@ impl BlockMeshTables {
         let mut colors = [[Vec4::ZERO; DIRECTION_COUNT]; BLOCK_TYPE_COUNT];
 
         for block in BlockType::iter() {
-            let block_index = block_mesh_index(block);
-            if !BLOCK_IS_RENDERED[block_index] {
+            let block_index = block as usize;
+            if !block.is_rendered() {
                 continue;
             };
 
@@ -420,8 +413,8 @@ impl ChunkMeshBlocks {
                 for z in 0..CHUNK_SIZE {
                     let block = chunk.blocks[x][z][y];
                     self.set_block(x as i32, y as i32, z as i32, block);
-                    rendered_blocks += block_is_rendered_fast(block) as u16;
-                    full_cube_blocks += block_is_full_cube_fast(block) as u16;
+                    rendered_blocks += block.is_rendered() as u16;
+                    full_cube_blocks += block.is_full_cube() as u16;
                 }
             }
         }
@@ -468,10 +461,8 @@ impl ChunkMeshBlocks {
     fn neighbor_face_shells_are_full_cube(&self) -> bool {
         for y in 1..=CHUNK_SIZE {
             for z in 1..=CHUNK_SIZE {
-                if !block_is_full_cube_fast(self.blocks[padded_chunk_index(0, y, z)])
-                    || !block_is_full_cube_fast(
-                        self.blocks[padded_chunk_index(CHUNK_SIZE + 1, y, z)],
-                    )
+                if !self.blocks[padded_chunk_index(0, y, z)].is_full_cube()
+                    || !self.blocks[padded_chunk_index(CHUNK_SIZE + 1, y, z)].is_full_cube()
                 {
                     return false;
                 }
@@ -480,10 +471,8 @@ impl ChunkMeshBlocks {
 
         for x in 1..=CHUNK_SIZE {
             for z in 1..=CHUNK_SIZE {
-                if !block_is_full_cube_fast(self.blocks[padded_chunk_index(x, 0, z)])
-                    || !block_is_full_cube_fast(
-                        self.blocks[padded_chunk_index(x, CHUNK_SIZE + 1, z)],
-                    )
+                if !self.blocks[padded_chunk_index(x, 0, z)].is_full_cube()
+                    || !self.blocks[padded_chunk_index(x, CHUNK_SIZE + 1, z)].is_full_cube()
                 {
                     return false;
                 }
@@ -492,10 +481,8 @@ impl ChunkMeshBlocks {
 
         for x in 1..=CHUNK_SIZE {
             for y in 1..=CHUNK_SIZE {
-                if !block_is_full_cube_fast(self.blocks[padded_chunk_index(x, y, 0)])
-                    || !block_is_full_cube_fast(
-                        self.blocks[padded_chunk_index(x, y, CHUNK_SIZE + 1)],
-                    )
+                if !self.blocks[padded_chunk_index(x, y, 0)].is_full_cube()
+                    || !self.blocks[padded_chunk_index(x, y, CHUNK_SIZE + 1)].is_full_cube()
                 {
                     return false;
                 }
@@ -709,36 +696,20 @@ pub(crate) fn make_mesh_from_quad_groups_with_ao_brightness(
     Some(mesh)
 }
 
-#[inline(always)]
-pub(crate) fn block_mesh_index(block: BlockType) -> usize {
-    block as usize
-}
+
 
 #[inline(always)]
-pub(crate) fn block_is_rendered_fast(block: BlockType) -> bool {
-    BLOCK_IS_RENDERED[block_mesh_index(block)]
-}
-
-#[inline(always)]
-pub(crate) fn block_is_full_cube_fast(block: BlockType) -> bool {
-    BLOCK_IS_FULL_CUBE[block_mesh_index(block)]
-}
-
-#[inline(always)]
-pub(crate) fn should_emit_face_from_indices(block_index: usize, neighbor_index: usize) -> bool {
-    if !BLOCK_IS_RENDERED[neighbor_index] {
+pub(crate) fn should_emit_face_from_indices(block: BlockType, neighbor: BlockType) -> bool {
+    if !neighbor.is_rendered() {
         return true;
     }
 
-    if BLOCK_IS_FULL_CUBE[neighbor_index] {
+    if neighbor.is_full_cube() {
         return false;
     }
 
-    if block_index == neighbor_index
-        && !BLOCK_IS_FULL_CUBE[block_index]
-        && !BLOCK_IS_FULL_CUBE[neighbor_index]
-    {
-        return BLOCK_EMITS_INTERNAL_FACES[block_index];
+    if block == neighbor && !block.is_full_cube() && !neighbor.is_full_cube() {
+        return block.emits_internal_faces();
     }
 
     true
@@ -764,8 +735,7 @@ pub(crate) fn block_occludes_ambient_light_from_index(
     padded_index: usize,
     offset: isize,
 ) -> bool {
-    let block = blocks.blocks[(padded_index as isize + offset) as usize];
-    BLOCK_IS_FULL_CUBE[block_mesh_index(block)]
+    blocks.blocks[(padded_index as isize + offset) as usize].is_full_cube()
 }
 
 #[inline(always)]

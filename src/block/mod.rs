@@ -70,7 +70,33 @@ impl BlockRenderProfile {
 }
 
 impl BlockType {
-    pub fn render_profile(self) -> Option<BlockRenderProfile> {
+    #[inline(always)]
+    pub const fn is_rendered(self) -> bool {
+        !matches!(self, Self::Air)
+    }
+
+    #[inline(always)]
+    pub const fn is_full_cube(self) -> bool {
+        matches!(
+            self,
+            Self::Grass | Self::Dirt | Self::Stone | Self::Sand | Self::OakLog
+        )
+    }
+
+    #[inline(always)]
+    pub const fn emits_internal_faces(self) -> bool {
+        matches!(self, Self::OakLeaves)
+    }
+
+    #[inline(always)]
+    pub const fn material_layer_index(self) -> usize {
+        match self {
+            Self::Glass | Self::OakLeaves => 1,
+            _ => 0,
+        }
+    }
+
+    pub const fn render_profile(self) -> Option<BlockRenderProfile> {
         use BlockType::*;
         match self {
             Air => None,
@@ -87,10 +113,6 @@ impl BlockType {
                 occlusion: FaceOcclusion::FullCube,
             }),
         }
-    }
-
-    pub fn is_visible(&self) -> bool {
-        self.render_profile().is_some()
     }
 
     pub fn is_solid(&self) -> bool {

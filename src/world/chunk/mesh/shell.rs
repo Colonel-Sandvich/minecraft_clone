@@ -1,9 +1,9 @@
 use crate::block::BlockMaterialLayer;
 
 use super::{
-    BLOCK_MATERIAL_LAYER_INDEX, BlockMeshTables, CHUNK_SIZE, ChunkLayerMeshes, ChunkMeshBlocks,
-    ChunkMeshInput, ChunkMesher, DIRECTION_INDEX_OFFSETS, MeshBufferBuilder,
-    block_is_full_cube_fast, block_mesh_index, face_ao_from_indices, padded_chunk_index,
+    BlockMeshTables, CHUNK_SIZE, ChunkLayerMeshes, ChunkMeshBlocks, ChunkMeshInput, ChunkMesher,
+    DIRECTION_INDEX_OFFSETS, MeshBufferBuilder, face_ao_from_indices,
+    padded_chunk_index,
 };
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -50,12 +50,12 @@ fn count_full_cube_shell_faces(
     for_full_cube_shell_face(blocks, |_x, _y, _z, padded_index, side_index| {
         let neighbor =
             blocks.blocks[(padded_index as isize + DIRECTION_INDEX_OFFSETS[side_index]) as usize];
-        if block_is_full_cube_fast(neighbor) {
+        if neighbor.is_full_cube() {
             return;
         }
 
-        let block_index = block_mesh_index(blocks.blocks[padded_index]);
-        counts[BLOCK_MATERIAL_LAYER_INDEX[block_index]] += 1;
+        let block = blocks.blocks[padded_index];
+        counts[block.material_layer_index()] += 1;
     });
 
     counts
@@ -69,14 +69,15 @@ fn emit_full_cube_shell_faces(
     for_full_cube_shell_face(input.blocks, |x, y, z, padded_index, side_index| {
         let neighbor = input.blocks.blocks
             [(padded_index as isize + DIRECTION_INDEX_OFFSETS[side_index]) as usize];
-        if block_is_full_cube_fast(neighbor) {
+        if neighbor.is_full_cube() {
             return;
         }
 
-        let block_index = block_mesh_index(input.blocks.blocks[padded_index]);
+        let block = input.blocks.blocks[padded_index];
+        let block_index = block as usize;
         let ao = face_ao_from_indices(input.blocks, padded_index, side_index);
 
-        builders[BLOCK_MATERIAL_LAYER_INDEX[block_index]].push_face(
+        builders[block.material_layer_index()].push_face(
             x,
             y,
             z,
@@ -125,6 +126,6 @@ fn visit_shell_face(
     visit: &mut impl FnMut(usize, usize, usize, usize, usize),
 ) {
     let padded_index = padded_chunk_index(x + 1, y + 1, z + 1);
-    debug_assert!(block_is_full_cube_fast(blocks.blocks[padded_index]));
+    debug_assert!(blocks.blocks[padded_index].is_full_cube());
     visit(x, y, z, padded_index, side_index);
 }
