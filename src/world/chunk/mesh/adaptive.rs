@@ -1,6 +1,4 @@
-use super::{
-    ChunkLayerMeshes, ChunkMeshInput, ChunkMesher, DirectChunkMesher, GreedyChunkMesher,
-};
+use super::{ChunkLayerMeshes, ChunkMeshInput, ChunkMesher, DirectChunkMesher, GreedyChunkMesher};
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct AdaptiveChunkMesher;
@@ -17,7 +15,7 @@ impl ChunkMesher for AdaptiveChunkMesher {
 
         let rendered = input.blocks.center_rendered_blocks as usize;
 
-        if rendered < 64 {
+        if rendered < 2048 {
             return DirectChunkMesher.mesh(input);
         }
 

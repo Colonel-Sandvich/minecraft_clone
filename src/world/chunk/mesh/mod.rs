@@ -267,8 +267,11 @@ impl MeshBufferBuilder {
 
     pub(crate) fn push_merged_face(
         &mut self,
-        x: usize, y: usize, z: usize,
-        w: usize, h: usize,
+        x: usize,
+        y: usize,
+        z: usize,
+        w: usize,
+        h: usize,
         side_index: usize,
         uv: Rect,
         color: Vec4,
@@ -282,44 +285,57 @@ impl MeshBufferBuilder {
             0 => {
                 self.positions.push([x as f32, y as f32, (z + w) as f32]);
                 self.positions.push([x as f32, y as f32, z as f32]);
-                self.positions.push([x as f32, (y + h) as f32, (z + w) as f32]);
+                self.positions
+                    .push([x as f32, (y + h) as f32, (z + w) as f32]);
                 self.positions.push([x as f32, (y + h) as f32, z as f32]);
             }
             1 => {
                 self.positions.push([(x + 1) as f32, y as f32, z as f32]);
-                self.positions.push([(x + 1) as f32, y as f32, (z + w) as f32]);
-                self.positions.push([(x + 1) as f32, (y + h) as f32, z as f32]);
-                self.positions.push([(x + 1) as f32, (y + h) as f32, (z + w) as f32]);
+                self.positions
+                    .push([(x + 1) as f32, y as f32, (z + w) as f32]);
+                self.positions
+                    .push([(x + 1) as f32, (y + h) as f32, z as f32]);
+                self.positions
+                    .push([(x + 1) as f32, (y + h) as f32, (z + w) as f32]);
             }
             2 => {
                 self.positions.push([x as f32, y as f32, (z + h) as f32]);
-                self.positions.push([(x + w) as f32, y as f32, (z + h) as f32]);
+                self.positions
+                    .push([(x + w) as f32, y as f32, (z + h) as f32]);
                 self.positions.push([x as f32, y as f32, z as f32]);
                 self.positions.push([(x + w) as f32, y as f32, z as f32]);
             }
             3 => {
-                self.positions.push([x as f32, (y + 1) as f32, (z + h) as f32]);
+                self.positions
+                    .push([x as f32, (y + 1) as f32, (z + h) as f32]);
                 self.positions.push([x as f32, (y + 1) as f32, z as f32]);
-                self.positions.push([(x + w) as f32, (y + 1) as f32, (z + h) as f32]);
-                self.positions.push([(x + w) as f32, (y + 1) as f32, z as f32]);
+                self.positions
+                    .push([(x + w) as f32, (y + 1) as f32, (z + h) as f32]);
+                self.positions
+                    .push([(x + w) as f32, (y + 1) as f32, z as f32]);
             }
             4 => {
                 self.positions.push([x as f32, y as f32, z as f32]);
                 self.positions.push([(x + w) as f32, y as f32, z as f32]);
                 self.positions.push([x as f32, (y + h) as f32, z as f32]);
-                self.positions.push([(x + w) as f32, (y + h) as f32, z as f32]);
+                self.positions
+                    .push([(x + w) as f32, (y + h) as f32, z as f32]);
             }
             5 => {
-                self.positions.push([(x + w) as f32, y as f32, (z + 1) as f32]);
+                self.positions
+                    .push([(x + w) as f32, y as f32, (z + 1) as f32]);
                 self.positions.push([x as f32, y as f32, (z + 1) as f32]);
-                self.positions.push([(x + w) as f32, (y + h) as f32, (z + 1) as f32]);
-                self.positions.push([x as f32, (y + h) as f32, (z + 1) as f32]);
+                self.positions
+                    .push([(x + w) as f32, (y + h) as f32, (z + 1) as f32]);
+                self.positions
+                    .push([x as f32, (y + h) as f32, (z + 1) as f32]);
             }
             _ => unreachable!(),
         }
 
         self.normals.extend_from_slice(&NORMALS[side_index]);
-        self.uvs.extend_from_slice(&uvs_for_rect(Rect::new(0.0, 0.0, w as f32, h as f32)));
+        self.uvs
+            .extend_from_slice(&uvs_for_rect(Rect::new(0.0, 0.0, w as f32, h as f32)));
         let tile_offset = [uv.min.x, uv.min.y];
         self.uv1s.extend_from_slice(&[tile_offset; 4]);
 
@@ -709,10 +725,7 @@ pub(crate) fn block_is_full_cube_fast(block: BlockType) -> bool {
 }
 
 #[inline(always)]
-pub(crate) fn should_emit_face_from_indices(
-    block_index: usize,
-    neighbor_index: usize,
-) -> bool {
+pub(crate) fn should_emit_face_from_indices(block_index: usize, neighbor_index: usize) -> bool {
     if !BLOCK_IS_RENDERED[neighbor_index] {
         return true;
     }
