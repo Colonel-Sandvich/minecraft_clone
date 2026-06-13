@@ -1,10 +1,10 @@
 use crate::block::BlockMaterialLayer;
 
 use super::{
-    BLOCK_EMITS_INTERNAL_FACES, BLOCK_IS_FULL_CUBE, BLOCK_IS_RENDERED, BLOCK_MATERIAL_LAYER_INDEX,
-    AO_SAMPLE_INDEX_OFFSETS, BlockMeshTables, BlockType, CHUNK_SIZE, ChunkLayerMeshes,
-    ChunkMeshInput, ChunkMesher, DIRECTION_INDEX_OFFSETS, MeshBufferBuilder, PADDED_CHUNK_SIZE,
-    PADDED_CHUNK_VOLUME, VERTEX_AO, padded_chunk_index,
+    AO_SAMPLE_INDEX_OFFSETS, BLOCK_EMITS_INTERNAL_FACES, BLOCK_IS_FULL_CUBE, BLOCK_IS_RENDERED,
+    BLOCK_MATERIAL_LAYER_INDEX, BlockMeshTables, BlockType, CHUNK_SIZE, ChunkLayerMeshes,
+    ChunkMeshInput, ChunkMesher, DIRECTION_INDEX_OFFSETS, MeshBufferBuilder,
+    PADDED_CHUNK_LAYER_SIZE, PADDED_CHUNK_SIZE, PADDED_CHUNK_VOLUME, VERTEX_AO, padded_chunk_index,
 };
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -82,7 +82,10 @@ fn build_bitmasks(blocks: &[BlockType; PADDED_CHUNK_VOLUME]) -> GreedyData {
         }
     }
 
-    GreedyData { masks, transparent_count }
+    GreedyData {
+        masks,
+        transparent_count,
+    }
 }
 
 fn should_emit_transparent(block_index: usize, neighbor_index: usize) -> bool {
@@ -127,8 +130,11 @@ const VERTEX_OFFSETS_NO_SCALE: [[(usize, usize, usize); 4]; 6] = [
 fn owning_block_coords(
     side_index: usize,
     vertex_index: usize,
-    wx: usize, wy: usize, wz: usize,
-    w: usize, h: usize,
+    wx: usize,
+    wy: usize,
+    wz: usize,
+    w: usize,
+    h: usize,
 ) -> (usize, usize, usize) {
     let vo = VERTEX_OFFSETS_NO_SCALE[side_index][vertex_index];
     match side_index {
@@ -153,8 +159,11 @@ fn owning_block_coords(
 fn merged_ao(
     blocks: &[BlockType; PADDED_CHUNK_VOLUME],
     side_index: usize,
-    wx: usize, wy: usize, wz: usize,
-    w: usize, h: usize,
+    wx: usize,
+    wy: usize,
+    wz: usize,
+    w: usize,
+    h: usize,
 ) -> [u8; 4] {
     std::array::from_fn(|vi| {
         let (bx, by, bz) = owning_block_coords(side_index, vi, wx, wy, wz, w, h);
@@ -163,18 +172,17 @@ fn merged_ao(
     })
 }
 
-fn count_faces(
-    blocks: &[BlockType; PADDED_CHUNK_VOLUME],
-    data: &GreedyData,
-) -> [usize; BlockMaterialLayer::COUNT] {
+fn count_faces(data: &GreedyData) -> [usize; BlockMaterialLayer::COUNT] {
     let mut counts = [0; BlockMaterialLayer::COUNT];
 
     for axis in 0..3usize {
         let axis_masks = &data.masks[axis];
 
         for c in 1..=CHUNK_SIZE {
-            let emit_first = bitwise_and_not(&axis_masks.full_cube[c], &axis_masks.full_cube[c - 1]);
-            let emit_second = bitwise_and_not(&axis_masks.full_cube[c], &axis_masks.full_cube[c + 1]);
+            let emit_first =
+                bitwise_and_not(&axis_masks.full_cube[c], &axis_masks.full_cube[c - 1]);
+            let emit_second =
+                bitwise_and_not(&axis_masks.full_cube[c], &axis_masks.full_cube[c + 1]);
 
             for wi in 0..PLANE_U64S {
                 counts[0] += emit_first[wi].count_ones() as usize;
@@ -183,45 +191,12 @@ fn count_faces(
         }
     }
 
-    if data.transparent_count > 0 {
-        for px in 1..=CHUNK_SIZE {
-            for py in 1..=CHUNK_SIZE {
-                for pz in 1..=CHUNK_SIZE {
-                    let pi = padded_chunk_index(px, py, pz);
-                    let bi = blocks[pi] as usize;
-
-                    if BLOCK_IS_FULL_CUBE[bi] || !BLOCK_IS_RENDERED[bi] {
-                        continue;
-                    }
-
-                    for dir in 0..6usize {
-                        let ni = blocks[(pi as isize + DIRECTION_INDEX_OFFSETS[dir]) as usize] as usize;
-                        if should_emit_transparent(bi, ni) {
-                            counts[BLOCK_MATERIAL_LAYER_INDEX[bi]] += 1;
-                        }
-                    }
-                }
-            }
-        }
-    }
-
+    counts[1] = data.transparent_count * 6;
     counts
 }
 
-fn face_ao_key(
-    blocks: &[BlockType; PADDED_CHUNK_VOLUME],
-    axis: usize,
-    c: usize,
-    t1: usize,
-    t2: usize,
-    dir: usize,
-) -> u16 {
-    let (px, py, pz) = match axis {
-        0 => (c, t1, t2),
-        1 => (t1, c, t2),
-        _ => (t1, t2, c),
-    };
-    let pi = padded_chunk_index(px, py, pz);
+#[inline(always)]
+fn face_ao_key_from_pi(blocks: &[BlockType; PADDED_CHUNK_VOLUME], pi: usize, dir: usize) -> u16 {
     let a0 = single_vertex_ao(blocks, pi, dir, 0) as u16;
     let a1 = single_vertex_ao(blocks, pi, dir, 1) as u16;
     let a2 = single_vertex_ao(blocks, pi, dir, 2) as u16;
@@ -239,19 +214,18 @@ fn emit_plane_opaque(
     axis: usize,
     dir: usize,
 ) {
-    // Precompute AO keys for all cells in this face plane.
-    // Only merge blocks with identical 4-vertex AO values, so that
-    // interpolation across the merged quad gives the correct per-block result.
-    let mut ao_keys = [0u16; PADDED_CHUNK_SIZE * PADDED_CHUNK_SIZE];
-    for t1 in 1..=CHUNK_SIZE {
-        for t2 in 1..=CHUNK_SIZE {
-            ao_keys[t1 * PADDED_CHUNK_SIZE + t2] =
-                face_ao_key(blocks, axis, c, t1, t2, dir);
-        }
-    }
-
     let mut consumed = [0u64; 4];
     let packed_stride = CHUNK_SIZE;
+
+    let (step_w, step_h, step_dw) = match axis {
+        0 => (
+            PADDED_CHUNK_SIZE,
+            PADDED_CHUNK_LAYER_SIZE,
+            PADDED_CHUNK_SIZE,
+        ),
+        1 => (PADDED_CHUNK_SIZE, 1, PADDED_CHUNK_SIZE),
+        _ => (PADDED_CHUNK_LAYER_SIZE, 1, PADDED_CHUNK_LAYER_SIZE),
+    };
 
     for wi in 0..PLANE_U64S {
         let mut bits = emit[wi];
@@ -263,7 +237,7 @@ fn emit_plane_opaque(
 
             bits &= bits - 1;
 
-            if t1 < 1 || t1 > CHUNK_SIZE || t2 < 1 || t2 > CHUNK_SIZE {
+            if !(1..=CHUNK_SIZE).contains(&t1) || !(1..=CHUNK_SIZE).contains(&t2) {
                 continue;
             }
 
@@ -274,44 +248,39 @@ fn emit_plane_opaque(
                 continue;
             }
 
-            let mut pad = [0usize; 3];
-            pad[axis] = c;
-            match axis {
-                0 => { pad[1] = t1; pad[2] = t2; }
-                1 => { pad[0] = t1; pad[2] = t2; }
-                _ => { pad[0] = t1; pad[1] = t2; }
-            }
-
+            let (pad, world) = match axis {
+                0 => ([c, t1, t2], [c - 1, t1 - 1, t2 - 1]),
+                1 => ([t1, c, t2], [t1 - 1, c - 1, t2 - 1]),
+                _ => ([t1, t2, c], [t1 - 1, t2 - 1, c - 1]),
+            };
             let pi = padded_chunk_index(pad[0], pad[1], pad[2]);
             let bi = blocks[pi] as usize;
-            let base_ao_key = ao_keys[t1 * PADDED_CHUNK_SIZE + t2];
+            let base_ao_key = face_ao_key_from_pi(blocks, pi, dir);
 
-            let mut world = [0usize; 3];
-            world[axis] = c - 1;
-            match axis {
-                0 => { world[1] = t1 - 1; world[2] = t2 - 1; }
-                1 => { world[0] = t1 - 1; world[2] = t2 - 1; }
-                _ => { world[0] = t1 - 1; world[1] = t2 - 1; }
-            }
-            let wx = world[0]; let wy = world[1]; let wz = world[2];
+            let wx = world[0];
+            let wy = world[1];
+            let wz = world[2];
 
             let mut w_ext = 1;
             while t2 + w_ext <= CHUNK_SIZE {
                 let p = (t1 - 1) * packed_stride + (t2 + w_ext - 1);
-                if consumed[p / 64] & (1 << (p % 64)) != 0 { break; }
+                if consumed[p / 64] & (1 << (p % 64)) != 0 {
+                    break;
+                }
                 let next_bit = t1 * PADDED_CHUNK_SIZE + (t2 + w_ext);
                 let nw = next_bit / 64;
                 let nb = next_bit % 64;
-                if (emit[nw] & (1 << nb)) == 0 { break; }
+                if (emit[nw] & (1 << nb)) == 0 {
+                    break;
+                }
 
-                if ao_keys[t1 * PADDED_CHUNK_SIZE + (t2 + w_ext)] != base_ao_key { break; }
-
-                let np = match axis {
-                    0 => padded_chunk_index(c, t1, t2 + w_ext),
-                    1 => padded_chunk_index(t1, c, t2 + w_ext),
-                    _ => padded_chunk_index(t1, t2 + w_ext, c),
-                };
-                if blocks[np] as usize != bi { break; }
+                let np = pi + step_w * w_ext;
+                if face_ao_key_from_pi(blocks, np, dir) != base_ao_key {
+                    break;
+                }
+                if blocks[np] as usize != bi {
+                    break;
+                }
                 w_ext += 1;
             }
 
@@ -319,20 +288,23 @@ fn emit_plane_opaque(
             'vloop: while t1 + h_ext <= CHUNK_SIZE {
                 for dw in 0..w_ext {
                     let p = (t1 + h_ext - 1) * packed_stride + (t2 + dw - 1);
-                    if consumed[p / 64] & (1 << (p % 64)) != 0 { break 'vloop; }
+                    if consumed[p / 64] & (1 << (p % 64)) != 0 {
+                        break 'vloop;
+                    }
                     let next_bit = (t1 + h_ext) * PADDED_CHUNK_SIZE + (t2 + dw);
                     let nw = next_bit / 64;
                     let nb = next_bit % 64;
-                    if (emit[nw] & (1 << nb)) == 0 { break 'vloop; }
+                    if (emit[nw] & (1 << nb)) == 0 {
+                        break 'vloop;
+                    }
 
-                    if ao_keys[(t1 + h_ext) * PADDED_CHUNK_SIZE + (t2 + dw)] != base_ao_key { break 'vloop; }
-
-                    let np = match axis {
-                        0 => padded_chunk_index(c, t1 + h_ext, t2 + dw),
-                        1 => padded_chunk_index(t1 + h_ext, c, t2 + dw),
-                        _ => padded_chunk_index(t1 + h_ext, t2 + dw, c),
-                    };
-                    if blocks[np] as usize != bi { break 'vloop; }
+                    let np = pi + step_h * h_ext + step_dw * dw;
+                    if face_ao_key_from_pi(blocks, np, dir) != base_ao_key {
+                        break 'vloop;
+                    }
+                    if blocks[np] as usize != bi {
+                        break 'vloop;
+                    }
                 }
                 h_ext += 1;
             }
@@ -352,8 +324,16 @@ fn emit_plane_opaque(
 
             let ao = merged_ao(blocks, dir, wx, wy, wz, emit_w, emit_h);
             builders[BLOCK_MATERIAL_LAYER_INDEX[bi]].push_merged_face(
-                wx, wy, wz, emit_w, emit_h, dir,
-                tables.uvs[bi][dir], tables.colors[bi][dir], ao, ao_brightness,
+                wx,
+                wy,
+                wz,
+                emit_w,
+                emit_h,
+                dir,
+                tables.uvs[bi][dir],
+                tables.colors[bi][dir],
+                ao,
+                ao_brightness,
             );
         }
     }
@@ -372,14 +352,34 @@ fn emit_faces(
         let second_dir = axis * 2 + 1;
 
         for c in 1..=CHUNK_SIZE {
-            let emit_first = bitwise_and_not(&axis_masks.full_cube[c], &axis_masks.full_cube[c - 1]);
+            let emit_first =
+                bitwise_and_not(&axis_masks.full_cube[c], &axis_masks.full_cube[c - 1]);
             if !plane_is_zero(&emit_first) {
-                emit_plane_opaque(&emit_first, blocks, tables, ao_brightness, builders, c, axis, first_dir);
+                emit_plane_opaque(
+                    &emit_first,
+                    blocks,
+                    tables,
+                    ao_brightness,
+                    builders,
+                    c,
+                    axis,
+                    first_dir,
+                );
             }
 
-            let emit_second = bitwise_and_not(&axis_masks.full_cube[c], &axis_masks.full_cube[c + 1]);
+            let emit_second =
+                bitwise_and_not(&axis_masks.full_cube[c], &axis_masks.full_cube[c + 1]);
             if !plane_is_zero(&emit_second) {
-                emit_plane_opaque(&emit_second, blocks, tables, ao_brightness, builders, c, axis, second_dir);
+                emit_plane_opaque(
+                    &emit_second,
+                    blocks,
+                    tables,
+                    ao_brightness,
+                    builders,
+                    c,
+                    axis,
+                    second_dir,
+                );
             }
         }
     }
@@ -400,7 +400,8 @@ fn emit_faces(
                     let wz = pz - 1;
 
                     for dir in 0..6usize {
-                        let ni = blocks[(pi as isize + DIRECTION_INDEX_OFFSETS[dir]) as usize] as usize;
+                        let ni =
+                            blocks[(pi as isize + DIRECTION_INDEX_OFFSETS[dir]) as usize] as usize;
                         if should_emit_transparent(bi, ni) {
                             let ao = [
                                 single_vertex_ao(blocks, pi, dir, 0),
@@ -409,8 +410,14 @@ fn emit_faces(
                                 single_vertex_ao(blocks, pi, dir, 3),
                             ];
                             builders[BLOCK_MATERIAL_LAYER_INDEX[bi]].push_face(
-                                wx, wy, wz, dir,
-                                tables.uvs[bi][dir], tables.colors[bi][dir], ao, ao_brightness,
+                                wx,
+                                wy,
+                                wz,
+                                dir,
+                                tables.uvs[bi][dir],
+                                tables.colors[bi][dir],
+                                ao,
+                                ao_brightness,
                             );
                         }
                     }
@@ -425,7 +432,7 @@ fn make_greedy_chunk_meshes(input: ChunkMeshInput<'_>) -> ChunkLayerMeshes {
     let blocks = &input.blocks.blocks;
 
     let data = build_bitmasks(blocks);
-    let face_counts = count_faces(blocks, &data);
+    let face_counts = count_faces(&data);
     let mut builders: [MeshBufferBuilder; BlockMaterialLayer::COUNT] =
         std::array::from_fn(|i| MeshBufferBuilder::with_face_capacity(face_counts[i]));
 

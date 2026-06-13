@@ -13,7 +13,10 @@ use crate::world::chunk::mesh::{
 };
 use crate::world::chunk::{CHUNK_SIZE, Chunk, ChunkNeedsMeshRebuild, ChunkPosition};
 
-use super::{AdaptiveChunkMesher, DirectChunkMesher, FullCubeShellChunkMesher, GreedyChunkMesher, HybridChunkMesher, ReferenceChunkMesher, SweepChunkMesher};
+use super::{
+    AdaptiveChunkMesher, DirectChunkMesher, FullCubeShellChunkMesher, GreedyChunkMesher,
+    HybridChunkMesher, ReferenceChunkMesher, SweepChunkMesher,
+};
 use super::{
     GROUND_BOUNCE_FACE_BRIGHTNESS, HORIZON_FACE_BRIGHTNESS, SKY_FACE_BRIGHTNESS, face_brightness,
 };
@@ -310,7 +313,10 @@ fn adaptive_delegates_to_greedy_for_all_full_cube_chunks() {
     let greedy = mesh_signature(GreedyChunkMesher.mesh(input));
     let adaptive = mesh_signature(AdaptiveChunkMesher.mesh(input));
 
-    assert_eq!(greedy, adaptive, "adaptive should delegate to greedy for all-full-cube chunks");
+    assert_eq!(
+        greedy, adaptive,
+        "adaptive should delegate to greedy for all-full-cube chunks"
+    );
 }
 
 #[test]
@@ -329,7 +335,10 @@ fn adaptive_delegates_to_direct_for_sparse_chunks() {
     let direct = mesh_signature(DirectChunkMesher.mesh(input));
     let adaptive = mesh_signature(AdaptiveChunkMesher.mesh(input));
 
-    assert_eq!(direct, adaptive, "adaptive should delegate to direct for sparse chunks (<64 rendered)");
+    assert_eq!(
+        direct, adaptive,
+        "adaptive should delegate to direct for sparse chunks (<64 rendered)"
+    );
 }
 
 #[test]
@@ -707,7 +716,7 @@ fn greedy_uv1_is_set_on_all_vertices() {
         ao_brightness: AO_BRIGHTNESS,
     });
 
-    for (layer, mesh) in &meshes {
+    for (_, mesh) in &meshes {
         let Some(VertexAttributeValues::Float32x2(uv1s)) = mesh.attribute(Mesh::ATTRIBUTE_UV_1)
         else {
             panic!("missing UV_1");
@@ -784,19 +793,23 @@ fn greedy_vertex_count_less_than_direct_for_adjacent_blocks() {
     let direct_verts: usize = DirectChunkMesher
         .mesh(input)
         .iter()
-        .map(|(_, m)| match m.attribute(Mesh::ATTRIBUTE_POSITION).unwrap() {
-            VertexAttributeValues::Float32x3(v) => v.len(),
-            _ => 0,
-        })
+        .map(
+            |(_, m)| match m.attribute(Mesh::ATTRIBUTE_POSITION).unwrap() {
+                VertexAttributeValues::Float32x3(v) => v.len(),
+                _ => 0,
+            },
+        )
         .sum();
 
     let greedy_verts: usize = GreedyChunkMesher
         .mesh(input)
         .iter()
-        .map(|(_, m)| match m.attribute(Mesh::ATTRIBUTE_POSITION).unwrap() {
-            VertexAttributeValues::Float32x3(v) => v.len(),
-            _ => 0,
-        })
+        .map(
+            |(_, m)| match m.attribute(Mesh::ATTRIBUTE_POSITION).unwrap() {
+                VertexAttributeValues::Float32x3(v) => v.len(),
+                _ => 0,
+            },
+        )
         .sum();
 
     assert!(
