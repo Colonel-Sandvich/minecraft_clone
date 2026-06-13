@@ -12,8 +12,9 @@ use minecraft_clone::{
             CHUNK_SIZE, Chunk,
             ambient_occlusion::AmbientOcclusionSettings,
             mesh::{
-                BitmaskChunkMesher, ChunkMeshBlocks, ChunkMeshInput, ChunkMesher, DirectChunkMesher,
-                HybridChunkMesher, ReferenceChunkMesher, SweepChunkMesher, make_reference_layered_quad_groups,
+                AdaptiveChunkMesher, ChunkMeshBlocks, ChunkMeshInput,
+                ChunkMesher, DirectChunkMesher, GreedyChunkMesher, HybridChunkMesher,
+                ReferenceChunkMesher, SweepChunkMesher, make_reference_layered_quad_groups,
             },
         },
         generation::generate_chunk,
@@ -84,7 +85,7 @@ fn bench_chunk_meshing(c: &mut Criterion) {
 
     bench_mesher(
         c,
-        "reference_full_meshes",
+        "reference",
         ReferenceChunkMesher,
         &inputs,
         &texture_map,
@@ -92,7 +93,7 @@ fn bench_chunk_meshing(c: &mut Criterion) {
     );
     bench_mesher(
         c,
-        "direct_full_meshes",
+        "direct",
         DirectChunkMesher,
         &inputs,
         &texture_map,
@@ -100,7 +101,7 @@ fn bench_chunk_meshing(c: &mut Criterion) {
     );
     bench_mesher(
         c,
-        "sweep_full_meshes",
+        "sweep",
         SweepChunkMesher,
         &inputs,
         &texture_map,
@@ -108,58 +109,25 @@ fn bench_chunk_meshing(c: &mut Criterion) {
     );
     bench_mesher(
         c,
-        "bitmask_full_meshes",
-        BitmaskChunkMesher,
+        "hybrid",
+        HybridChunkMesher,
         &inputs,
         &texture_map,
         ao_brightness,
     );
     bench_mesher(
         c,
-        "hybrid_full_meshes",
-        HybridChunkMesher,
+        "greedy",
+        GreedyChunkMesher,
         &inputs,
         &texture_map,
         ao_brightness,
     );
-
-    bench_mesher_end_to_end(
+    bench_mesher(
         c,
-        "reference_end_to_end",
-        ReferenceChunkMesher,
-        &scenarios,
-        &texture_map,
-        ao_brightness,
-    );
-    bench_mesher_end_to_end(
-        c,
-        "direct_end_to_end",
-        DirectChunkMesher,
-        &scenarios,
-        &texture_map,
-        ao_brightness,
-    );
-    bench_mesher_end_to_end(
-        c,
-        "sweep_end_to_end",
-        SweepChunkMesher,
-        &scenarios,
-        &texture_map,
-        ao_brightness,
-    );
-    bench_mesher_end_to_end(
-        c,
-        "bitmask_end_to_end",
-        BitmaskChunkMesher,
-        &scenarios,
-        &texture_map,
-        ao_brightness,
-    );
-    bench_mesher_end_to_end(
-        c,
-        "hybrid_end_to_end",
-        HybridChunkMesher,
-        &scenarios,
+        "adaptive",
+        AdaptiveChunkMesher,
+        &inputs,
         &texture_map,
         ao_brightness,
     );
@@ -180,34 +148,6 @@ fn bench_mesher(
             b.iter(|| {
                 black_box(mesher.mesh(ChunkMeshInput {
                     blocks: black_box(blocks),
-                    block_texture_map: black_box(texture_map),
-                    ao_brightness: black_box(ao_brightness),
-                }))
-            });
-        });
-    }
-    mesh_group.finish();
-}
-
-fn bench_mesher_end_to_end(
-    c: &mut Criterion,
-    group_name: &'static str,
-    mesher: impl ChunkMesher + Copy,
-    scenarios: &[ChunkMeshingScenario],
-    texture_map: &BlockTextureMap,
-    ao_brightness: [f32; 4],
-) {
-    let mut mesh_group = c.benchmark_group(group_name);
-    mesh_group.throughput(Throughput::Elements(1));
-    for scenario in scenarios {
-        let center_pos = scenario.center_pos;
-        let chunk_refs = scenario.chunk_refs();
-        mesh_group.bench_function(BenchmarkId::from_parameter(scenario.name), move |b| {
-            b.iter(|| {
-                let blocks =
-                    ChunkMeshBlocks::from_chunks(black_box(center_pos), black_box(&chunk_refs));
-                black_box(mesher.mesh(ChunkMeshInput {
-                    blocks: black_box(&blocks),
                     block_texture_map: black_box(texture_map),
                     ao_brightness: black_box(ao_brightness),
                 }))
@@ -261,6 +201,7 @@ fn chunk_meshing_scenarios() -> Vec<ChunkMeshingScenario> {
         },
         generated_neighborhood_scenario("generated_underground", ivec3(0, 0, 0)),
         generated_neighborhood_scenario("generated_surface", ivec3(0, 1, 0)),
+        realistic_terrain_scenario(),
     ]
 }
 
@@ -376,12 +317,54 @@ fn generated_neighborhood_scenario(name: &'static str, center_pos: IVec3) -> Chu
     }
 }
 
+fn realistic_terrain_scenario() -> ChunkMeshingScenario {
+    let mut chunk = Chunk::default();
+
+    for x in 0..CHUNK_SIZE {
+        for z in 0..CHUNK_SIZE {
+            for y in 0..CHUNK_SIZE {
+                chunk.blocks[x][z][y] = if y < 4 {
+                    BlockType::Stone
+                } else if y < 6 {
+                    BlockType::Dirt
+                } else if y == 6 {
+                    BlockType::Grass
+                } else if y >= 7 && y <= 11 && x >= 6 && x <= 9 && z >= 6 && z <= 9 {
+                    BlockType::OakLog
+                } else if y == 12 && x >= 5 && x <= 10 && z >= 5 && z <= 10
+                    && !(x >= 7 && x <= 8 && z >= 7 && z <= 8)
+                {
+                    BlockType::OakLeaves
+                } else if y == 11 && x >= 5 && x <= 10 && z >= 5 && z <= 10 {
+                    BlockType::OakLeaves
+                } else if y == 10 && x >= 5 && x <= 10 && z >= 5 && z <= 10
+                    && (x == 5 || x == 10 || z == 5 || z == 10)
+                {
+                    BlockType::OakLeaves
+                } else if y == 3 && (x + z) % 13 == 0 {
+                    BlockType::Glass
+                } else if y == 8 && (x * 7 + z * 11) % 23 == 0 {
+                    BlockType::Glass
+                } else {
+                    BlockType::Air
+                };
+            }
+        }
+    }
+
+    ChunkMeshingScenario {
+        name: "realistic_terrain",
+        center_pos: IVec3::ZERO,
+        chunks: vec![(IVec3::ZERO, chunk)],
+    }
+}
+
 criterion_group! {
     name = benches;
     config = Criterion::default()
         .warm_up_time(Duration::from_secs(1))
         .measurement_time(Duration::from_secs(2))
-        .sample_size(30);
+        .sample_size(15);
     targets = bench_chunk_meshing
 }
 criterion_main!(benches);
