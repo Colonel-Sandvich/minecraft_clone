@@ -2,8 +2,6 @@ use bevy::prelude::*;
 
 use crate::world::chunk::CHUNK_ISIZE;
 
-pub(crate) const VERTICAL_LOAD_STRIPE_HEIGHT: i32 = 2;
-
 #[derive(Resource, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ViewDistance {
     chunks: i32,
@@ -52,16 +50,13 @@ pub fn chunk_positions_in_view(
 
     let height = height_chunks as i32;
     let mut chunks = Vec::with_capacity(columns.len() * height_chunks);
-    for band_start in (0..height).step_by(VERTICAL_LOAD_STRIPE_HEIGHT as usize) {
-        let band_end = (band_start + VERTICAL_LOAD_STRIPE_HEIGHT).min(height);
-        for column in &columns {
-            for y in band_start..band_end {
-                chunks.push(ivec3(
-                    centre_chunk.x + column.x,
-                    y,
-                    centre_chunk.z + column.y,
-                ));
-            }
+    for column in &columns {
+        for y in 0..height {
+            chunks.push(ivec3(
+                centre_chunk.x + column.x,
+                y,
+                centre_chunk.z + column.y,
+            ));
         }
     }
 
@@ -105,21 +100,24 @@ mod tests {
     }
 
     #[test]
-    fn chunk_positions_interleave_vertical_sections_across_horizontal_columns() {
+    fn chunk_positions_load_full_columns_before_moving_to_next_column() {
         let metadata = WorldMetadata::with_seed(1);
         let origin =
             chunk_positions_in_view(Vec3::ZERO, metadata.height_chunks, TEST_VIEW_DISTANCE);
 
         assert_eq!(origin[0], ivec3(0, 0, 0));
         assert_eq!(origin[1], ivec3(0, 1, 0));
-        assert_ne!(ivec2(origin[2].x, origin[2].z), IVec2::ZERO);
-        assert_eq!(
-            origin
-                .iter()
-                .take(5)
-                .filter(|pos| pos.x == 0 && pos.z == 0)
-                .count(),
-            VERTICAL_LOAD_STRIPE_HEIGHT as usize
+
+        let origin_column_count = origin
+            .iter()
+            .take(metadata.height_chunks)
+            .filter(|pos| pos.x == 0 && pos.z == 0)
+            .count();
+        assert_eq!(origin_column_count, metadata.height_chunks);
+
+        assert_ne!(
+            ivec2(origin[metadata.height_chunks].x, origin[metadata.height_chunks].z),
+            IVec2::ZERO
         );
     }
 }
