@@ -49,6 +49,7 @@ fn plane_is_zero(plane: &BitPlane) -> bool {
 
 struct AxisMasks {
     full_cube: [BitPlane; PADDED_CHUNK_SIZE],
+    rendered_non_full: [BitPlane; PADDED_CHUNK_SIZE],
 }
 
 struct GreedyData {
@@ -59,6 +60,7 @@ struct GreedyData {
 fn build_bitmasks(blocks: &[BlockType; PADDED_CHUNK_VOLUME]) -> GreedyData {
     let mut masks = std::array::from_fn(|_| AxisMasks {
         full_cube: [[0u64; PLANE_U64S]; PADDED_CHUNK_SIZE],
+        rendered_non_full: [[0u64; PLANE_U64S]; PADDED_CHUNK_SIZE],
     });
     let mut transparent_count = 0;
 
@@ -75,6 +77,16 @@ fn build_bitmasks(blocks: &[BlockType; PADDED_CHUNK_VOLUME]) -> GreedyData {
                     plane_set(&mut masks[2].full_cube[pz], plane_pack_index(px, py));
                 } else if block.is_rendered() {
                     transparent_count += 1;
+                    let yz = plane_pack_index(py, pz);
+                    plane_set(&mut masks[0].rendered_non_full[px], yz);
+                    plane_set(
+                        &mut masks[1].rendered_non_full[py],
+                        plane_pack_index(px, pz),
+                    );
+                    plane_set(
+                        &mut masks[2].rendered_non_full[pz],
+                        plane_pack_index(px, py),
+                    );
                 }
 
                 pi += 1;
@@ -188,7 +200,7 @@ fn face_ao_key_from_pi(blocks: &[BlockType; PADDED_CHUNK_VOLUME], pi: usize, dir
     a0 | (a1 << 3) | (a2 << 6) | (a3 << 9)
 }
 
-fn emit_plane_opaque(
+fn emit_plane_opaque<const IS_TRANSPARENT: bool>(
     emit: &BitPlane,
     blocks: &[BlockType; PADDED_CHUNK_VOLUME],
     tables: &BlockMeshTables,
@@ -239,6 +251,16 @@ fn emit_plane_opaque(
             };
             let pi = padded_chunk_index(pad[0], pad[1], pad[2]);
             let block = blocks[pi];
+
+            if IS_TRANSPARENT {
+                let exterior_pi =
+                    (pi as isize + DIRECTION_INDEX_OFFSETS[dir]) as usize;
+                if !should_emit_face_from_indices(block, blocks[exterior_pi]) {
+                    consumed[cw] |= 1 << cb;
+                    continue;
+                }
+            }
+
             let base_ao_key = face_ao_key_from_pi(blocks, pi, dir);
 
             let wx = world[0];
@@ -259,6 +281,14 @@ fn emit_plane_opaque(
                 }
 
                 let np = pi + step_w * w_ext;
+                if IS_TRANSPARENT {
+                    let exterior_np =
+                        (np as isize + DIRECTION_INDEX_OFFSETS[dir]) as usize;
+                    if !should_emit_face_from_indices(blocks[np], blocks[exterior_np])
+                    {
+                        break;
+                    }
+                }
                 if face_ao_key_from_pi(blocks, np, dir) != base_ao_key {
                     break;
                 }
@@ -283,6 +313,16 @@ fn emit_plane_opaque(
                     }
 
                     let np = pi + step_h * h_ext + step_dw * dw;
+                    if IS_TRANSPARENT {
+                        let exterior_np =
+                            (np as isize + DIRECTION_INDEX_OFFSETS[dir]) as usize;
+                        if !should_emit_face_from_indices(
+                            blocks[np],
+                            blocks[exterior_np],
+                        ) {
+                            break 'vloop;
+                        }
+                    }
                     if face_ao_key_from_pi(blocks, np, dir) != base_ao_key {
                         break 'vloop;
                     }
@@ -340,7 +380,7 @@ fn emit_faces(
             let emit_first =
                 bitwise_and_not(&axis_masks.full_cube[c], &axis_masks.full_cube[c - 1]);
             if !plane_is_zero(&emit_first) {
-                emit_plane_opaque(
+                emit_plane_opaque::<false>(
                     &emit_first,
                     blocks,
                     tables,
@@ -355,7 +395,7 @@ fn emit_faces(
             let emit_second =
                 bitwise_and_not(&axis_masks.full_cube[c], &axis_masks.full_cube[c + 1]);
             if !plane_is_zero(&emit_second) {
-                emit_plane_opaque(
+                emit_plane_opaque::<false>(
                     &emit_second,
                     blocks,
                     tables,
@@ -370,43 +410,44 @@ fn emit_faces(
     }
 
     if data.transparent_count > 0 {
-        for px in 1..=CHUNK_SIZE {
-            for py in 1..=CHUNK_SIZE {
-                for pz in 1..=CHUNK_SIZE {
-                    let pi = padded_chunk_index(px, py, pz);
-                    let block = blocks[pi];
+        for axis in 0..3usize {
+            let axis_masks = &data.masks[axis];
+            let first_dir = axis * 2;
+            let second_dir = axis * 2 + 1;
 
-                    if block.is_full_cube() || !block.is_rendered() {
-                        continue;
-                    }
+            for c in 1..=CHUNK_SIZE {
+                let emit_first = bitwise_and_not(
+                    &axis_masks.rendered_non_full[c],
+                    &axis_masks.full_cube[c - 1],
+                );
+                if !plane_is_zero(&emit_first) {
+                    emit_plane_opaque::<true>(
+                        &emit_first,
+                        blocks,
+                        tables,
+                        ao_brightness,
+                        builders,
+                        c,
+                        axis,
+                        first_dir,
+                    );
+                }
 
-                    let wx = px - 1;
-                    let wy = py - 1;
-                    let wz = pz - 1;
-                    let bi = block as usize;
-
-                    for dir in 0..6usize {
-                        let neighbor =
-                            blocks[(pi as isize + DIRECTION_INDEX_OFFSETS[dir]) as usize];
-                        if should_emit_face_from_indices(block, neighbor) {
-                            let ao = [
-                                single_vertex_ao(blocks, pi, dir, 0),
-                                single_vertex_ao(blocks, pi, dir, 1),
-                                single_vertex_ao(blocks, pi, dir, 2),
-                                single_vertex_ao(blocks, pi, dir, 3),
-                            ];
-                            builders[block.material_layer_index()].push_face(
-                                wx,
-                                wy,
-                                wz,
-                                dir,
-                                tables.uvs[bi][dir],
-                                tables.colors[bi][dir],
-                                ao,
-                                ao_brightness,
-                            );
-                        }
-                    }
+                let emit_second = bitwise_and_not(
+                    &axis_masks.rendered_non_full[c],
+                    &axis_masks.full_cube[c + 1],
+                );
+                if !plane_is_zero(&emit_second) {
+                    emit_plane_opaque::<true>(
+                        &emit_second,
+                        blocks,
+                        tables,
+                        ao_brightness,
+                        builders,
+                        c,
+                        axis,
+                        second_dir,
+                    );
                 }
             }
         }
