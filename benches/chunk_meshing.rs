@@ -12,7 +12,7 @@ use minecraft_clone::{
             CHUNK_SIZE, Chunk,
             ambient_occlusion::AmbientOcclusionSettings,
             mesh::{
-                AdaptiveChunkMesher, ChunkMeshBlocks, ChunkMeshInput, ChunkMesher,
+                ChunkMeshBlocks, ChunkMeshInput, ChunkMesher,
                 DirectChunkMesher, GreedyChunkMesher, HybridChunkMesher, ReferenceChunkMesher,
                 SweepChunkMesher, make_reference_layered_quad_groups,
             },
@@ -123,14 +123,6 @@ fn bench_chunk_meshing(c: &mut Criterion) {
         &texture_map,
         ao_brightness,
     );
-    bench_mesher(
-        c,
-        "adaptive",
-        AdaptiveChunkMesher,
-        &inputs,
-        &texture_map,
-        ao_brightness,
-    );
 }
 
 fn bench_mesher(
@@ -199,7 +191,6 @@ fn chunk_meshing_scenarios() -> Vec<ChunkMeshingScenario> {
             center_pos: IVec3::ZERO,
             chunks: vec![(IVec3::ZERO, mixed_transparency_chunk())],
         },
-        generated_neighborhood_scenario("generated_underground", ivec3(0, 0, 0)),
         generated_neighborhood_scenario("generated_surface", ivec3(0, 1, 0)),
         realistic_terrain_scenario(),
     ]

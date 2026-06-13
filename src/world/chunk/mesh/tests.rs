@@ -14,7 +14,7 @@ use crate::world::chunk::mesh::{
 use crate::world::chunk::{CHUNK_SIZE, Chunk, ChunkNeedsMeshRebuild, ChunkPosition};
 
 use super::{
-    AdaptiveChunkMesher, DirectChunkMesher, FullCubeShellChunkMesher, GreedyChunkMesher,
+    DirectChunkMesher, FullCubeShellChunkMesher, GreedyChunkMesher,
     HybridChunkMesher, ReferenceChunkMesher, SweepChunkMesher,
 };
 use super::{
@@ -295,50 +295,6 @@ fn greedy_does_not_crash_on_any_test_chunk() {
             case.name
         );
     }
-}
-
-#[test]
-fn adaptive_delegates_to_greedy_for_all_full_cube_chunks() {
-    let texture_map = test_texture_map();
-    let mut chunk = Chunk::default();
-    chunk.blocks = [[[BlockType::Stone; CHUNK_SIZE]; CHUNK_SIZE]; CHUNK_SIZE];
-
-    let blocks = ChunkMeshBlocks::from_chunk(&chunk);
-    let input = ChunkMeshInput {
-        blocks: &blocks,
-        block_texture_map: &texture_map,
-        ao_brightness: AO_BRIGHTNESS,
-    };
-
-    let greedy = mesh_signature(GreedyChunkMesher.mesh(input));
-    let adaptive = mesh_signature(AdaptiveChunkMesher.mesh(input));
-
-    assert_eq!(
-        greedy, adaptive,
-        "adaptive should delegate to greedy for all-full-cube chunks"
-    );
-}
-
-#[test]
-fn adaptive_delegates_to_direct_for_sparse_chunks() {
-    let texture_map = test_texture_map();
-    let mut chunk = Chunk::default();
-    chunk.blocks[8][8][8] = BlockType::Stone;
-
-    let blocks = ChunkMeshBlocks::from_chunk(&chunk);
-    let input = ChunkMeshInput {
-        blocks: &blocks,
-        block_texture_map: &texture_map,
-        ao_brightness: AO_BRIGHTNESS,
-    };
-
-    let direct = mesh_signature(DirectChunkMesher.mesh(input));
-    let adaptive = mesh_signature(AdaptiveChunkMesher.mesh(input));
-
-    assert_eq!(
-        direct, adaptive,
-        "adaptive should delegate to direct for sparse chunks (<64 rendered)"
-    );
 }
 
 #[test]

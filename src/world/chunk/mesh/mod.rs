@@ -1,4 +1,3 @@
-mod adaptive;
 mod blocks;
 mod buffer;
 mod direct;
@@ -9,7 +8,6 @@ mod shell;
 mod sweep;
 
 use self::reference::make_layered_quad_groups_from_blocks;
-pub use adaptive::AdaptiveChunkMesher;
 pub use blocks::ChunkMeshBlocks;
 pub(crate) use buffer::MeshBufferBuilder;
 pub use direct::DirectChunkMesher;
@@ -235,7 +233,7 @@ fn rebuild_chunk_meshes(
         || build_queue.borrow_local_mut(),
         |builds, (chunk_pos, chunk_entity)| {
             let blocks = ChunkMeshBlocks::from_chunks(chunk_pos.0, &chunks_by_pos);
-            let meshes = AdaptiveChunkMesher.mesh(ChunkMeshInput {
+            let meshes = GreedyChunkMesher.mesh(ChunkMeshInput {
                 blocks: &blocks,
                 block_texture_map: &block_texture_map,
                 ao_brightness,
