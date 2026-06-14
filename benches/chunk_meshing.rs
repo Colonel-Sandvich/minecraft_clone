@@ -13,7 +13,12 @@ use minecraft_clone::{
             ambient_occlusion::AmbientOcclusionSettings,
             mesh::{
                 ChunkMeshBlocks, ChunkMeshInput, ChunkMesher, DirectChunkMesher, GreedyChunkMesher,
-                HybridChunkMesher, ReferenceChunkMesher, SweepChunkMesher,
+                HybridChunkMesher, PartitionedGreedyChunkMesher, ReferenceChunkMesher,
+                SweepChunkMesher,
+                greedy_region::{
+                    REGION_CHUNKS, REGION_SIZE, RegionChunkMeshBlocks, RegionMeshInput,
+                    make_greedy_region_mesh,
+                },
                 make_reference_layered_quad_groups,
             },
         },
@@ -123,6 +128,17 @@ fn bench_chunk_meshing(c: &mut Criterion) {
         &texture_map,
         ao_brightness,
     );
+    bench_mesher(
+        c,
+        "greedy_partitioned",
+        PartitionedGreedyChunkMesher,
+        &inputs,
+        &texture_map,
+        ao_brightness,
+    );
+
+    // --- Region mesher benchmarks ---
+    bench_region_mesher(c, &texture_map, ao_brightness);
 }
 
 fn bench_mesher(
@@ -356,6 +372,160 @@ fn realistic_terrain_scenario() -> ChunkMeshingScenario {
         center_pos: IVec3::ZERO,
         chunks: vec![(IVec3::ZERO, chunk)],
     }
+}
+
+// --- Region mesher benchmarks ---
+
+struct RegionScenario {
+    name: &'static str,
+    blocks: RegionChunkMeshBlocks,
+}
+
+fn make_region_scenarios() -> Vec<RegionScenario> {
+    vec![
+        RegionScenario {
+            name: "region_empty",
+            blocks: region_empty(),
+        },
+        RegionScenario {
+            name: "region_full_stone_open",
+            blocks: region_filled(BlockType::Stone, false),
+        },
+        RegionScenario {
+            name: "region_full_stone_buried",
+            blocks: region_filled(BlockType::Stone, true),
+        },
+        RegionScenario {
+            name: "region_checkerboard",
+            blocks: region_checkerboard(),
+        },
+        RegionScenario {
+            name: "region_dense_leaves",
+            blocks: region_filled(BlockType::OakLeaves, false),
+        },
+        RegionScenario {
+            name: "region_generated_surface",
+            blocks: region_generated_surface(),
+        },
+    ]
+}
+
+fn bench_region_mesher(c: &mut Criterion, texture_map: &BlockTextureMap, ao_brightness: [f32; 4]) {
+    let scenarios = make_region_scenarios();
+    let mut group = c.benchmark_group("greedy_region");
+    group.throughput(Throughput::Elements(1));
+    for scenario in &scenarios {
+        group.bench_function(BenchmarkId::from_parameter(scenario.name), |b| {
+            b.iter(|| {
+                black_box(make_greedy_region_mesh(RegionMeshInput {
+                    blocks: black_box(&scenario.blocks),
+                    block_texture_map: black_box(texture_map),
+                    ao_brightness: black_box(ao_brightness),
+                }))
+            });
+        });
+    }
+    group.finish();
+}
+
+fn region_empty() -> RegionChunkMeshBlocks {
+    RegionChunkMeshBlocks::empty()
+}
+
+fn region_filled(block: BlockType, include_neighbors: bool) -> RegionChunkMeshBlocks {
+    let mut blocks = RegionChunkMeshBlocks::empty();
+    let cx_range = if include_neighbors {
+        -1..REGION_CHUNKS as i32 + 1
+    } else {
+        0..REGION_CHUNKS as i32
+    };
+    let cy_range = cx_range.clone();
+    let cz_range = cx_range.clone();
+
+    for cx in cx_range {
+        for cy in cy_range.clone() {
+            for cz in cz_range.clone() {
+                let base_x = cx * CHUNK_SIZE as i32;
+                let base_y = cy * CHUNK_SIZE as i32;
+                let base_z = cz * CHUNK_SIZE as i32;
+
+                for lx in 0..CHUNK_SIZE as i32 {
+                    for ly in 0..CHUNK_SIZE as i32 {
+                        for lz in 0..CHUNK_SIZE as i32 {
+                            let wx = base_x + lx;
+                            let wy = base_y + ly;
+                            let wz = base_z + lz;
+                            if (-1..=REGION_SIZE as i32).contains(&wx)
+                                && (-1..=REGION_SIZE as i32).contains(&wy)
+                                && (-1..=REGION_SIZE as i32).contains(&wz)
+                            {
+                                blocks.set_block(wx, wy, wz, block);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    blocks
+}
+
+fn region_checkerboard() -> RegionChunkMeshBlocks {
+    let mut blocks = RegionChunkMeshBlocks::empty();
+
+    for x in 0..REGION_SIZE {
+        for y in 0..REGION_SIZE {
+            for z in 0..REGION_SIZE {
+                if (x + y + z) % 2 == 0 {
+                    blocks.set_block(x as i32, y as i32, z as i32, BlockType::Stone);
+                }
+            }
+        }
+    }
+
+    blocks
+}
+
+fn region_generated_surface() -> RegionChunkMeshBlocks {
+    let metadata = WorldMetadata::default();
+    let mut blocks = RegionChunkMeshBlocks::empty();
+
+    for cx in 0..REGION_CHUNKS as i32 + 2 {
+        for cy in 0..REGION_CHUNKS as i32 + 2 {
+            for cz in 0..REGION_CHUNKS as i32 + 2 {
+                let pos = ivec3(cx - 1, cy - 1, cz - 1);
+                let chunk = generate_chunk(&metadata, pos);
+
+                let base_x = cx * CHUNK_SIZE as i32 - CHUNK_SIZE as i32;
+                let base_y = cy * CHUNK_SIZE as i32 - CHUNK_SIZE as i32;
+                let base_z = cz * CHUNK_SIZE as i32 - CHUNK_SIZE as i32;
+
+                for lx in 0..CHUNK_SIZE as i32 {
+                    for ly in 0..CHUNK_SIZE as i32 {
+                        for lz in 0..CHUNK_SIZE as i32 {
+                            let wx = base_x + lx;
+                            let wy = base_y + ly;
+                            let wz = base_z + lz;
+                            if (-1..=REGION_SIZE as i32).contains(&wx)
+                                && (-1..=REGION_SIZE as i32).contains(&wy)
+                                && (-1..=REGION_SIZE as i32).contains(&wz)
+                            {
+                                blocks.set_block(
+                                    wx,
+                                    wy,
+                                    wz,
+                                    chunk.blocks[lx as usize][lz as usize][ly as usize],
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    blocks
 }
 
 criterion_group! {

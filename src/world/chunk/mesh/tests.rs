@@ -15,7 +15,7 @@ use crate::world::chunk::{CHUNK_SIZE, Chunk, ChunkNeedsMeshRebuild, ChunkPositio
 
 use super::{
     DirectChunkMesher, FullCubeShellChunkMesher, GreedyChunkMesher, HybridChunkMesher,
-    ReferenceChunkMesher, SweepChunkMesher,
+    PartitionedGreedyChunkMesher, ReferenceChunkMesher, SweepChunkMesher,
 };
 use super::{
     GROUND_BOUNCE_FACE_BRIGHTNESS, HORIZON_FACE_BRIGHTNESS, SKY_FACE_BRIGHTNESS, face_brightness,
@@ -772,4 +772,25 @@ fn greedy_vertex_count_less_than_direct_for_adjacent_blocks() {
         greedy_verts < direct_verts,
         "greedy ({greedy_verts}) should merge faces and have fewer vertices than direct ({direct_verts})"
     );
+}
+
+#[test]
+fn partitioned_matches_greedy_for_all_test_chunks() {
+    let texture_map = test_texture_map();
+
+    for case in test_chunks() {
+        let blocks = ChunkMeshBlocks::from_chunk(&case.chunk);
+        let input = ChunkMeshInput {
+            blocks: &blocks,
+            block_texture_map: &texture_map,
+            ao_brightness: AO_BRIGHTNESS,
+        };
+
+        assert_eq!(
+            mesh_signature(GreedyChunkMesher.mesh(input)),
+            mesh_signature(PartitionedGreedyChunkMesher.mesh(input)),
+            "partitioned should match greedy for {}",
+            case.name
+        );
+    }
 }
