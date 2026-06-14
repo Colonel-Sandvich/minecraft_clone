@@ -1,3 +1,45 @@
+//! Greedy meshing for chunk faces.
+//!
+//! ## Algorithm overview
+//!
+//! 1. **Bitplane construction** — scan 18³ padded blocks, setting bits in per-axis,
+//!    per-layer bitplanes for full cubes and transparent blocks.
+//! 2. **Face counting** — for each axis and layer, `full_cube[c] & !full_cube[c±1]`
+//!    yields emit planes; popcount gives exact face counts for buffer pre-allocation.
+//! 3. **Greedy quad emission** — for each emit plane, walk set bits left-to-right.
+//!    From each un-consumed anchor face, extend right (same AO key, block type,
+//!    visibility) then down, marking consumed cells as merged.  Emits one merged
+//!    quad per anchor.
+//! 4. **Two-pass layering**: opaque solid blocks first, then transparent (leaves,
+//!    glass), which subtract full_cube neighbours so they don't emit into opaque
+//!    blocks.
+//!
+//! ## Per-vertex AO
+//!
+//! Ambient occlusion uses 3 precomputed side-neighbour lookups per vertex via
+//! `AO_SAMPLE_INDEX_OFFSETS` → `VERTEX_AO`. 4 × 2-bit values are packed into a
+//! `u8` AO key for fast extension comparison (`face_ao_key_from_pi`).  The key is
+//! recomputed on-the-fly for each candidate cell during extension loops.
+//!
+//! **Attempted optimisation (reverted):** precomputing all 24,576 AO keys into a
+//! static array and passing it through the pipeline.  This was slower because:
+//! - transparent emit planes contain border/padding bits that get clipped by the
+//!   `1..=CHUNK_SIZE` guard;
+//! - opaque planes compute AO for cells that will be consumed by merging;
+//! - over 90% of transparent emit bits are suppressed by `should_emit_face_from_indices`
+//!   after the plane is built.
+//! The lazy approach naturally skips all three categories, making precomputation
+//! a net loss.  AO computation is already ~4 ns per vertex — the 40 % profile
+//! share reflects genuine unavoidable work.
+//!
+//! ## Known improvement opportunities
+//!
+//! - `merged_ao` re-evaluates the same 4 corner AOs that `face_ao_key_from_pi`
+//!   already computed for the anchor — could reuse the anchor key.
+//! - Extension loops re-check AO keys and transparency visibility per-cell;
+//!   reducing merge attempts in transparency-dense regions (where most extensions
+//!   fail) would help more than micro-optimising the AO computation itself.
+
 use crate::block::BlockMaterialLayer;
 
 use super::{
@@ -27,6 +69,19 @@ impl ChunkMesher for GreedyChunkMesher {
 const PLANE_U64S: usize = 6;
 type BitPlane = [u64; PLANE_U64S];
 
+const FULL_MASK_U64S: usize = PADDED_CHUNK_VOLUME.div_ceil(64);
+
+#[derive(Clone, Copy)]
+struct FullCubeMask([u64; FULL_MASK_U64S]);
+
+impl FullCubeMask {
+    #[inline(always)]
+    #[allow(dead_code)]
+    fn is_full_cube(&self, idx: usize) -> bool {
+        (self.0[idx / 64] >> (idx % 64)) & 1 != 0
+    }
+}
+
 fn plane_pack_index(a: usize, b: usize) -> usize {
     a * PADDED_CHUNK_SIZE + b
 }
@@ -55,13 +110,21 @@ struct AxisMasks {
 struct GreedyData {
     masks: [AxisMasks; 3],
     transparent_count: usize,
+    full_mask: FullCubeMask,
 }
 
+/// Single-pass scan of 18³ padded blocks → per-axis bitplanes.
+///
+/// For each block position, if the block is a full cube we set its bit in all
+/// three axis planes (the face-validity test is `full_cube[a] & !full_cube[a±1]`
+/// later).  Rendered non-full blocks (leaves, glass) go into the transparent
+/// planes instead, and we tally `transparent_count` for buffer sizing.
 fn build_bitmasks(blocks: &[BlockType; PADDED_CHUNK_VOLUME]) -> GreedyData {
     let mut masks = std::array::from_fn(|_| AxisMasks {
         full_cube: [[0u64; PLANE_U64S]; PADDED_CHUNK_SIZE],
         rendered_non_full: [[0u64; PLANE_U64S]; PADDED_CHUNK_SIZE],
     });
+    let mut full_mask = [0u64; FULL_MASK_U64S];
     let mut transparent_count = 0;
 
     for py in 0..PADDED_CHUNK_SIZE {
@@ -71,6 +134,7 @@ fn build_bitmasks(blocks: &[BlockType; PADDED_CHUNK_VOLUME]) -> GreedyData {
                 let block = blocks[pi];
 
                 if block.is_full_cube() {
+                    full_mask[pi / 64] |= 1 << (pi % 64);
                     let yz = plane_pack_index(py, pz);
                     plane_set(&mut masks[0].full_cube[px], yz);
                     plane_set(&mut masks[1].full_cube[py], plane_pack_index(px, pz));
@@ -97,20 +161,25 @@ fn build_bitmasks(blocks: &[BlockType; PADDED_CHUNK_VOLUME]) -> GreedyData {
     GreedyData {
         masks,
         transparent_count,
+        full_mask: FullCubeMask(full_mask),
     }
 }
 
 #[inline(always)]
 fn single_vertex_ao(
-    blocks: &[BlockType; PADDED_CHUNK_VOLUME],
+    full_mask: &FullCubeMask,
     padded_index: usize,
     side_index: usize,
     vertex_index: usize,
 ) -> u8 {
     let offsets = AO_SAMPLE_INDEX_OFFSETS[side_index][vertex_index];
-    let s1 = blocks[(padded_index as isize + offsets[0]) as usize].is_full_cube();
-    let s2 = blocks[(padded_index as isize + offsets[1]) as usize].is_full_cube();
-    let co = blocks[(padded_index as isize + offsets[2]) as usize].is_full_cube();
+    let m = &full_mask.0;
+    let idx0 = (padded_index as isize + offsets[0]) as usize;
+    let idx1 = (padded_index as isize + offsets[1]) as usize;
+    let idx2 = (padded_index as isize + offsets[2]) as usize;
+    let s1 = (m[idx0 >> 6] >> (idx0 & 63)) & 1;
+    let s2 = (m[idx1 >> 6] >> (idx1 & 63)) & 1;
+    let co = (m[idx2 >> 6] >> (idx2 & 63)) & 1;
     VERTEX_AO[s1 as usize | ((s2 as usize) << 1) | ((co as usize) << 2)]
 }
 
@@ -152,8 +221,15 @@ fn owning_block_coords(
     }
 }
 
+/// Recompute AO for the 4 corners of a merged quad (width × height).
+///
+/// Maps each corner back to its owning block (the sub-cube at that corner's
+/// position within the merged region), then calls `single_vertex_ao`.
+///
+/// NOTE: re-evaluates the same 4 `single_vertex_ao` calls that
+/// `face_ao_key_from_pi` already did for the anchor face — possible reuse.
 fn merged_ao(
-    blocks: &[BlockType; PADDED_CHUNK_VOLUME],
+    full_mask: &FullCubeMask,
     side_index: usize,
     wx: usize,
     wy: usize,
@@ -164,10 +240,18 @@ fn merged_ao(
     std::array::from_fn(|vi| {
         let (bx, by, bz) = owning_block_coords(side_index, vi, wx, wy, wz, w, h);
         let pi = padded_chunk_index(bx + 1, by + 1, bz + 1);
-        single_vertex_ao(blocks, pi, side_index, vi)
+        single_vertex_ao(full_mask, pi, side_index, vi)
     })
 }
 
+/// Count faces for buffer pre-allocation.
+///
+/// Opaque layer: for each axis/layer, `full_cube[c] & !full_cube[c±1]` yields
+/// front/back emit planes; popcount gives exact count.
+///
+/// Transparent layer: worst-case `transparent_count * 6` (every transparent
+/// block could emit all 6 faces).  Over-estimates when transparent blocks face
+/// into opaque neighbours, but that's fine for capacity.
 fn count_faces(data: &GreedyData) -> [usize; BlockMaterialLayer::COUNT] {
     let mut counts = [0; BlockMaterialLayer::COUNT];
 
@@ -191,18 +275,42 @@ fn count_faces(data: &GreedyData) -> [usize; BlockMaterialLayer::COUNT] {
     counts
 }
 
+/// Pack 4 corner AO values (2 bits each) into a single `u8` for fast equality.
+///
+/// Equality of this key means all four vertex AO values match, which is
+/// required for extending a quad in either direction.
 #[inline(always)]
-fn face_ao_key_from_pi(blocks: &[BlockType; PADDED_CHUNK_VOLUME], pi: usize, dir: usize) -> u8 {
-    let a0 = single_vertex_ao(blocks, pi, dir, 0);
-    let a1 = single_vertex_ao(blocks, pi, dir, 1);
-    let a2 = single_vertex_ao(blocks, pi, dir, 2);
-    let a3 = single_vertex_ao(blocks, pi, dir, 3);
+fn face_ao_key_from_pi(full_mask: &FullCubeMask, pi: usize, dir: usize) -> u8 {
+    let a0 = single_vertex_ao(full_mask, pi, dir, 0);
+    let a1 = single_vertex_ao(full_mask, pi, dir, 1);
+    let a2 = single_vertex_ao(full_mask, pi, dir, 2);
+    let a3 = single_vertex_ao(full_mask, pi, dir, 3);
     a0 | (a1 << 2) | (a2 << 4) | (a3 << 6)
 }
 
+#[inline(always)]
+fn unpack_ao_key(key: u8) -> [u8; 4] {
+    [key & 3, (key >> 2) & 3, (key >> 4) & 3, key >> 6]
+}
+
+/// Greedy quad emission for a single 16×16 emit bitplane.
+///
+/// Walks set bits left-to-right, top-to-bottom in the bitplane.  For each
+/// un-consumed anchor face:
+///
+/// 1. Extend **right** while same block type, same AO key, face still set,
+///    not consumed, and (for transparent) still emits to exterior.
+/// 2. Extend **down** with the same checks for every column in the current
+///    width; breaks entire row on first mismatch.
+/// 3. Mark the `w × h` rectangle consumed.
+/// 4. Emit one merged quad.
+///
+/// `IS_TRANSPARENT` controls whether `should_emit_face_from_indices` is
+/// consulted (opaque blocks always emit when the bit is set).
 fn emit_plane_opaque<const IS_TRANSPARENT: bool>(
     emit: &BitPlane,
     blocks: &[BlockType; PADDED_CHUNK_VOLUME],
+    full_mask: &FullCubeMask,
     tables: &BlockMeshTables,
     ao_brightness: [f32; 4],
     builders: &mut [MeshBufferBuilder; BlockMaterialLayer::COUNT],
@@ -244,6 +352,7 @@ fn emit_plane_opaque<const IS_TRANSPARENT: bool>(
                 continue;
             }
 
+            // --- Anchor face ---
             let (pad, world) = match axis {
                 0 => ([c, t1, t2], [c - 1, t1 - 1, t2 - 1]),
                 1 => ([t1, c, t2], [t1 - 1, c - 1, t2 - 1]),
@@ -253,43 +362,44 @@ fn emit_plane_opaque<const IS_TRANSPARENT: bool>(
             let block = blocks[pi];
 
             if IS_TRANSPARENT {
-                let exterior_pi =
-                    (pi as isize + DIRECTION_INDEX_OFFSETS[dir]) as usize;
+                let exterior_pi = (pi as isize + DIRECTION_INDEX_OFFSETS[dir]) as usize;
                 if !should_emit_face_from_indices(block, blocks[exterior_pi]) {
                     consumed[cw] |= 1 << cb;
                     continue;
                 }
             }
 
-            let base_ao_key = face_ao_key_from_pi(blocks, pi, dir);
+            let base_ao_key = face_ao_key_from_pi(full_mask, pi, dir);
 
             let wx = world[0];
             let wy = world[1];
             let wz = world[2];
 
+            // --- Horizontal extension (right) ---
+            let row_start_bit = t1 * PADDED_CHUNK_SIZE + t2;
+            let rw = row_start_bit / 64;
+            let rb = row_start_bit % 64;
+            let word_bits = emit[rw] >> rb;
+            // trailing_ones includes the anchor bit; subtract 1, cap at CHUNK_SIZE and word boundary
+            let max_emit_run = ((word_bits.trailing_ones() as usize) - 1)
+                .min(CHUNK_SIZE - t2)
+                .min(64 - rb - 1);
+
             let mut w_ext = 1;
-            while t2 + w_ext <= CHUNK_SIZE {
+            while w_ext <= max_emit_run {
                 let p = (t1 - 1) * packed_stride + (t2 + w_ext - 1);
                 if consumed[p / 64] & (1 << (p % 64)) != 0 {
-                    break;
-                }
-                let next_bit = t1 * PADDED_CHUNK_SIZE + (t2 + w_ext);
-                let nw = next_bit / 64;
-                let nb = next_bit % 64;
-                if (emit[nw] & (1 << nb)) == 0 {
                     break;
                 }
 
                 let np = pi + step_w * w_ext;
                 if IS_TRANSPARENT {
-                    let exterior_np =
-                        (np as isize + DIRECTION_INDEX_OFFSETS[dir]) as usize;
-                    if !should_emit_face_from_indices(blocks[np], blocks[exterior_np])
-                    {
+                    let exterior_np = (np as isize + DIRECTION_INDEX_OFFSETS[dir]) as usize;
+                    if !should_emit_face_from_indices(blocks[np], blocks[exterior_np]) {
                         break;
                     }
                 }
-                if face_ao_key_from_pi(blocks, np, dir) != base_ao_key {
+                if face_ao_key_from_pi(full_mask, np, dir) != base_ao_key {
                     break;
                 }
                 if blocks[np] != block {
@@ -298,6 +408,7 @@ fn emit_plane_opaque<const IS_TRANSPARENT: bool>(
                 w_ext += 1;
             }
 
+            // --- Vertical extension (down) ---
             let mut h_ext = 1;
             'vloop: while t1 + h_ext <= CHUNK_SIZE {
                 for dw in 0..w_ext {
@@ -314,16 +425,12 @@ fn emit_plane_opaque<const IS_TRANSPARENT: bool>(
 
                     let np = pi + step_h * h_ext + step_dw * dw;
                     if IS_TRANSPARENT {
-                        let exterior_np =
-                            (np as isize + DIRECTION_INDEX_OFFSETS[dir]) as usize;
-                        if !should_emit_face_from_indices(
-                            blocks[np],
-                            blocks[exterior_np],
-                        ) {
+                        let exterior_np = (np as isize + DIRECTION_INDEX_OFFSETS[dir]) as usize;
+                        if !should_emit_face_from_indices(blocks[np], blocks[exterior_np]) {
                             break 'vloop;
                         }
                     }
-                    if face_ao_key_from_pi(blocks, np, dir) != base_ao_key {
+                    if face_ao_key_from_pi(full_mask, np, dir) != base_ao_key {
                         break 'vloop;
                     }
                     if blocks[np] != block {
@@ -333,6 +440,7 @@ fn emit_plane_opaque<const IS_TRANSPARENT: bool>(
                 h_ext += 1;
             }
 
+            // --- Mark merged region as consumed ---
             for dy in 0..h_ext {
                 for dx in 0..w_ext {
                     let p = (t1 + dy - 1) * packed_stride + (t2 + dx - 1);
@@ -340,6 +448,7 @@ fn emit_plane_opaque<const IS_TRANSPARENT: bool>(
                 }
             }
 
+            // --- Emit merged quad ---
             let (emit_w, emit_h) = match axis {
                 0 => (w_ext, h_ext),
                 1 => (h_ext, w_ext),
@@ -347,7 +456,11 @@ fn emit_plane_opaque<const IS_TRANSPARENT: bool>(
             };
 
             let bi = block as usize;
-            let ao = merged_ao(blocks, dir, wx, wy, wz, emit_w, emit_h);
+            let ao = if w_ext == 1 && h_ext == 1 {
+                unpack_ao_key(base_ao_key)
+            } else {
+                merged_ao(full_mask, dir, wx, wy, wz, emit_w, emit_h)
+            };
             builders[block.material_layer_index()].push_merged_face(
                 wx,
                 wy,
@@ -364,6 +477,11 @@ fn emit_plane_opaque<const IS_TRANSPARENT: bool>(
     }
 }
 
+/// Main face-emission loop: opaque pass, then transparent pass.
+///
+/// For each axis and layer, builds front/back emit planes as
+/// `full_cube[c] & !full_cube[c±1]` and delegates to `emit_plane_opaque`.
+/// The transparent pass subtracts full_cube neighbours to avoid interior faces.
 fn emit_faces(
     blocks: &[BlockType; PADDED_CHUNK_VOLUME],
     data: &GreedyData,
@@ -371,6 +489,8 @@ fn emit_faces(
     ao_brightness: [f32; 4],
     builders: &mut [MeshBufferBuilder; BlockMaterialLayer::COUNT],
 ) {
+    let full_mask = &data.full_mask;
+
     for axis in 0..3usize {
         let axis_masks = &data.masks[axis];
         let first_dir = axis * 2;
@@ -383,6 +503,7 @@ fn emit_faces(
                 emit_plane_opaque::<false>(
                     &emit_first,
                     blocks,
+                    full_mask,
                     tables,
                     ao_brightness,
                     builders,
@@ -398,6 +519,7 @@ fn emit_faces(
                 emit_plane_opaque::<false>(
                     &emit_second,
                     blocks,
+                    full_mask,
                     tables,
                     ao_brightness,
                     builders,
@@ -424,6 +546,7 @@ fn emit_faces(
                     emit_plane_opaque::<true>(
                         &emit_first,
                         blocks,
+                        full_mask,
                         tables,
                         ao_brightness,
                         builders,
@@ -441,6 +564,7 @@ fn emit_faces(
                     emit_plane_opaque::<true>(
                         &emit_second,
                         blocks,
+                        full_mask,
                         tables,
                         ao_brightness,
                         builders,
