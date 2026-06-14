@@ -23,7 +23,6 @@ pub const CHUNK_SIZE: usize = 16;
 pub const CHUNK_ISIZE: i32 = 16;
 
 pub const CHUNK_VOLUME: usize = CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE;
-pub const CHUNK_BLOCK_STORAGE_BYTES: usize = CHUNK_VOLUME * std::mem::size_of::<u16>();
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BlockDelta {
@@ -202,34 +201,104 @@ impl Chunk {
         }
     }
 
-    pub fn to_storage_bytes(&self) -> Vec<u8> {
-        let mut bytes = Vec::with_capacity(CHUNK_BLOCK_STORAGE_BYTES);
-
+    fn build_palette(&self) -> Vec<BlockType> {
+        let mut palette = Vec::new();
         for (block, _) in self.iter() {
-            bytes.extend_from_slice(&block.storage_id().to_le_bytes());
+            if !palette.contains(block) {
+                palette.push(*block);
+            }
         }
+        palette
+    }
+
+    /// Bit-packed palette encoding.
+    ///
+    /// ```text
+    /// [u16 LE: palette_size]
+    /// for each entry: [u8: name_len] [name bytes]
+    /// [u8: bits_per_index]
+    /// [bit-packed body, MSB-first, padded to byte boundary]
+    /// ```
+    /// bits_per_index = ceil(log2(palette_size)), min 1.
+    pub fn to_storage_bytes(&self) -> Vec<u8> {
+        let palette = self.build_palette();
+        let bits = bits_for(palette.len());
+        let block_to_idx: std::collections::HashMap<BlockType, u8> = palette
+            .iter()
+            .enumerate()
+            .map(|(i, &b)| (b, i as u8))
+            .collect();
+        let indices: Vec<u8> = self.iter().map(|(b, _)| block_to_idx[&b]).collect();
+
+        let mut bytes = Vec::new();
+
+        // header
+        bytes.extend_from_slice(&(palette.len() as u16).to_le_bytes());
+        for &b in &palette {
+            let name = b.to_string();
+            bytes.push(name.len() as u8);
+            bytes.extend_from_slice(name.as_bytes());
+        }
+        bytes.push(bits);
+
+        // bit-packed body
+        let body_start = bytes.len();
+        let body_bytes = (indices.len() * bits as usize + 7) / 8;
+        bytes.resize(body_start + body_bytes, 0);
+        pack(&mut bytes[body_start..], &indices, bits);
 
         bytes
     }
 
     pub fn try_from_storage_bytes(bytes: &[u8]) -> Result<Self, ChunkDecodeError> {
-        if bytes.len() != CHUNK_BLOCK_STORAGE_BYTES {
-            return Err(ChunkDecodeError::InvalidLength {
-                expected: CHUNK_BLOCK_STORAGE_BYTES,
-                actual: bytes.len(),
-            });
+        if bytes.len() < 3 {
+            return Err(ChunkDecodeError::Truncated);
         }
 
+        let palette_size = u16::from_le_bytes([bytes[0], bytes[1]]) as usize;
+        if palette_size == 0 {
+            return Err(ChunkDecodeError::Truncated);
+        }
+
+        let mut pos = 2usize;
+        let mut palette = Vec::with_capacity(palette_size);
+
+        for _ in 0..palette_size {
+            if pos >= bytes.len() {
+                return Err(ChunkDecodeError::Truncated);
+            }
+            let len = bytes[pos] as usize;
+            pos += 1;
+            if pos + len > bytes.len() {
+                return Err(ChunkDecodeError::Truncated);
+            }
+            let name = std::str::from_utf8(&bytes[pos..pos + len])
+                .map_err(|_| ChunkDecodeError::InvalidHeader)?;
+            pos += len;
+            let block = BlockType::from_name(name)
+                .ok_or_else(|| ChunkDecodeError::UnknownBlock(name.to_owned()))?;
+            palette.push(block);
+        }
+
+        let bits = *bytes.get(pos).ok_or(ChunkDecodeError::Truncated)?;
+        pos += 1;
+
+        let body = bytes.get(pos..).ok_or(ChunkDecodeError::Truncated)?;
+        let mask = (1u8 << bits) - 1;
+
         let mut chunk = Chunk::default();
-        let mut offset = 0;
+        let mut bit_pos = 0usize;
 
         for y in 0..CHUNK_SIZE {
             for z in 0..CHUNK_SIZE {
                 for x in 0..CHUNK_SIZE {
-                    let id = u16::from_le_bytes([bytes[offset], bytes[offset + 1]]);
-                    chunk.blocks[x][z][y] = BlockType::from_storage_id(id)
-                        .ok_or(ChunkDecodeError::UnknownBlockId(id))?;
-                    offset += std::mem::size_of::<u16>();
+                    let idx = read_bits(body, &mut bit_pos, bits)
+                        .ok_or(ChunkDecodeError::Truncated)?;
+                    let idx = (idx & mask) as usize;
+                    if idx >= palette.len() {
+                        return Err(ChunkDecodeError::InvalidHeader);
+                    }
+                    chunk.blocks[x][z][y] = palette[idx];
                 }
             }
         }
@@ -238,22 +307,53 @@ impl Chunk {
     }
 }
 
+fn bits_for(palette_size: usize) -> u8 {
+    match palette_size {
+        0 | 1 => 1,
+        n => (usize::BITS - (n - 1).leading_zeros()) as u8,
+    }
+}
+
+/// Pack `indices` (each `bits` wide, MSB-first) into `buf`.
+#[inline]
+fn pack(buf: &mut [u8], indices: &[u8], bits: u8) {
+    let mut bp = 0usize;
+    for &idx in indices {
+        let mut val = idx;
+        for _ in 0..bits {
+            buf[bp >> 3] |= ((val >> (bits - 1)) & 1) << (7 - (bp & 7));
+            val <<= 1;
+            bp += 1;
+        }
+    }
+}
+
+/// Read one `bits`-wide value from `buf` at the current `bit_pos`.
+#[inline]
+fn read_bits(buf: &[u8], bit_pos: &mut usize, bits: u8) -> Option<u8> {
+    let mut val = 0u8;
+    for _ in 0..bits {
+        let byte = buf.get(*bit_pos >> 3)?;
+        let bit = (byte >> (7 - (*bit_pos & 7))) & 1;
+        val = (val << 1) | bit;
+        *bit_pos += 1;
+    }
+    Some(val)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ChunkDecodeError {
-    InvalidLength { expected: usize, actual: usize },
-    UnknownBlockId(u16),
+    Truncated,
+    InvalidHeader,
+    UnknownBlock(String),
 }
 
 impl std::fmt::Display for ChunkDecodeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::InvalidLength { expected, actual } => {
-                write!(
-                    f,
-                    "invalid chunk byte length: expected {expected}, got {actual}"
-                )
-            }
-            Self::UnknownBlockId(id) => write!(f, "unknown block storage id {id}"),
+            Self::Truncated => write!(f, "chunk data truncated"),
+            Self::InvalidHeader => write!(f, "invalid chunk header"),
+            Self::UnknownBlock(name) => write!(f, "unknown block: {name}"),
         }
     }
 }
@@ -333,19 +433,42 @@ mod tests {
         chunk.blocks[15][15][15] = BlockType::OakLeaves;
 
         let bytes = chunk.to_storage_bytes();
-
-        assert_eq!(bytes.len(), CHUNK_BLOCK_STORAGE_BYTES);
         assert_eq!(Chunk::try_from_storage_bytes(&bytes), Ok(chunk));
     }
 
     #[test]
-    fn chunk_storage_bytes_reject_unknown_block_ids() {
-        let mut bytes = Chunk::default().to_storage_bytes();
-        bytes[0..2].copy_from_slice(&u16::MAX.to_le_bytes());
+    fn chunk_storage_bytes_roundtrip_all_air() {
+        let chunk = Chunk::default();
+        let bytes = chunk.to_storage_bytes();
+        assert_eq!(Chunk::try_from_storage_bytes(&bytes), Ok(chunk));
+    }
 
-        assert_eq!(
-            Chunk::try_from_storage_bytes(&bytes),
-            Err(ChunkDecodeError::UnknownBlockId(u16::MAX))
-        );
+    #[test]
+    fn chunk_storage_bytes_roundtrip_full_stone() {
+        let mut chunk = Chunk::default();
+        chunk.blocks = [[[BlockType::Stone; CHUNK_SIZE]; CHUNK_SIZE]; CHUNK_SIZE];
+        let bytes = chunk.to_storage_bytes();
+        assert_eq!(Chunk::try_from_storage_bytes(&bytes), Ok(chunk));
+    }
+
+    #[test]
+    fn chunk_storage_bytes_reject_garbled_data() {
+        assert!(Chunk::try_from_storage_bytes(&[]).is_err());
+    }
+
+    #[test]
+    fn chunk_storage_bytes_reject_unknown_block_name() {
+        let name = b"nonexistent";
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&1u16.to_le_bytes()); // palette_size = 1
+        bytes.push(name.len() as u8);
+        bytes.extend_from_slice(name);
+        bytes.push(1); // bits_per_index
+        bytes.resize(bytes.len() + 512, 0);
+
+        match Chunk::try_from_storage_bytes(&bytes) {
+            Err(ChunkDecodeError::UnknownBlock(n)) => assert_eq!(n, "nonexistent"),
+            other => panic!("expected UnknownBlock, got {other:?}"),
+        }
     }
 }

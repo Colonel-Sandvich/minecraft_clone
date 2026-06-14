@@ -1,5 +1,5 @@
 use bevy::{platform::collections::HashMap, prelude::*};
-use strum::EnumIter;
+use strum::{Display, EnumIter, EnumString, FromRepr};
 
 use crate::{quad::Direction, world::chunk::CHUNK_ISIZE};
 
@@ -11,7 +11,9 @@ impl Plugin for BlockPlugin {
     }
 }
 
-#[derive(Default, Clone, Copy, Debug, Reflect, PartialEq, Eq, EnumIter)]
+#[derive(Default, Clone, Copy, Debug, Display, Reflect, PartialEq, Eq, Hash, EnumIter, EnumString, FromRepr)]
+#[repr(u16)]
+#[strum(serialize_all = "snake_case")]
 pub enum BlockType {
     #[default]
     Air = 0,
@@ -124,32 +126,22 @@ impl BlockType {
     }
 
     pub const fn storage_id(self) -> u16 {
-        use BlockType::*;
-        match self {
-            Air => 0,
-            Grass => 1,
-            Dirt => 2,
-            Stone => 3,
-            Sand => 4,
-            Glass => 5,
-            OakLog => 6,
-            OakLeaves => 7,
-        }
+        self as u16
     }
 
-    pub const fn from_storage_id(id: u16) -> Option<Self> {
-        use BlockType::*;
-        match id {
-            0 => Some(Air),
-            1 => Some(Grass),
-            2 => Some(Dirt),
-            3 => Some(Stone),
-            4 => Some(Sand),
-            5 => Some(Glass),
-            6 => Some(OakLog),
-            7 => Some(OakLeaves),
-            _ => None,
-        }
+    pub fn from_storage_id(id: u16) -> Option<Self> {
+        Self::from_repr(id)
+    }
+
+    /// Global string identifier — stable across enum reorderings.
+    /// Example: `"grass"`, `"oak_log"`.
+    pub fn name(self) -> String {
+        self.to_string()
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        use std::str::FromStr;
+        Self::from_str(name).ok()
     }
 }
 
@@ -197,6 +189,7 @@ pub fn block_to_colour(block: BlockType, side: Direction) -> Vec4 {
             Up => Srgba::hex("5E9D34").unwrap(),
             _ => Srgba::WHITE,
         },
+        OakLeaves => Srgba::hex("77AB2F").unwrap(),
         _ => Srgba::WHITE,
     };
 
