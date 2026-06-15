@@ -405,7 +405,17 @@ fn propagate_sky_decrease(
 
             if n_current > target {
                 let opposite_idx = dir_idx ^ 1;
-                let next_dirs = ALL_DIRECTIONS_BITSET ^ (1 << opposite_idx);
+                let mut exclude = 1u8 << opposite_idx;
+                if n_chunk.x != 0 {
+                    exclude |= 1 << if n_chunk.x < 0 { 0 } else { 1 };
+                }
+                if n_chunk.z != 0 {
+                    exclude |= 1 << if n_chunk.z < 0 { 2 } else { 3 };
+                }
+                if n_chunk.y != 0 {
+                    exclude |= 1 << if n_chunk.y < 0 { 4 } else { 5 };
+                }
+                let next_dirs = ALL_DIRECTIONS_BITSET ^ exclude;
                 increase_queue.push_back(IncreaseEntry {
                     chunk: n_chunk,
                     local: n_local,
@@ -450,6 +460,7 @@ fn propagate_block_decrease(
     queue: &mut VecDeque<DecreaseEntry>,
     increase_queue: &mut VecDeque<IncreaseEntry>,
     dirty_neighbors: &mut u32,
+    clobbered_increases: bool,
 ) {
     while let Some(entry) = queue.pop_front() {
         for dir_idx in 0..6 {
@@ -472,9 +483,19 @@ fn propagate_block_decrease(
 
             let target = entry.level.saturating_sub(attenuation);
 
-            if n_current > target {
+            if clobbered_increases && n_current > target {
                 let opposite_idx = dir_idx ^ 1;
-                let next_dirs = ALL_DIRECTIONS_BITSET ^ (1 << opposite_idx);
+                let mut exclude = 1u8 << opposite_idx;
+                if n_chunk.x != 0 {
+                    exclude |= 1 << if n_chunk.x < 0 { 0 } else { 1 };
+                }
+                if n_chunk.z != 0 {
+                    exclude |= 1 << if n_chunk.z < 0 { 2 } else { 3 };
+                }
+                if n_chunk.y != 0 {
+                    exclude |= 1 << if n_chunk.y < 0 { 4 } else { 5 };
+                }
+                let next_dirs = ALL_DIRECTIONS_BITSET ^ exclude;
                 increase_queue.push_back(IncreaseEntry {
                     chunk: n_chunk,
                     local: n_local,
@@ -671,24 +692,59 @@ pub fn compute_block_light(
         dirty_neighbors,
     );
 
-    // When no center emitters exist, clear block light from all
-    // loaded neighbors — they can no longer receive any light from
-    // the center. (Partial source removal where some emitters remain
-    // is handled less precisely; future work can add per-face
-    // decrease propagation.)
-    let center_lit = (0..CHUNK_SIZE).any(|x| {
-        (0..CHUNK_SIZE).any(|z| {
-            (0..CHUNK_SIZE).any(|y| {
-                center_light.block_light(uvec3(x as u32, y as u32, z as u32)) > 0
-            })
-        })
-    });
-    if !center_lit {
-        for (offset, light) in lights.iter_mut() {
-            light.reset_all_block_light();
-            *dirty_neighbors |= 1 << offset_to_bit_index(*offset);
+    // Propagate decreases from center face blocks outward to
+    // neighbors — clears stale light from removed centre emitters.
+    // The centre light was correctly computed by the increase pass
+    // above; decrease+increase may re-light the centre via second-
+    // order neighbour increases, so save and restore it.
+    let pre_decrease = center_light.clone();
+    let mut block_decrease: VecDeque<DecreaseEntry> = VecDeque::new();
+    let mut block_increase: VecDeque<IncreaseEntry> = VecDeque::new();
+    for &offset in &DIRECTION_OFFSETS {
+        if !lights.contains_key(&offset) {
+            continue;
+        }
+        let neighbor_light = &lights[&offset];
+        for a in 0..CHUNK_SIZE {
+            for b in 0..CHUNK_SIZE {
+                let local = match (offset.x, offset.y, offset.z) {
+                    (-1, 0, 0) => uvec3(0, b as u32, a as u32),
+                    (1, 0, 0) => uvec3((CHUNK_SIZE - 1) as u32, b as u32, a as u32),
+                    (0, -1, 0) => uvec3(a as u32, b as u32, 0),
+                    (0, 1, 0) => uvec3(a as u32, b as u32, (CHUNK_SIZE - 1) as u32),
+                    (0, 0, -1) => uvec3(a as u32, 0, b as u32),
+                    (0, 0, 1) => uvec3(a as u32, (CHUNK_SIZE - 1) as u32, b as u32),
+                    _ => continue,
+                };
+                let center_level = center_light.block_light(local);
+                let neighbor_world = neighbor_world(center_pos, local, offset);
+                let (_, n_local) = world_to_chunk_local(neighbor_world);
+                let n_current = neighbor_light.block_light(n_local);
+                if n_current > center_level.saturating_sub(1) {
+                    block_decrease.push_back(DecreaseEntry {
+                        chunk: center_pos,
+                        local,
+                        level: n_current,
+                        directions: ALL_DIRECTIONS_BITSET,
+                    });
+                }
+            }
         }
     }
+    if !block_decrease.is_empty() {
+        propagate_block_decrease(
+            center_light,
+            blocks,
+            lights,
+            center_pos,
+            center_chunk,
+            &mut block_decrease,
+            &mut block_increase,
+            dirty_neighbors,
+            false,
+        );
+    }
+    *center_light = pre_decrease;
 }
 
 // ── Full light rebuild ─────────────────────────────────────────────────────-
@@ -816,6 +872,7 @@ pub fn light_on_place_block(
         &mut decrease_queue,
         &mut increase_queue,
         dirty_neighbors,
+        false,
     );
 }
 
