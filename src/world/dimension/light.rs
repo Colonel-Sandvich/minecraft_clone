@@ -23,13 +23,13 @@ pub(crate) fn rebuild_chunk_light(
         let center_pos = pos.0;
 
         let mut blocks = HashMap::new();
-        let mut light_copies: HashMap<IVec3, (Entity, ChunkLight)> = HashMap::new();
+        let mut lights: HashMap<IVec3, ChunkLight> = HashMap::new();
+        let mut neighbor_entities: HashMap<IVec3, Entity> = HashMap::new();
 
-        let center_light = chunk_map
+        let mut center_light_copy = chunk_map
             .get(&center_pos)
             .map(|(_, _, l)| (**l).clone())
             .unwrap_or_default();
-        light_copies.insert(IVec3::ZERO, (entity, center_light));
 
         for offset in chunk_neighbor_offsets() {
             let neighbor_pos = center_pos + offset;
@@ -37,44 +37,37 @@ pub(crate) fn rebuild_chunk_light(
                 chunk_map.get(&neighbor_pos)
             {
                 blocks.insert(offset, neighbor_chunk);
-                light_copies.insert(offset, (neighbor_entity, (*neighbor_light).clone()));
+                lights.insert(offset, (*neighbor_light).clone());
+                neighbor_entities.insert(offset, neighbor_entity);
             }
         }
 
-        let mut center_light_copy = light_copies
-            .remove(&IVec3::ZERO)
-            .expect("center light must be seeded at IVec3::ZERO")
-            .1;
         let mut heightmap = *heightmap;
         let mut dirty_neighbors = 0u32;
+        let column_y = (center_pos.y * CHUNK_ISIZE) as u32;
 
-        {
-            let mut lights_mut: HashMap<IVec3, &mut ChunkLight> = light_copies
-                .iter_mut()
-                .map(|(k, v)| (*k, &mut v.1))
-                .collect();
-            let column_y = (center_pos.y * CHUNK_ISIZE) as u32;
-            compute_light(
-                chunk,
-                &mut center_light_copy,
-                &mut heightmap,
-                &blocks,
-                &mut lights_mut,
-                &mut dirty_neighbors,
-                block_counts.rendered,
-                column_y,
-                true,
-            );
-        }
+        compute_light(
+            chunk,
+            &mut center_light_copy,
+            &mut heightmap,
+            &blocks,
+            &mut lights,
+            &mut dirty_neighbors,
+            block_counts.rendered,
+            column_y,
+            true,
+        );
 
         commands.entity(entity).insert((center_light_copy, heightmap));
 
-        for (offset, (neighbor_entity, updated_light)) in light_copies {
-            if offset != IVec3::ZERO && dirty_neighbors & (1 << offset_to_bit_index(offset)) != 0 {
-                commands.entity(neighbor_entity).insert((
-                    updated_light,
-                    ChunkNeedsSave,
-                ));
+        for (offset, updated_light) in lights {
+            if dirty_neighbors & (1 << offset_to_bit_index(offset)) != 0 {
+                if let Some(&neighbor_entity) = neighbor_entities.get(&offset) {
+                    commands.entity(neighbor_entity).insert((
+                        updated_light,
+                        ChunkNeedsSave,
+                    ));
+                }
             }
         }
 

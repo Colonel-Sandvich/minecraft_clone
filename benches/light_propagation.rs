@@ -205,9 +205,8 @@ fn bench_full_light_compute(c: &mut Criterion) {
             b.iter(|| {
                 let mut center_light = ChunkLight::default();
                 let mut heightmap = ChunkHeightmap::default();
-                let mut neighbor_lights: Vec<(IVec3, ChunkLight)> = neighbor_template.clone();
-                let mut lights_map: HashMap<IVec3, &mut ChunkLight> = neighbor_lights.iter_mut()
-                    .map(|(pos, light)| (*pos, light))
+                let neighbor_lights: Vec<(IVec3, ChunkLight)> = neighbor_template.clone();
+                let mut lights_map: HashMap<IVec3, ChunkLight> = neighbor_lights.into_iter()
                     .collect();
                 let mut dirty = 0;
                 compute_light(
@@ -283,9 +282,8 @@ fn bench_incremental_light(c: &mut Criterion) {
                 let mut center_light = ChunkLight::default();
                 // First do a full compute to establish baseline lighting
                 let mut heightmap = ChunkHeightmap::default();
-                let mut neighbor_lights: Vec<(IVec3, ChunkLight)> = neighbor_template.clone();
-                let mut lights_map: HashMap<IVec3, &mut ChunkLight> = neighbor_lights.iter_mut()
-                    .map(|(pos, light)| (*pos, light))
+                let neighbor_lights: Vec<(IVec3, ChunkLight)> = neighbor_template.clone();
+                let mut lights_map: HashMap<IVec3, ChunkLight> = neighbor_lights.into_iter()
                     .collect();
                 let mut dirty = 0;
                 compute_light(
@@ -329,9 +327,8 @@ fn bench_incremental_light(c: &mut Criterion) {
             b.iter(|| {
                 let mut center_light = ChunkLight::default();
                 let mut heightmap = ChunkHeightmap::default();
-                let mut neighbor_lights: Vec<(IVec3, ChunkLight)> = neighbor_template.clone();
-                let mut lights_map: HashMap<IVec3, &mut ChunkLight> = neighbor_lights.iter_mut()
-                    .map(|(pos, light)| (*pos, light))
+                let neighbor_lights: Vec<(IVec3, ChunkLight)> = neighbor_template.clone();
+                let mut lights_map: HashMap<IVec3, ChunkLight> = neighbor_lights.into_iter()
                     .collect();
                 let mut dirty = 0;
                 compute_light(

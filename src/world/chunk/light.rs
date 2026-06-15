@@ -140,7 +140,7 @@ fn block_at(
 // re-borrow is needed here.
 fn sky_light_at(
     center: &ChunkLight,
-    neighbor_lights: &HashMap<IVec3, &mut ChunkLight>,
+    neighbor_lights: &HashMap<IVec3, ChunkLight>,
     center_pos: IVec3,
     chunk_pos: IVec3,
     local: UVec3,
@@ -156,7 +156,7 @@ fn sky_light_at(
 
 fn block_light_at(
     center: &ChunkLight,
-    neighbor_lights: &HashMap<IVec3, &mut ChunkLight>,
+    neighbor_lights: &HashMap<IVec3, ChunkLight>,
     center_pos: IVec3,
     chunk_pos: IVec3,
     local: UVec3,
@@ -172,7 +172,7 @@ fn block_light_at(
 
 fn write_sky_light(
     center: &mut ChunkLight,
-    neighbor_lights: &mut HashMap<IVec3, &mut ChunkLight>,
+    neighbor_lights: &mut HashMap<IVec3, ChunkLight>,
     center_pos: IVec3,
     offset: IVec3,
     local: UVec3,
@@ -193,7 +193,7 @@ fn write_sky_light(
 
 fn write_block_light(
     center: &mut ChunkLight,
-    neighbor_lights: &mut HashMap<IVec3, &mut ChunkLight>,
+    neighbor_lights: &mut HashMap<IVec3, ChunkLight>,
     center_pos: IVec3,
     offset: IVec3,
     local: UVec3,
@@ -258,7 +258,7 @@ struct DecreaseEntry {
 fn propagate_sky_increase(
     center_light: &mut ChunkLight,
     blocks: &HashMap<IVec3, &Chunk>,
-    lights: &mut HashMap<IVec3, &mut ChunkLight>,
+    lights: &mut HashMap<IVec3, ChunkLight>,
     center_pos: IVec3,
     center_chunk: &Chunk,
     queue: &mut VecDeque<IncreaseEntry>,
@@ -310,7 +310,7 @@ fn propagate_sky_increase(
 fn propagate_block_increase(
     center_light: &mut ChunkLight,
     blocks: &HashMap<IVec3, &Chunk>,
-    lights: &mut HashMap<IVec3, &mut ChunkLight>,
+    lights: &mut HashMap<IVec3, ChunkLight>,
     center_pos: IVec3,
     center_chunk: &Chunk,
     queue: &mut VecDeque<IncreaseEntry>,
@@ -372,7 +372,7 @@ fn propagate_block_increase(
 fn propagate_sky_decrease(
     center_light: &mut ChunkLight,
     blocks: &HashMap<IVec3, &Chunk>,
-    lights: &mut HashMap<IVec3, &mut ChunkLight>,
+    lights: &mut HashMap<IVec3, ChunkLight>,
     center_pos: IVec3,
     center_chunk: &Chunk,
     queue: &mut VecDeque<DecreaseEntry>,
@@ -442,7 +442,7 @@ fn propagate_sky_decrease(
 fn propagate_block_decrease(
     center_light: &mut ChunkLight,
     blocks: &HashMap<IVec3, &Chunk>,
-    lights: &mut HashMap<IVec3, &mut ChunkLight>,
+    lights: &mut HashMap<IVec3, ChunkLight>,
     center_pos: IVec3,
     center_chunk: &Chunk,
     queue: &mut VecDeque<DecreaseEntry>,
@@ -520,7 +520,7 @@ fn propagate_block_decrease(
 
 fn has_darker_neighbor(
     center: &ChunkLight,
-    lights: &HashMap<IVec3, &mut ChunkLight>,
+    lights: &HashMap<IVec3, ChunkLight>,
     center_pos: IVec3,
     local: UVec3,
     level: u8,
@@ -541,7 +541,7 @@ pub fn compute_sky_light(
     center_light: &mut ChunkLight,
     heightmap: &mut ChunkHeightmap,
     blocks: &HashMap<IVec3, &Chunk>,
-    lights: &mut HashMap<IVec3, &mut ChunkLight>,
+    lights: &mut HashMap<IVec3, ChunkLight>,
     dirty_neighbors: &mut u32,
     column_y: u32,
     skip_heightmap: bool,
@@ -630,7 +630,7 @@ pub fn compute_block_light(
     center_chunk: &Chunk,
     center_light: &mut ChunkLight,
     blocks: &HashMap<IVec3, &Chunk>,
-    lights: &mut HashMap<IVec3, &mut ChunkLight>,
+    lights: &mut HashMap<IVec3, ChunkLight>,
     dirty_neighbors: &mut u32,
 ) {
     let center_pos = IVec3::ZERO;
@@ -675,7 +675,7 @@ pub fn compute_light(
     center_light: &mut ChunkLight,
     heightmap: &mut ChunkHeightmap,
     blocks: &HashMap<IVec3, &Chunk>,
-    lights: &mut HashMap<IVec3, &mut ChunkLight>,
+    lights: &mut HashMap<IVec3, ChunkLight>,
     dirty_neighbors: &mut u32,
     rendered: u16,
     column_y: u32,
@@ -717,7 +717,7 @@ pub fn light_on_place_sky(
     center_chunk: &Chunk,
     center_light: &mut ChunkLight,
     blocks: &HashMap<IVec3, &Chunk>,
-    lights: &mut HashMap<IVec3, &mut ChunkLight>,
+    lights: &mut HashMap<IVec3, ChunkLight>,
     world_pos: IVec3,
     dirty_neighbors: &mut u32,
 ) {
@@ -762,7 +762,7 @@ pub fn light_on_place_block(
     center_chunk: &Chunk,
     center_light: &mut ChunkLight,
     blocks: &HashMap<IVec3, &Chunk>,
-    lights: &mut HashMap<IVec3, &mut ChunkLight>,
+    lights: &mut HashMap<IVec3, ChunkLight>,
     world_pos: IVec3,
     dirty_neighbors: &mut u32,
 ) {
@@ -1012,21 +1012,19 @@ mod tests {
 
         let blocks: HashMap<IVec3, &Chunk> =
             HashMap::from([(ivec3(0, -1, 0), &lower_chunk)]);
-        {
-            let mut lights: HashMap<IVec3, &mut ChunkLight> =
-                HashMap::from([(ivec3(0, -1, 0), &mut lower_light)]);
-            let mut dirty = 0;
-            compute_sky_light(
-                &upper_chunk,
-                &mut upper_light,
-                &mut heightmap,
-                &blocks,
-                &mut lights,
-                &mut dirty,
-                0,
-                false,
-            );
-        }
+        let mut lights: HashMap<IVec3, ChunkLight> =
+            HashMap::from([(ivec3(0, -1, 0), lower_light)]);
+        let mut dirty = 0;
+        compute_sky_light(
+            &upper_chunk,
+            &mut upper_light,
+            &mut heightmap,
+            &blocks,
+            &mut lights,
+            &mut dirty,
+            0,
+            false,
+        );
 
         assert!(upper_light.sky_light(uvec3(8, 0, 8)) > 0);
     }
@@ -1034,7 +1032,7 @@ mod tests {
     #[test]
     fn cross_chunk_block_light_propagates_between_chunks() {
         let left_chunk = Chunk::default();
-        let mut left_light = ChunkLight::default();
+        let left_light = ChunkLight::default();
         let mut right_chunk = Chunk::default();
         let mut right_light = ChunkLight::default();
 
@@ -1043,16 +1041,15 @@ mod tests {
         let blocks: HashMap<IVec3, &Chunk> =
             HashMap::from([(ivec3(-1, 0, 0), &left_chunk)]);
 
-        {
-            let mut lights: HashMap<IVec3, &mut ChunkLight> =
-                HashMap::from([(ivec3(-1, 0, 0), &mut left_light)]);
-            let mut dirty = 0;
-            compute_block_light(&right_chunk, &mut right_light, &blocks, &mut lights, &mut dirty);
-        }
+        let mut lights: HashMap<IVec3, ChunkLight> =
+            HashMap::from([(ivec3(-1, 0, 0), left_light.clone())]);
+        let mut dirty = 0;
+        compute_block_light(&right_chunk, &mut right_light, &blocks, &mut lights, &mut dirty);
+        let modified_left = lights.remove(&ivec3(-1, 0, 0)).unwrap();
 
         assert_eq!(right_light.block_light(uvec3(0, 8, 8)), 15);
         assert_eq!(right_light.block_light(uvec3(1, 8, 8)), 14);
-        assert_eq!(left_light.block_light(uvec3(15, 8, 8)), 14);
+        assert_eq!(modified_left.block_light(uvec3(15, 8, 8)), 14);
     }
 
     #[test]
