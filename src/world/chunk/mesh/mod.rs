@@ -27,7 +27,7 @@ use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
 use bevy::utils::Parallel;
-use strum::IntoEnumIterator;
+use strum::{EnumCount, IntoEnumIterator};
 
 use crate::block::{BlockMaterialLayer, BlockTextureMap, BlockType, block_to_colour};
 use crate::quad::{Direction, QuadGroups, get_normals, get_positions, urect_to_uvs};
@@ -45,7 +45,7 @@ pub(crate) const PADDED_CHUNK_SIZE: usize = CHUNK_SIZE + 2;
 pub(crate) const PADDED_CHUNK_VOLUME: usize =
     PADDED_CHUNK_SIZE * PADDED_CHUNK_SIZE * PADDED_CHUNK_SIZE;
 pub(crate) const PADDED_CHUNK_LAYER_SIZE: usize = PADDED_CHUNK_SIZE * PADDED_CHUNK_SIZE;
-pub(crate) const BLOCK_TYPE_COUNT: usize = 8;
+pub(crate) const BLOCK_TYPE_COUNT: usize = BlockType::COUNT;
 pub(crate) const DIRECTION_COUNT: usize = 6;
 pub(crate) const DIRECTION_INDEX_OFFSETS: [isize; DIRECTION_COUNT] = [
     -1,

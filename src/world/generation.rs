@@ -5,7 +5,7 @@ use crate::{
     world::chunk::{CHUNK_ISIZE, CHUNK_SIZE, Chunk},
 };
 
-pub const CHUNK_FORMAT_VERSION: u32 = 1;
+pub const CHUNK_FORMAT_VERSION: u32 = 3;
 pub const WORLD_GENERATOR_VERSION: u32 = 1;
 pub const DEFAULT_DIMENSION_HEIGHT_IN_SUB_CHUNKS: usize = 5;
 pub const DEFAULT_DEV_WORLD_SEED: u64 = 0x11c7_7473_eead_0b0f;

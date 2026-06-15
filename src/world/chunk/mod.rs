@@ -1,11 +1,16 @@
 pub mod ambient_occlusion;
 pub mod collider;
+pub mod light;
 pub mod mesh;
 
 use ambient_occlusion::AmbientOcclusionPlugin;
 use bevy::prelude::*;
 use collider::ChunkColliderPlugin;
 use mesh::ChunkMeshPlugin;
+
+pub use light::{
+    ChunkHeightmap, ChunkLight, compute_light, light_on_place_block, light_on_place_sky,
+};
 
 use crate::block::BlockType;
 
@@ -102,6 +107,9 @@ pub struct ChunkNeedsMeshRebuild;
 #[derive(Component, Debug, Clone, Copy)]
 pub struct ChunkNeedsColliderRebuild;
 
+#[derive(Component, Debug, Clone, Copy)]
+pub struct ChunkNeedsLightRebuild;
+
 #[derive(Component, Debug, Clone, PartialEq, Eq, Reflect)]
 pub struct Chunk {
     pub blocks: [[[BlockType; CHUNK_SIZE]; CHUNK_SIZE]; CHUNK_SIZE],
@@ -127,7 +135,7 @@ impl Chunk {
     }
 
     pub fn get_i(&self, x: i32, y: i32, z: i32) -> Option<BlockType> {
-        let outside = |a: i32| !(0..CHUNK_ISIZE).contains(&a);
+        let outside = |a: i32| a < 0 || a >= CHUNK_ISIZE;
         if outside(x) || outside(y) || outside(z) {
             return None;
         }
@@ -136,7 +144,7 @@ impl Chunk {
     }
 
     pub(crate) fn get_mut(&mut self, x: u32, y: u32, z: u32) -> Option<&mut BlockType> {
-        let outside = |a: u32| !(0..CHUNK_SIZE).contains(&(a as usize));
+        let outside = |a: u32| a >= CHUNK_SIZE as u32;
         if outside(x) || outside(y) || outside(z) {
             return None;
         }
@@ -218,6 +226,7 @@ impl Chunk {
     /// for each entry: [u8: name_len] [name bytes]
     /// [u8: bits_per_index]
     /// [bit-packed body, MSB-first, padded to byte boundary]
+    /// [4096 bytes: light data (format v2 only, removed in v3)]
     /// ```
     /// bits_per_index = ceil(log2(palette_size)), min 1.
     pub fn to_storage_bytes(&self) -> Vec<u8> {
@@ -250,7 +259,10 @@ impl Chunk {
         bytes
     }
 
-    pub fn try_from_storage_bytes(bytes: &[u8]) -> Result<Self, ChunkDecodeError> {
+    pub fn try_from_storage_bytes(
+        bytes: &[u8],
+        format_version: u32,
+    ) -> Result<(Self, ChunkLight), ChunkDecodeError> {
         if bytes.len() < 3 {
             return Err(ChunkDecodeError::Truncated);
         }
@@ -303,7 +315,28 @@ impl Chunk {
             }
         }
 
-        Ok(chunk)
+        let block_body_bits = bit_pos;
+        let block_body_bytes = (block_body_bits + 7) / 8;
+        let light_start = pos + block_body_bytes;
+
+        let mut light = ChunkLight::default();
+        if format_version == 2 {
+            if light_start + CHUNK_VOLUME > bytes.len() {
+                return Err(ChunkDecodeError::Truncated);
+            }
+            let light_bytes = &bytes[light_start..light_start + CHUNK_VOLUME];
+            let mut idx = 0;
+            for x in 0..CHUNK_SIZE {
+                for z in 0..CHUNK_SIZE {
+                    for y in 0..CHUNK_SIZE {
+                        light.light[x][z][y] = light_bytes[idx];
+                        idx += 1;
+                    }
+                }
+            }
+        }
+
+        Ok((chunk, light))
     }
 }
 
@@ -433,14 +466,18 @@ mod tests {
         chunk.blocks[15][15][15] = BlockType::OakLeaves;
 
         let bytes = chunk.to_storage_bytes();
-        assert_eq!(Chunk::try_from_storage_bytes(&bytes), Ok(chunk));
+        let (decoded, decoded_light) = Chunk::try_from_storage_bytes(&bytes, 3).unwrap();
+        assert_eq!(decoded, chunk);
+        assert_eq!(decoded_light, ChunkLight::default());
     }
 
     #[test]
     fn chunk_storage_bytes_roundtrip_all_air() {
         let chunk = Chunk::default();
         let bytes = chunk.to_storage_bytes();
-        assert_eq!(Chunk::try_from_storage_bytes(&bytes), Ok(chunk));
+        let (decoded, decoded_light) = Chunk::try_from_storage_bytes(&bytes, 3).unwrap();
+        assert_eq!(decoded, chunk);
+        assert_eq!(decoded_light, ChunkLight::default());
     }
 
     #[test]
@@ -448,12 +485,57 @@ mod tests {
         let mut chunk = Chunk::default();
         chunk.blocks = [[[BlockType::Stone; CHUNK_SIZE]; CHUNK_SIZE]; CHUNK_SIZE];
         let bytes = chunk.to_storage_bytes();
-        assert_eq!(Chunk::try_from_storage_bytes(&bytes), Ok(chunk));
+        let (decoded, decoded_light) = Chunk::try_from_storage_bytes(&bytes, 3).unwrap();
+        assert_eq!(decoded, chunk);
+        assert_eq!(decoded_light, ChunkLight::default());
+    }
+
+    #[test]
+    fn v3_format_never_stores_light() {
+        let chunk = Chunk::default();
+        let mut light = ChunkLight::default();
+        light.set_sky_light(uvec3(8, 8, 8), 15);
+        light.set_block_light(uvec3(8, 8, 8), 7);
+
+        let bytes = chunk.to_storage_bytes();
+        let (_, decoded_light) = Chunk::try_from_storage_bytes(&bytes, 3).unwrap();
+        assert_eq!(decoded_light.packed_light(uvec3(8, 8, 8)), 0);
+    }
+
+    #[test]
+    fn v2_format_still_reads_stored_light() {
+        let chunk = Chunk::default();
+        let mut light = ChunkLight::default();
+        light.set_sky_light(uvec3(8, 8, 8), 15);
+        light.set_block_light(uvec3(8, 8, 8), 7);
+
+        let mut bytes = chunk.to_storage_bytes();
+        for x in 0..CHUNK_SIZE {
+            for z in 0..CHUNK_SIZE {
+                for y in 0..CHUNK_SIZE {
+                    bytes.push(light.light[x][z][y]);
+                }
+            }
+        }
+        let (_, decoded_light) = Chunk::try_from_storage_bytes(&bytes, 2).unwrap();
+        assert_eq!(decoded_light.sky_light(uvec3(8, 8, 8)), 15);
+        assert_eq!(decoded_light.block_light(uvec3(8, 8, 8)), 7);
+    }
+
+    #[test]
+    fn v1_format_loads_v3_blob_with_default_light() {
+        let mut chunk = Chunk::default();
+        chunk.blocks[0][0][0] = BlockType::Grass;
+        let bytes = chunk.to_storage_bytes();
+        let (decoded, decoded_light) = Chunk::try_from_storage_bytes(&bytes, 1).unwrap();
+        assert_eq!(decoded.blocks[0][0][0], BlockType::Grass);
+        assert_eq!(decoded_light.packed_light(uvec3(0, 0, 0)), 0);
+        assert_eq!(decoded_light.packed_light(uvec3(8, 8, 8)), 0);
     }
 
     #[test]
     fn chunk_storage_bytes_reject_garbled_data() {
-        assert!(Chunk::try_from_storage_bytes(&[]).is_err());
+        assert!(Chunk::try_from_storage_bytes(&[], 2).is_err());
     }
 
     #[test]
@@ -466,7 +548,7 @@ mod tests {
         bytes.push(1); // bits_per_index
         bytes.resize(bytes.len() + 512, 0);
 
-        match Chunk::try_from_storage_bytes(&bytes) {
+        match Chunk::try_from_storage_bytes(&bytes, 2) {
             Err(ChunkDecodeError::UnknownBlock(n)) => assert_eq!(n, "nonexistent"),
             other => panic!("expected UnknownBlock, got {other:?}"),
         }
