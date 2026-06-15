@@ -19,7 +19,7 @@ pub(crate) fn rebuild_chunk_light(
         .map(|(entity, pos, chunk, light)| (pos.0, (entity, chunk, light)))
         .collect();
 
-    for (entity, pos, chunk, _, _, block_counts) in needs_rebuild.iter() {
+    for (entity, pos, chunk, _, heightmap, block_counts) in needs_rebuild.iter() {
         let center_pos = pos.0;
 
         let mut blocks = HashMap::new();
@@ -45,7 +45,7 @@ pub(crate) fn rebuild_chunk_light(
             .remove(&IVec3::ZERO)
             .expect("center light must be seeded at IVec3::ZERO")
             .1;
-        let mut heightmap = ChunkHeightmap::default();
+        let mut heightmap = *heightmap;
         let mut dirty_neighbors = 0u32;
 
         {
@@ -63,6 +63,7 @@ pub(crate) fn rebuild_chunk_light(
                 &mut dirty_neighbors,
                 block_counts.rendered,
                 column_y,
+                true,
             );
         }
 

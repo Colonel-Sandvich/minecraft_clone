@@ -544,6 +544,7 @@ pub fn compute_sky_light(
     lights: &mut HashMap<IVec3, &mut ChunkLight>,
     dirty_neighbors: &mut u32,
     column_y: u32,
+    skip_heightmap: bool,
 ) {
     let center_pos = IVec3::ZERO;
 
@@ -577,7 +578,9 @@ pub fn compute_sky_light(
                 }
             }
 
-            heightmap.heights[x][z] = highest;
+            if !skip_heightmap {
+                heightmap.heights[x][z] = highest;
+            }
         }
     }
 
@@ -676,6 +679,7 @@ pub fn compute_light(
     dirty_neighbors: &mut u32,
     rendered: u16,
     column_y: u32,
+    skip_heightmap: bool,
 ) {
     // All-air chunk: sky light 15 everywhere, no block light, heightmap 0.
     if rendered == 0 {
@@ -698,6 +702,7 @@ pub fn compute_light(
         lights,
         dirty_neighbors,
         column_y,
+        skip_heightmap,
     );
     compute_block_light(center_chunk, center_light, blocks, lights, dirty_neighbors);
 }
@@ -827,7 +832,7 @@ mod tests {
         let mut lights = HashMap::new();
 
         let mut dirty = 0;
-        compute_sky_light(&chunk, &mut light, &mut heightmap, &blocks, &mut lights, &mut dirty, 0);
+        compute_sky_light(&chunk, &mut light, &mut heightmap, &blocks, &mut lights, &mut dirty, 0, false);
 
         assert_eq!(heightmap.heights[8][8], 9);
         for y in 10..16 {
@@ -857,7 +862,7 @@ mod tests {
         let mut lights = HashMap::new();
 
         let mut dirty = 0;
-        compute_sky_light(&chunk, &mut light, &mut heightmap, &blocks, &mut lights, &mut dirty, 0);
+        compute_sky_light(&chunk, &mut light, &mut heightmap, &blocks, &mut lights, &mut dirty, 0, false);
 
         assert_eq!(heightmap.heights[0][0], 9);
         assert_eq!(light.sky_light(uvec3(0, 15, 0)), SKY_LIGHT_MAX);
@@ -882,7 +887,7 @@ mod tests {
         let mut lights = HashMap::new();
 
         let mut dirty = 0;
-        compute_sky_light(&chunk, &mut light, &mut heightmap, &blocks, &mut lights, &mut dirty, 0);
+        compute_sky_light(&chunk, &mut light, &mut heightmap, &blocks, &mut lights, &mut dirty, 0, false);
 
         assert_eq!(heightmap.heights[0][0], 9);
         for y in 10..16 {
@@ -921,7 +926,7 @@ mod tests {
         let mut lights = HashMap::new();
 
         let mut dirty = 0;
-        compute_sky_light(&chunk, &mut light, &mut heightmap, &blocks, &mut lights, &mut dirty, 0);
+        compute_sky_light(&chunk, &mut light, &mut heightmap, &blocks, &mut lights, &mut dirty, 0, false);
 
         assert_eq!(light.sky_light(uvec3(0, 15, 8)), SKY_LIGHT_MAX);
         assert!(light.sky_light(uvec3(1, 8, 8)) > 0);
@@ -1019,6 +1024,7 @@ mod tests {
                 &mut lights,
                 &mut dirty,
                 0,
+                false,
             );
         }
 
@@ -1089,7 +1095,7 @@ mod tests {
         let mut lights = HashMap::new();
 
         let mut dirty = 0;
-        compute_sky_light(&chunk, &mut light, &mut heightmap, &blocks, &mut lights, &mut dirty, 0);
+        compute_sky_light(&chunk, &mut light, &mut heightmap, &blocks, &mut lights, &mut dirty, 0, false);
 
         for x in 0..CHUNK_SIZE {
             for z in 0..CHUNK_SIZE {
