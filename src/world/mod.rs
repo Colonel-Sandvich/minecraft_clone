@@ -12,7 +12,7 @@ use bevy::prelude::*;
 use chunk::ChunkPlugin;
 use dimension::DimensionPlugin;
 #[cfg(feature = "turso-store")]
-use storage::TursoChunkStore;
+use storage::{TursoChunkStore, development_turso_path};
 use storage::{
     ChunkRepository, ChunkStoreResult, InMemoryChunkStore, NoopChunkStore, SqliteChunkStore,
     development_world_path,
@@ -61,6 +61,12 @@ impl WorldConfig {
     pub fn development_sqlite(metadata: WorldMetadata) -> Self {
         let path = development_world_path(&metadata);
         Self::sqlite(metadata, path)
+    }
+
+    #[cfg(feature = "turso-store")]
+    pub fn development_turso(metadata: WorldMetadata) -> Self {
+        let path = development_turso_path(&metadata);
+        Self::turso(metadata, path)
     }
 }
 
@@ -203,5 +209,21 @@ mod tests {
 
         assert_eq!(config.metadata, metadata);
         assert_eq!(config.storage, WorldStorageConfig::Noop);
+    }
+
+    #[cfg(feature = "turso-store")]
+    #[test]
+    fn development_turso_config_uses_seeded_path() {
+        let metadata = WorldMetadata::with_seed(42);
+
+        let config = WorldConfig::development_turso(metadata.clone());
+
+        assert_eq!(config.metadata, metadata);
+        assert_eq!(
+            config.storage,
+            WorldStorageConfig::Turso {
+                path: storage::development_turso_path(&metadata)
+            }
+        );
     }
 }

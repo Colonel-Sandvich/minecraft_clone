@@ -20,6 +20,9 @@ fn spawn_sun_light(mut commands: Commands) {
         DirectionalLight {
             illuminance: light_consts::lux::AMBIENT_DAYLIGHT,
             color: Color::srgb(1.0, 0.96, 0.9),
+            // Shadows are disabled because shadow-map resolution at the
+            // draw distances used by this game would produce unacceptable
+            // aliasing artefacts with the current Bevy renderer.
             // shadows_enabled: true,
             ..default()
         },

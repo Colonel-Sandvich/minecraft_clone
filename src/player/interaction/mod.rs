@@ -10,8 +10,8 @@ use crate::{
     world::{
         ACTOR_LAYER, WORLD_LAYER,
         chunk::{
-            Chunk, ChunkBlockCounts, ChunkNeedsColliderRebuild, ChunkNeedsMeshRebuild,
-            ChunkNeedsSave, chunk_neighbor_offsets_for_block,
+            Chunk, ChunkBlockCounts, ChunkNeedsColliderRebuild, ChunkNeedsLightRebuild,
+            ChunkNeedsMeshRebuild, ChunkNeedsSave, chunk_neighbor_offsets_for_block,
         },
         dimension::Dimension,
     },
@@ -203,6 +203,7 @@ fn apply_block_interaction_requests(
                     ChunkNeedsSave,
                     ChunkNeedsMeshRebuild,
                     ChunkNeedsColliderRebuild,
+                    ChunkNeedsLightRebuild,
                 ));
                 mark_boundary_neighbor_meshes_dirty(&mut commands, &dimension, pos);
             }
@@ -230,6 +231,7 @@ fn apply_block_interaction_requests(
                     ChunkNeedsSave,
                     ChunkNeedsMeshRebuild,
                     ChunkNeedsColliderRebuild,
+                    ChunkNeedsLightRebuild,
                 ));
                 mark_boundary_neighbor_meshes_dirty(&mut commands, &dimension, pos);
             }

@@ -44,7 +44,17 @@ impl Plugin for AppPlugin {
         .add_plugins(BlockPlugin)
         .add_plugins(BlockTextureAtlasPlugin)
         .add_plugins(MaterialPlugin::<BlockMaterial>::default())
-        .insert_resource(WorldConfig::development_sqlite(WorldMetadata::default()))
+        .insert_resource({
+            let metadata = WorldMetadata::default();
+            #[cfg(feature = "turso-store")]
+            {
+                WorldConfig::development_turso(metadata)
+            }
+            #[cfg(not(feature = "turso-store"))]
+            {
+                WorldConfig::development_sqlite(metadata)
+            }
+        })
         .add_plugins(WorldPlugin)
         .add_plugins(UIPlugin)
         .insert_resource(Time::<Fixed>::from_hz(FIXED_TICK_RATE_HZ))

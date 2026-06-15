@@ -4,6 +4,8 @@ use super::*;
 use bevy::time::TimeUpdateStrategy;
 use std::time::Duration;
 
+/// Test helper: counts interaction requests sent via bevy messages
+/// so that tests can assert the count of pick/break/place actions.
 #[derive(Resource, Default)]
 struct InteractionCounts {
     pick: usize,
