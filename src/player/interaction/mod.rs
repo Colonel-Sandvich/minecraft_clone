@@ -5,7 +5,8 @@ use avian3d::{
 use bevy::{color::palettes::basic, input::InputSystems, prelude::*};
 
 use crate::{
-    block::{BlockPos, BlockType, BlockUpdateKind, BlockUpdateMessage},
+    block::{BlockPos, BlockUpdateKind, BlockUpdateMessage},
+    ui::Hotbar,
     world::{
         ACTOR_LAYER, WORLD_LAYER,
         chunk::{
@@ -23,7 +24,6 @@ pub struct BlockInteractionPlugin;
 impl Plugin for BlockInteractionPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<CurrentBlockTarget>()
-            .init_resource::<SelectedBlock>()
             .add_message::<BlockInteractionRequest>()
             .add_systems(PreUpdate, update_block_target.after(InputSystems))
             .add_systems(
@@ -48,15 +48,6 @@ pub struct CurrentBlockTarget(pub Option<BlockTarget>);
 pub struct BlockTarget {
     pub hit_block: BlockPos,
     pub adjacent_block: BlockPos,
-}
-
-#[derive(Resource, Deref, DerefMut)]
-pub struct SelectedBlock(pub BlockType);
-
-impl Default for SelectedBlock {
-    fn default() -> Self {
-        Self(BlockType::Glass)
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -176,7 +167,7 @@ fn apply_block_interaction_requests(
     mut chunks: Query<&mut Chunk>,
     mut meta_q: Query<&mut ChunkBlockCounts>,
     mut block_updates: MessageWriter<BlockUpdateMessage>,
-    mut selected_block: ResMut<SelectedBlock>,
+    mut hotbar: ResMut<Hotbar>,
     spatial_query: SpatialQuery,
 ) {
     for request in requests.read().copied() {
@@ -193,7 +184,7 @@ fn apply_block_interaction_requests(
 
         match request.kind {
             BlockInteractionKind::Pick => {
-                selected_block.0 = chunk.get_block(pos.block);
+                hotbar.set_selected_block(chunk.get_block(pos.block));
             }
             BlockInteractionKind::Break => {
                 let Some(delta) = chunk.break_block(pos.block) else {
@@ -220,7 +211,10 @@ fn apply_block_interaction_requests(
                     continue;
                 }
 
-                let Some(delta) = chunk.place_block(pos.block, selected_block.0) else {
+                let Some(block) = hotbar.selected_block() else {
+                    continue;
+                };
+                let Some(delta) = chunk.place_block(pos.block, block) else {
                     continue;
                 };
                 if let Ok(mut meta) = meta_q.get_mut(chunk_entity) {
@@ -230,7 +224,7 @@ fn apply_block_interaction_requests(
                 block_updates.write(BlockUpdateMessage {
                     chunk: chunk_entity,
                     pos,
-                    kind: BlockUpdateKind::Place(selected_block.0),
+                    kind: BlockUpdateKind::Place(block),
                 });
                 commands.entity(chunk_entity).insert((
                     ChunkNeedsSave,

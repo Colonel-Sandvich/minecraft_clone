@@ -84,10 +84,11 @@ fn setup(
             alpha_mode: AlphaMode::Opaque,
         }),
         cutout: materials.add(BlockMaterial {
-            texture: Some(nearest_texture),
+            texture: Some(nearest_texture.clone()),
             tile_size,
             alpha_mode: AlphaMode::Mask(0.5),
         }),
+        atlas: nearest_texture,
     });
 
     commands.insert_resource(BlockTextureMap(block_texture_map));
@@ -95,8 +96,9 @@ fn setup(
 
 #[derive(Resource)]
 pub struct BlockStandardMaterials {
-    opaque: Handle<BlockMaterial>,
-    cutout: Handle<BlockMaterial>,
+    pub opaque: Handle<BlockMaterial>,
+    pub cutout: Handle<BlockMaterial>,
+    pub atlas: Handle<Image>,
 }
 
 impl BlockStandardMaterials {
@@ -112,6 +114,7 @@ impl BlockStandardMaterials {
         Self {
             opaque: Handle::default(),
             cutout: Handle::default(),
+            atlas: Handle::default(),
         }
     }
 }

@@ -20,6 +20,7 @@ itertools = "0.14.0"
 bevy_framepace = "0.21.0"
 bevy_shader = "0.18.1"
 bevy_mesh = "0.18.1"
+image = "0.25"
 
 [dev-dependencies]
 criterion = "0.8.2"

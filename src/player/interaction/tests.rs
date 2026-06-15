@@ -1,3 +1,5 @@
+use crate::block::BlockType;
+
 use super::*;
 use bevy::time::TimeUpdateStrategy;
 use std::time::Duration;
