@@ -1,8 +1,11 @@
-use std::{io::ErrorKind, path::Path};
+use std::{io::ErrorKind, path::{Path, PathBuf}};
 
 use bevy::prelude::*;
 
-use crate::world::{chunk::Chunk, generation::WorldMetadata};
+use crate::world::{
+    chunk::{Chunk, ChunkHeightmap, ChunkLight},
+    generation::WorldMetadata,
+};
 
 use super::{
     ChunkStore, ChunkStoreError, ChunkStoreResult, SQL_CREATE_WORLD_METADATA,
@@ -26,6 +29,18 @@ WHERE x = ?1 AND z = ?2 AND y = ?3";
 const SQL_INSERT_CHUNK: &str = "INSERT INTO chunks (
     x, z, y, blocks
 ) VALUES (?1, ?2, ?3, ?4)";
+
+const SQL_CREATE_COLUMN_HEIGHTMAPS: &str = "CREATE TABLE IF NOT EXISTS column_heightmaps (
+    x INTEGER NOT NULL,
+    z INTEGER NOT NULL,
+    heightmap BLOB NOT NULL,
+    PRIMARY KEY (x, z)
+)";
+const SQL_SELECT_COLUMN_HEIGHTMAP: &str =
+    "SELECT heightmap FROM column_heightmaps WHERE x = ?1 AND z = ?2";
+const SQL_UPSERT_COLUMN_HEIGHTMAP: &str = "INSERT INTO column_heightmaps (x, z, heightmap)
+    VALUES (?1, ?2, ?3)
+    ON CONFLICT(x, z) DO UPDATE SET heightmap = excluded.heightmap";
 
 pub struct TursoChunkStore {
     database: turso::Database,
@@ -66,6 +81,7 @@ impl TursoChunkStore {
         let connection = self.database.connect()?;
         connection.execute(SQL_CREATE_WORLD_METADATA, ()).await?;
         connection.execute(SQL_CREATE_CHUNKS, ()).await?;
+        connection.execute(SQL_CREATE_COLUMN_HEIGHTMAPS, ()).await?;
 
         for (key, value) in metadata_entries(metadata) {
             ensure_metadata_value(&connection, key, value).await?;
@@ -80,22 +96,31 @@ impl ChunkStore for TursoChunkStore {
         &self.metadata
     }
 
-    fn load_chunk(&self, pos: IVec3) -> ChunkStoreResult<Option<Chunk>> {
+    fn load_chunk(
+        &self,
+        pos: IVec3,
+    ) -> ChunkStoreResult<Option<(Chunk, ChunkLight, ChunkHeightmap)>> {
+        let fmt = self.metadata.chunk_format_version;
         self.runtime.block_on(async {
             let connection = self.database.connect()?;
-            let mut rows = connection
-                .query(SQL_SELECT_CHUNK, (pos.x, pos.z, pos.y))
-                .await?;
-            let Some(row) = rows.next().await? else {
-                return Ok(None);
+            let bytes = {
+                let mut rows = connection
+                    .query(SQL_SELECT_CHUNK, (pos.x, pos.z, pos.y))
+                    .await?;
+                let Some(row) = rows.next().await? else {
+                    return Ok(None);
+                };
+                row.get::<Vec<u8>>(0)?
             };
-            let bytes = row.get::<Vec<u8>>(0)?;
+            let (chunk, light) = Chunk::try_from_storage_bytes(&bytes, fmt)?;
+            let heightmap = load_column_heightmap(&connection, pos.x, pos.z).await?;
 
-            Ok(Some(Chunk::try_from_storage_bytes(&bytes)?))
+            Ok(Some((chunk, light, heightmap)))
         })
     }
 
     fn load_stored_column(&self, column: IVec2) -> ChunkStoreResult<Vec<StoredChunk>> {
+        let fmt = self.metadata.chunk_format_version;
         self.runtime.block_on(async {
             let connection = self.database.connect()?;
             let mut rows = connection
@@ -108,18 +133,26 @@ impl ChunkStore for TursoChunkStore {
             while let Some(row) = rows.next().await? {
                 let y = row.get::<i32>(0)?;
                 let bytes = row.get::<Vec<u8>>(1)?;
-                chunks.push(StoredChunk {
-                    pos: ivec3(column.x, y, column.y),
-                    chunk: Chunk::try_from_storage_bytes(&bytes)?,
-                });
+                let (chunk, light) = Chunk::try_from_storage_bytes(&bytes, fmt)?;
+            chunks.push(StoredChunk {
+                pos: ivec3(column.x, y, column.y),
+                chunk,
+                light,
+            });
             }
 
             Ok(chunks)
         })
     }
 
-    fn save_chunk(&self, pos: IVec3, chunk: &Chunk) -> ChunkStoreResult<()> {
+    fn save_chunk(
+        &self,
+        pos: IVec3,
+        chunk: &Chunk,
+        heightmap: &ChunkHeightmap,
+    ) -> ChunkStoreResult<()> {
         let blocks = chunk.to_storage_bytes();
+        let heightmap_bytes = heightmap.to_bytes();
 
         self.runtime.block_on(async {
             let mut connection = self.database.connect()?;
@@ -132,6 +165,13 @@ impl ChunkStore for TursoChunkStore {
                     .execute(SQL_INSERT_CHUNK, (pos.x, pos.z, pos.y, blocks))
                     .await?;
             }
+            save_column_heightmap(
+                &transaction,
+                pos.x,
+                pos.z,
+                &heightmap_bytes,
+            )
+            .await?;
             transaction.commit().await?;
 
             Ok(())
@@ -171,4 +211,37 @@ fn path_to_string(path: &Path) -> ChunkStoreResult<String> {
             kind: ErrorKind::InvalidInput,
             message: format!("database path is not valid UTF-8: {}", path.display()),
         })
+}
+
+pub fn development_turso_path(metadata: &WorldMetadata) -> PathBuf {
+    PathBuf::from("saves")
+        .join("dev")
+        .join(format!("seed-{:016x}.turso", metadata.seed))
+}
+
+async fn load_column_heightmap(
+    connection: &turso::Connection,
+    x: i32,
+    z: i32,
+) -> ChunkStoreResult<ChunkHeightmap> {
+    let mut rows = connection
+        .query(SQL_SELECT_COLUMN_HEIGHTMAP, (x, z))
+        .await?;
+    let Some(row) = rows.next().await? else {
+        return Ok(ChunkHeightmap::default());
+    };
+    let bytes = row.get::<Vec<u8>>(0)?;
+    Ok(ChunkHeightmap::from_bytes(&bytes))
+}
+
+async fn save_column_heightmap(
+    connection: &turso::Connection,
+    x: i32,
+    z: i32,
+    heightmap_bytes: &[u8],
+) -> ChunkStoreResult<()> {
+    connection
+        .execute(SQL_UPSERT_COLUMN_HEIGHTMAP, (x, z, heightmap_bytes.to_vec()))
+        .await?;
+    Ok(())
 }

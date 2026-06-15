@@ -4,7 +4,7 @@ use bevy::prelude::*;
 use rusqlite::ErrorCode;
 
 use crate::world::{
-    chunk::Chunk,
+    chunk::{Chunk, ChunkHeightmap, ChunkLight},
     generation::generate_chunk,
     storage::{ChunkRepository, ChunkStoreError},
 };
@@ -83,6 +83,8 @@ impl std::fmt::Display for ChunkLoadErrorKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LoadedChunk {
     pub chunk: Chunk,
+    pub light: ChunkLight,
+    pub heightmap: ChunkHeightmap,
     pub source: ChunkLoadSource,
 }
 
@@ -97,20 +99,25 @@ pub fn load_or_generate_chunk(
     repository: ChunkRepository,
 ) -> ChunkLoadOutput {
     match repository.load_chunk(request.pos) {
-        Ok(Some(chunk)) => ChunkLoadOutput {
+        Ok(Some((chunk, light, heightmap))) => ChunkLoadOutput {
             pos: request.pos,
             result: Ok(LoadedChunk {
                 chunk,
+                light,
+                heightmap,
                 source: ChunkLoadSource::Stored,
             }),
         },
         Ok(None) => {
             let chunk = generate_chunk(repository.metadata(), request.pos);
+            let light = ChunkLight::default();
 
             ChunkLoadOutput {
                 pos: request.pos,
                 result: Ok(LoadedChunk {
                     chunk,
+                    light,
+                    heightmap: ChunkHeightmap::default(),
                     source: ChunkLoadSource::Generated,
                 }),
             }
@@ -193,12 +200,25 @@ mod tests {
         let repository = ChunkRepository::new(InMemoryChunkStore::new(metadata.clone()));
         let pos = ivec3(3, 0, -1);
 
-        repository.save_chunk(pos, &Chunk::default()).unwrap();
+        repository
+            .save_chunk(
+                pos,
+                &Chunk::default(),
+                &ChunkHeightmap::default(),
+            )
+            .unwrap();
 
         let loaded = load_or_generate_chunk(ChunkLoadRequest::new(pos), repository.clone());
 
         assert_eq!(repository.metadata(), &metadata);
         assert_eq!(loaded.result.unwrap().source, ChunkLoadSource::Stored);
+        assert_eq!(
+            repository
+                .load_chunk(pos)
+                .unwrap()
+                .map(|(c, _l, _h)| c),
+            Some(Chunk::default()),
+        );
     }
 
     #[test]

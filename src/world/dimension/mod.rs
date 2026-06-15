@@ -1,4 +1,5 @@
 mod lifecycle;
+mod light;
 mod persistence;
 mod tasks;
 mod view;
@@ -9,6 +10,7 @@ use crate::game_state::{GameState, Playing};
 
 use self::{
     lifecycle::{finish_chunk_load_tasks, maintain_chunk_view, start_chunk_load_tasks},
+    light::rebuild_chunk_light,
     persistence::{
         ChunkSaveBudget, ChunkSaveTasks, finish_chunk_save_tasks, start_chunk_save_tasks,
     },
@@ -67,6 +69,7 @@ impl Plugin for DimensionPlugin {
                 maintain_chunk_view,
                 start_chunk_load_tasks,
                 finish_chunk_load_tasks,
+                rebuild_chunk_light,
             )
                 .chain()
                 .in_set(Playing),

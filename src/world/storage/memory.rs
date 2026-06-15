@@ -2,7 +2,10 @@ use std::{collections::HashMap, sync::Mutex};
 
 use bevy::prelude::*;
 
-use crate::world::{chunk::Chunk, generation::WorldMetadata};
+use crate::world::{
+    chunk::{Chunk, ChunkHeightmap, ChunkLight},
+    generation::WorldMetadata,
+};
 
 use super::{ChunkStore, ChunkStoreError, ChunkStoreResult, StoredChunk};
 
@@ -14,6 +17,7 @@ pub struct InMemoryChunkStore {
 #[derive(Default)]
 struct InMemoryChunkStoreInner {
     chunks: HashMap<IVec3, Vec<u8>>,
+    column_heightmaps: HashMap<(i32, i32), Vec<u8>>,
 }
 
 impl InMemoryChunkStore {
@@ -36,7 +40,10 @@ impl ChunkStore for InMemoryChunkStore {
         &self.metadata
     }
 
-    fn load_chunk(&self, pos: IVec3) -> ChunkStoreResult<Option<Chunk>> {
+    fn load_chunk(
+        &self,
+        pos: IVec3,
+    ) -> ChunkStoreResult<Option<(Chunk, ChunkLight, ChunkHeightmap)>> {
         let inner = self
             .inner
             .lock()
@@ -48,7 +55,17 @@ impl ChunkStore for InMemoryChunkStore {
             return Ok(None);
         };
 
-        Ok(Some(Chunk::try_from_storage_bytes(bytes)?))
+        let (chunk, light) = Chunk::try_from_storage_bytes(
+            bytes,
+            self.metadata.chunk_format_version,
+        )?;
+        let heightmap = inner
+            .column_heightmaps
+            .get(&(pos.x, pos.z))
+            .map(|b| ChunkHeightmap::from_bytes(b))
+            .unwrap_or_default();
+
+        Ok(Some((chunk, light, heightmap)))
     }
 
     fn load_stored_column(&self, column: IVec2) -> ChunkStoreResult<Vec<StoredChunk>> {
@@ -59,15 +76,18 @@ impl ChunkStore for InMemoryChunkStore {
                 store: "in-memory chunk store",
             })?;
 
+        let fmt = self.metadata.chunk_format_version;
         let mut chunks = inner
             .chunks
             .iter()
             .filter(|(pos, _)| pos.x == column.x && pos.z == column.y)
             .map(|(pos, bytes)| {
-                Ok(StoredChunk {
-                    pos: *pos,
-                    chunk: Chunk::try_from_storage_bytes(bytes)?,
-                })
+                let (chunk, light) = Chunk::try_from_storage_bytes(bytes, fmt)?;
+            Ok(StoredChunk {
+                pos: *pos,
+                chunk,
+                light,
+            })
             })
             .collect::<ChunkStoreResult<Vec<_>>>()?;
         chunks.sort_by_key(|chunk| chunk.pos.y);
@@ -75,7 +95,12 @@ impl ChunkStore for InMemoryChunkStore {
         Ok(chunks)
     }
 
-    fn save_chunk(&self, pos: IVec3, chunk: &Chunk) -> ChunkStoreResult<()> {
+    fn save_chunk(
+        &self,
+        pos: IVec3,
+        chunk: &Chunk,
+        heightmap: &ChunkHeightmap,
+    ) -> ChunkStoreResult<()> {
         let mut inner = self
             .inner
             .lock()
@@ -84,6 +109,9 @@ impl ChunkStore for InMemoryChunkStore {
             })?;
 
         inner.chunks.insert(pos, chunk.to_storage_bytes());
+        inner
+            .column_heightmaps
+            .insert((pos.x, pos.z), heightmap.to_bytes());
         Ok(())
     }
 }
@@ -109,7 +137,10 @@ impl ChunkStore for NoopChunkStore {
         &self.metadata
     }
 
-    fn load_chunk(&self, _pos: IVec3) -> ChunkStoreResult<Option<Chunk>> {
+    fn load_chunk(
+        &self,
+        _pos: IVec3,
+    ) -> ChunkStoreResult<Option<(Chunk, ChunkLight, ChunkHeightmap)>> {
         Ok(None)
     }
 
@@ -117,7 +148,12 @@ impl ChunkStore for NoopChunkStore {
         Ok(Vec::new())
     }
 
-    fn save_chunk(&self, _pos: IVec3, _chunk: &Chunk) -> ChunkStoreResult<()> {
+    fn save_chunk(
+        &self,
+        _pos: IVec3,
+        _chunk: &Chunk,
+        _heightmap: &ChunkHeightmap,
+    ) -> ChunkStoreResult<()> {
         Ok(())
     }
 }

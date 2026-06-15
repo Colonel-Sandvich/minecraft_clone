@@ -10,8 +10,9 @@ use crate::{
     player::Player,
     world::{
         chunk::{
-            CHUNK_SIZE, ChunkNeedsColliderRebuild, ChunkNeedsMeshRebuild, ChunkNeedsSave,
-            ChunkPosition, chunk_neighbor_offsets,
+            CHUNK_SIZE, ChunkNeedsColliderRebuild,
+            ChunkNeedsLightRebuild, ChunkNeedsMeshRebuild, ChunkNeedsSave, ChunkPosition,
+            chunk_neighbor_offsets,
         },
         generation::WorldMetadata,
         loading::{ChunkLoadRequest, load_or_generate_chunk},
@@ -165,13 +166,19 @@ pub(crate) fn finish_chunk_load_tasks(
 
         load_tasks.record_success(pos);
         let meta = loaded.chunk.compute_block_counts();
+        let chunk_light = loaded.light;
+        let heightmap = loaded.heightmap;
+
         let mut entity_commands = commands.spawn((
             ChildOf(dimension_entity),
             ChunkPosition(pos),
             loaded.chunk,
+            chunk_light,
+            heightmap,
             meta,
             Transform::from_translation(pos.as_vec3().mul(CHUNK_SIZE as f32)),
             Visibility::default(),
+            ChunkNeedsLightRebuild,
         ));
         if meta.rendered > 0 {
             entity_commands.insert((ChunkNeedsMeshRebuild, ChunkNeedsColliderRebuild));
@@ -198,7 +205,7 @@ mod tests {
     use super::*;
     use bevy::platform::collections::HashMap;
 
-    use crate::world::chunk::Chunk;
+    use crate::world::chunk::{Chunk, ChunkHeightmap, ChunkLight};
     use crate::world::loading::{ChunkLoadOutput, ChunkLoadSource, LoadedChunk};
     use crate::world::storage::{
         ChunkStore, ChunkStoreError, ChunkStoreResult, InMemoryChunkStore,
@@ -274,6 +281,8 @@ mod tests {
             pos,
             result: Ok(LoadedChunk {
                 chunk: Chunk::default(),
+                light: ChunkLight::default(),
+                heightmap: ChunkHeightmap::default(),
                 source: ChunkLoadSource::Generated,
             }),
         };
@@ -487,7 +496,10 @@ mod tests {
             &self.metadata
         }
 
-        fn load_chunk(&self, _pos: IVec3) -> ChunkStoreResult<Option<Chunk>> {
+        fn load_chunk(
+            &self,
+            _pos: IVec3,
+        ) -> ChunkStoreResult<Option<(Chunk, ChunkLight, ChunkHeightmap)>> {
             Err(ChunkStoreError::WorldMetadataMismatch {
                 key: "seed".to_owned(),
                 expected: "1".to_owned(),
@@ -495,7 +507,12 @@ mod tests {
             })
         }
 
-        fn save_chunk(&self, _pos: IVec3, _chunk: &Chunk) -> ChunkStoreResult<()> {
+        fn save_chunk(
+            &self,
+            _pos: IVec3,
+            _chunk: &Chunk,
+            _heightmap: &ChunkHeightmap,
+        ) -> ChunkStoreResult<()> {
             Ok(())
         }
     }
@@ -550,11 +567,19 @@ mod tests {
             &self.metadata
         }
 
-        fn load_chunk(&self, _pos: IVec3) -> ChunkStoreResult<Option<Chunk>> {
+        fn load_chunk(
+            &self,
+            _pos: IVec3,
+        ) -> ChunkStoreResult<Option<(Chunk, ChunkLight, ChunkHeightmap)>> {
             Ok(None)
         }
 
-        fn save_chunk(&self, _pos: IVec3, _chunk: &Chunk) -> ChunkStoreResult<()> {
+        fn save_chunk(
+            &self,
+            _pos: IVec3,
+            _chunk: &Chunk,
+            _heightmap: &ChunkHeightmap,
+        ) -> ChunkStoreResult<()> {
             Err(ChunkStoreError::Io {
                 kind: std::io::ErrorKind::Other,
                 message: "intentional test failure".to_owned(),
@@ -579,7 +604,12 @@ mod tests {
 
         let chunk_entity = app
             .world_mut()
-            .spawn((ChunkPosition(pos), Chunk::default(), ChunkNeedsSave))
+            .spawn((
+                ChunkPosition(pos),
+                Chunk::default(),
+                ChunkLight::default(),
+                ChunkNeedsSave,
+            ))
             .id();
         let dimension_entity = app
             .world_mut()

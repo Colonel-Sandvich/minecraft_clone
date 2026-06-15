@@ -14,7 +14,7 @@ use bevy::prelude::*;
 use rusqlite::ErrorCode;
 
 use crate::world::{
-    chunk::{Chunk, ChunkDecodeError},
+    chunk::{Chunk, ChunkDecodeError, ChunkHeightmap, ChunkLight},
     generation::WorldMetadata,
 };
 
@@ -22,7 +22,7 @@ pub use memory::{InMemoryChunkStore, NoopChunkStore};
 pub use sqlite::{SqliteChunkStore, development_world_path};
 
 #[cfg(feature = "turso-store")]
-pub use turso_backend::TursoChunkStore;
+pub use turso_backend::{TursoChunkStore, development_turso_path};
 
 pub type ChunkStoreResult<T> = Result<T, ChunkStoreError>;
 
@@ -39,26 +39,39 @@ pub(crate) const SQL_INSERT_METADATA_VALUE: &str =
 pub struct StoredChunk {
     pub pos: IVec3,
     pub chunk: Chunk,
+    pub light: ChunkLight,
 }
 
 pub trait ChunkStore: Send + Sync + 'static {
     fn metadata(&self) -> &WorldMetadata;
 
-    fn load_chunk(&self, pos: IVec3) -> ChunkStoreResult<Option<Chunk>>;
+    fn load_chunk(
+        &self,
+        pos: IVec3,
+    ) -> ChunkStoreResult<Option<(Chunk, ChunkLight, ChunkHeightmap)>>;
 
     fn load_stored_column(&self, column: IVec2) -> ChunkStoreResult<Vec<StoredChunk>> {
         let mut chunks = Vec::new();
         for y in 0..self.metadata().height_chunks as i32 {
             let pos = ivec3(column.x, y, column.y);
-            if let Some(chunk) = self.load_chunk(pos)? {
-                chunks.push(StoredChunk { pos, chunk });
+            if let Some((chunk, light, _heightmap)) = self.load_chunk(pos)? {
+                chunks.push(StoredChunk {
+                    pos,
+                    chunk,
+                    light,
+                });
             }
         }
 
         Ok(chunks)
     }
 
-    fn save_chunk(&self, pos: IVec3, chunk: &Chunk) -> ChunkStoreResult<()>;
+    fn save_chunk(
+        &self,
+        pos: IVec3,
+        chunk: &Chunk,
+        heightmap: &ChunkHeightmap,
+    ) -> ChunkStoreResult<()>;
 }
 
 #[derive(Resource, Clone)]
@@ -80,7 +93,10 @@ impl ChunkRepository {
         &self.metadata
     }
 
-    pub fn load_chunk(&self, pos: IVec3) -> ChunkStoreResult<Option<Chunk>> {
+    pub fn load_chunk(
+        &self,
+        pos: IVec3,
+    ) -> ChunkStoreResult<Option<(Chunk, ChunkLight, ChunkHeightmap)>> {
         self.store.load_chunk(pos)
     }
 
@@ -88,8 +104,13 @@ impl ChunkRepository {
         self.store.load_stored_column(column)
     }
 
-    pub fn save_chunk(&self, pos: IVec3, chunk: &Chunk) -> ChunkStoreResult<()> {
-        self.store.save_chunk(pos, chunk)
+    pub fn save_chunk(
+        &self,
+        pos: IVec3,
+        chunk: &Chunk,
+        heightmap: &ChunkHeightmap,
+    ) -> ChunkStoreResult<()> {
+        self.store.save_chunk(pos, chunk, heightmap)
     }
 }
 

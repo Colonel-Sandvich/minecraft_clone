@@ -5,7 +5,7 @@ use bevy::{
 };
 
 use crate::world::{
-    chunk::{Chunk, ChunkNeedsSave, ChunkPosition},
+    chunk::{Chunk, ChunkHeightmap, ChunkNeedsSave, ChunkPosition},
     storage::{ChunkRepository, ChunkStoreError, ChunkStoreResult},
 };
 
@@ -88,6 +88,7 @@ struct ChunkSaveRequest {
     entity: Entity,
     pos: IVec3,
     chunk: Chunk,
+    heightmap: ChunkHeightmap,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -95,13 +96,14 @@ struct ChunkSaveOutput {
     entity: Entity,
     pos: IVec3,
     saved_chunk: Chunk,
+    saved_heightmap: ChunkHeightmap,
     result: ChunkStoreResult<()>,
 }
 
 pub(crate) fn finish_chunk_save_tasks(
     mut commands: Commands,
     mut save_tasks: ResMut<ChunkSaveTasks>,
-    chunks: Query<(&Chunk, Option<&ChunkNeedsSave>)>,
+    chunks: Query<(&Chunk, &ChunkHeightmap, Option<&ChunkNeedsSave>)>,
 ) {
     let mut completed = Vec::new();
     for (entity, task) in save_tasks.tasks.iter_mut() {
@@ -120,12 +122,14 @@ pub(crate) fn finish_chunk_save_tasks(
 
         match output.result {
             Ok(()) => {
-                let Ok((chunk, Some(_))) = chunks.get(entity) else {
+                let Ok((chunk, heightmap, Some(_))) = chunks.get(entity) else {
                     save_tasks.record_success(entity);
                     continue;
                 };
 
-                if *chunk == output.saved_chunk {
+                if *chunk == output.saved_chunk
+                    && *heightmap == output.saved_heightmap
+                {
                     commands.entity(entity).remove::<ChunkNeedsSave>();
                     save_tasks.record_success(entity);
                 }
@@ -139,7 +143,15 @@ pub(crate) fn finish_chunk_save_tasks(
 }
 
 pub(crate) fn start_chunk_save_tasks(
-    dirty_chunks: Query<(Entity, &Chunk, &ChunkPosition), With<ChunkNeedsSave>>,
+    dirty_chunks: Query<
+        (
+            Entity,
+            &Chunk,
+            &ChunkHeightmap,
+            &ChunkPosition,
+        ),
+        With<ChunkNeedsSave>,
+    >,
     repository: Res<ChunkRepository>,
     save_budget: Res<ChunkSaveBudget>,
     mut save_tasks: ResMut<ChunkSaveTasks>,
@@ -157,7 +169,7 @@ pub(crate) fn start_chunk_save_tasks(
 
     let thread_pool = AsyncComputeTaskPool::get();
     let mut started = 0;
-    for (entity, chunk, position) in dirty_chunks.iter() {
+    for (entity, chunk, heightmap, position) in dirty_chunks.iter() {
         if started >= available_slots {
             break;
         }
@@ -169,6 +181,7 @@ pub(crate) fn start_chunk_save_tasks(
             entity,
             pos: position.0,
             chunk: chunk.clone(),
+            heightmap: *heightmap,
         };
         let repository = repository.clone();
         let task = thread_pool.spawn(async move { save_chunk_snapshot(request, repository) });
@@ -178,12 +191,17 @@ pub(crate) fn start_chunk_save_tasks(
 }
 
 fn save_chunk_snapshot(request: ChunkSaveRequest, repository: ChunkRepository) -> ChunkSaveOutput {
-    let result = repository.save_chunk(request.pos, &request.chunk);
+    let result = repository.save_chunk(
+        request.pos,
+        &request.chunk,
+        &request.heightmap,
+    );
 
     ChunkSaveOutput {
         entity: request.entity,
         pos: request.pos,
         saved_chunk: request.chunk,
+        saved_heightmap: request.heightmap,
         result,
     }
 }
@@ -194,6 +212,7 @@ mod tests {
     use crate::{
         block::BlockType,
         world::{
+            chunk::{ChunkHeightmap, ChunkLight},
             generation::WorldMetadata,
             storage::{ChunkRepository, ChunkStore, ChunkStoreError, InMemoryChunkStore},
         },
@@ -234,11 +253,19 @@ mod tests {
             &self.metadata
         }
 
-        fn load_chunk(&self, _pos: IVec3) -> ChunkStoreResult<Option<Chunk>> {
+        fn load_chunk(
+            &self,
+            _pos: IVec3,
+        ) -> ChunkStoreResult<Option<(Chunk, ChunkLight, ChunkHeightmap)>> {
             Ok(None)
         }
 
-        fn save_chunk(&self, _pos: IVec3, _chunk: &Chunk) -> ChunkStoreResult<()> {
+        fn save_chunk(
+            &self,
+            _pos: IVec3,
+            _chunk: &Chunk,
+            _heightmap: &ChunkHeightmap,
+        ) -> ChunkStoreResult<()> {
             Err(test_save_error())
         }
     }
@@ -280,14 +307,21 @@ mod tests {
 
         let chunk_entity = app
             .world_mut()
-            .spawn((ChunkPosition(pos), chunk.clone(), ChunkNeedsSave))
+            .spawn((
+                ChunkPosition(pos),
+                chunk.clone(),
+                ChunkLight::default(),
+                ChunkHeightmap::default(),
+                ChunkNeedsSave,
+            ))
             .id();
 
         update_until(&mut app, |world| {
             world.get::<ChunkNeedsSave>(chunk_entity).is_none()
         });
 
-        assert_eq!(repository.load_chunk(pos).unwrap(), Some(chunk));
+        let (loaded, _light, _heightmap) = repository.load_chunk(pos).unwrap().unwrap();
+        assert_eq!(loaded, chunk);
     }
 
     #[test]
@@ -301,11 +335,18 @@ mod tests {
             .insert_resource(ChunkSaveBudget(1));
         add_chunk_save_systems(&mut app);
 
-        app.world_mut()
-            .spawn((ChunkPosition(IVec3::ZERO), Chunk::default(), ChunkNeedsSave));
+        app.world_mut().spawn((
+            ChunkPosition(IVec3::ZERO),
+            Chunk::default(),
+            ChunkLight::default(),
+            ChunkHeightmap::default(),
+            ChunkNeedsSave,
+        ));
         app.world_mut().spawn((
             ChunkPosition(ivec3(1, 0, 0)),
             Chunk::default(),
+            ChunkLight::default(),
+            ChunkHeightmap::default(),
             ChunkNeedsSave,
         ));
 
@@ -331,7 +372,7 @@ mod tests {
 
         let chunk_entity = app
             .world_mut()
-            .spawn((ChunkPosition(pos), chunk, ChunkNeedsSave))
+            .spawn((ChunkPosition(pos), chunk, ChunkLight::default(), ChunkHeightmap::default(), ChunkNeedsSave))
             .id();
 
         app.update();
@@ -346,7 +387,8 @@ mod tests {
 
         let mut expected = Chunk::default();
         expected.blocks[0][0][0] = BlockType::Stone;
-        assert_eq!(repository.load_chunk(pos).unwrap(), Some(expected));
+        let (loaded, _light, _heightmap) = repository.load_chunk(pos).unwrap().unwrap();
+        assert_eq!(loaded, expected);
     }
 
     #[test]
@@ -364,7 +406,13 @@ mod tests {
 
         let chunk_entity = app
             .world_mut()
-            .spawn((ChunkPosition(IVec3::ZERO), Chunk::default(), ChunkNeedsSave))
+            .spawn((
+                ChunkPosition(IVec3::ZERO),
+                Chunk::default(),
+                ChunkLight::default(),
+                ChunkHeightmap::default(),
+                ChunkNeedsSave,
+            ))
             .id();
 
         update_until(&mut app, |world| {
