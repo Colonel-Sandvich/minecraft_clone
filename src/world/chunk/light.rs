@@ -404,11 +404,13 @@ fn propagate_sky_decrease(
             let target = entry.level.saturating_sub(attenuation);
 
             if n_current > target {
+                let opposite_idx = dir_idx ^ 1;
+                let next_dirs = ALL_DIRECTIONS_BITSET ^ (1 << opposite_idx);
                 increase_queue.push_back(IncreaseEntry {
                     chunk: n_chunk,
                     local: n_local,
                     level: n_current,
-                    directions: ALL_DIRECTIONS_BITSET,
+                    directions: next_dirs,
                 });
             }
 
@@ -471,11 +473,13 @@ fn propagate_block_decrease(
             let target = entry.level.saturating_sub(attenuation);
 
             if n_current > target {
+                let opposite_idx = dir_idx ^ 1;
+                let next_dirs = ALL_DIRECTIONS_BITSET ^ (1 << opposite_idx);
                 increase_queue.push_back(IncreaseEntry {
                     chunk: n_chunk,
                     local: n_local,
                     level: n_current,
-                    directions: ALL_DIRECTIONS_BITSET,
+                    directions: next_dirs,
                 });
             }
 
@@ -666,6 +670,25 @@ pub fn compute_block_light(
         &mut increase_queue,
         dirty_neighbors,
     );
+
+    // When no center emitters exist, clear block light from all
+    // loaded neighbors — they can no longer receive any light from
+    // the center. (Partial source removal where some emitters remain
+    // is handled less precisely; future work can add per-face
+    // decrease propagation.)
+    let center_lit = (0..CHUNK_SIZE).any(|x| {
+        (0..CHUNK_SIZE).any(|z| {
+            (0..CHUNK_SIZE).any(|y| {
+                center_light.block_light(uvec3(x as u32, y as u32, z as u32)) > 0
+            })
+        })
+    });
+    if !center_lit {
+        for (offset, light) in lights.iter_mut() {
+            light.reset_all_block_light();
+            *dirty_neighbors |= 1 << offset_to_bit_index(*offset);
+        }
+    }
 }
 
 // ── Full light rebuild ─────────────────────────────────────────────────────-
@@ -1050,6 +1073,50 @@ mod tests {
         assert_eq!(right_light.block_light(uvec3(0, 8, 8)), 15);
         assert_eq!(right_light.block_light(uvec3(1, 8, 8)), 14);
         assert_eq!(modified_left.block_light(uvec3(15, 8, 8)), 14);
+    }
+
+    #[test]
+    fn block_light_decrease_when_emitter_removed() {
+        let left_chunk = Chunk::default();
+        let mut right_chunk = Chunk::default();
+        let mut right_light = ChunkLight::default();
+
+        right_chunk.blocks[0][8][8] = BlockType::Glowstone;
+
+        let blocks: HashMap<IVec3, &Chunk> =
+            HashMap::from([(ivec3(-1, 0, 0), &left_chunk)]);
+
+        // First: propagate light from Glowstone into neighbor.
+        let mut lights: HashMap<IVec3, ChunkLight> =
+            HashMap::from([(ivec3(-1, 0, 0), ChunkLight::default())]);
+        let mut dirty = 0;
+        compute_block_light(&right_chunk, &mut right_light, &blocks, &mut lights, &mut dirty);
+        let left_after_emit = lights.remove(&ivec3(-1, 0, 0)).unwrap();
+        assert_eq!(left_after_emit.block_light(uvec3(15, 8, 8)), 14);
+
+        // Second: remove Glowstone and recompute.
+        right_chunk.blocks[0][8][8] = BlockType::Air;
+        let mut lights: HashMap<IVec3, ChunkLight> =
+            HashMap::from([(ivec3(-1, 0, 0), left_after_emit)]);
+        let mut dirty = 0;
+        compute_block_light(&right_chunk, &mut right_light, &blocks, &mut lights, &mut dirty);
+        let left_after_remove = lights.remove(&ivec3(-1, 0, 0)).unwrap();
+
+        assert_eq!(
+            right_light.block_light(uvec3(0, 8, 8)),
+            0,
+            "emitter position should be 0"
+        );
+        assert_eq!(
+            right_light.block_light(uvec3(1, 8, 8)),
+            0,
+            "no emitter means no center propagation"
+        );
+        assert_eq!(
+            left_after_remove.block_light(uvec3(15, 8, 8)),
+            0,
+            "neighbor light must clear when emitter is removed"
+        );
     }
 
     #[test]
