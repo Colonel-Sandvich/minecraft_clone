@@ -55,7 +55,7 @@ impl Default for Hotbar {
                 Some(BlockType::Glass),
                 Some(BlockType::OakLog),
                 Some(BlockType::OakLeaves),
-                None,
+                Some(BlockType::Glowstone),
                 None,
             ],
             selected: 0,

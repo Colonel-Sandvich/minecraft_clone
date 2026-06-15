@@ -1,5 +1,5 @@
 use bevy::{platform::collections::HashMap, prelude::*};
-use strum::{Display, EnumIter, EnumString, FromRepr};
+use strum::{Display, EnumCount, EnumIter, EnumString, FromRepr};
 
 use crate::{quad::Direction, world::chunk::CHUNK_ISIZE};
 
@@ -11,7 +11,7 @@ impl Plugin for BlockPlugin {
     }
 }
 
-#[derive(Default, Clone, Copy, Debug, Display, Reflect, PartialEq, Eq, Hash, EnumIter, EnumString, FromRepr)]
+#[derive(Default, Clone, Copy, Debug, Display, Reflect, PartialEq, Eq, Hash, EnumIter, EnumCount, EnumString, FromRepr)]
 #[repr(u16)]
 #[strum(serialize_all = "snake_case")]
 pub enum BlockType {
@@ -24,6 +24,7 @@ pub enum BlockType {
     Glass,
     OakLog,
     OakLeaves,
+    Glowstone,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -81,8 +82,39 @@ impl BlockType {
     pub const fn is_full_cube(self) -> bool {
         matches!(
             self,
-            Self::Grass | Self::Dirt | Self::Stone | Self::Sand | Self::OakLog
+            Self::Grass | Self::Dirt | Self::Stone | Self::Sand | Self::OakLog | Self::Glowstone
         )
+    }
+
+    #[inline(always)]
+    pub const fn light_emission(self) -> u8 {
+        match self {
+            Self::Glowstone => 15,
+            _ => 0,
+        }
+    }
+
+    #[inline(always)]
+    pub const fn light_opacity(self) -> u8 {
+        match self {
+            Self::Air => 0,
+            Self::Glass => 0,
+            Self::OakLeaves => 1,
+            _ => 15,
+        }
+    }
+
+    #[inline(always)]
+    pub const fn is_transparent_to_sky_light(self) -> bool {
+        match self {
+            Self::Air | Self::Glass | Self::OakLeaves => true,
+            _ => false,
+        }
+    }
+
+    #[inline(always)]
+    pub const fn is_opaque_to_light(self) -> bool {
+        self.light_opacity() >= 15
     }
 
     #[inline(always)]
@@ -167,6 +199,7 @@ pub fn block_and_side_to_texture_path(block: BlockType, side: Direction) -> &'st
             _ => "textures/block/oak_log.png",
         },
         OakLeaves => "textures/block/oak_leaves.png",
+        Glowstone => "textures/block/glowstone.png",
     }
 }
 
