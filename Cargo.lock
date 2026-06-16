@@ -4713,6 +4713,7 @@ dependencies = [
  "bevy_mesh",
  "bevy_shader",
  "bincode",
+ "bytemuck",
  "criterion 0.8.2",
  "image",
  "itertools 0.14.0",
