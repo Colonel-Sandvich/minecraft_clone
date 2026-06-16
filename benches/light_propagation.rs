@@ -1,6 +1,6 @@
 use std::hint::black_box;
 
-use bevy::platform::collections::HashMap;
+use bevy::platform::collections::{HashMap, HashSet};
 use bevy::prelude::*;
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use minecraft_clone::{
@@ -8,8 +8,11 @@ use minecraft_clone::{
     world::{
         WorldMetadata,
         chunk::{
-            light::{ChunkHeightmap, ChunkLight, compute_light, light_on_place_sky, light_on_place_block},
             CHUNK_SIZE, CHUNK_VOLUME, Chunk,
+            light::{
+                ChunkHeightmap, ChunkLight, compute_light, compute_light_region,
+                light_on_place_block, light_on_place_sky,
+            },
         },
         generation::generate_chunk,
     },
@@ -71,9 +74,12 @@ fn hollow_chamber_chunk() -> Chunk {
     for x in 0..CHUNK_SIZE {
         for z in 0..CHUNK_SIZE {
             for y in 0..CHUNK_SIZE {
-                let is_surface = x == 0 || x == CHUNK_SIZE - 1
-                    || z == 0 || z == CHUNK_SIZE - 1
-                    || y == 0 || y == CHUNK_SIZE - 1;
+                let is_surface = x == 0
+                    || x == CHUNK_SIZE - 1
+                    || z == 0
+                    || z == CHUNK_SIZE - 1
+                    || y == 0
+                    || y == CHUNK_SIZE - 1;
                 if is_surface {
                     chunk.blocks[x][z][y] = BlockType::Stone;
                 }
@@ -159,15 +165,60 @@ struct FullScenario {
 
 fn full_scenarios() -> Vec<FullScenario> {
     vec![
-        FullScenario { name: "empty", center_chunk: empty_chunk(), rendered: 0, neighbors: HashMap::new() },
-        FullScenario { name: "solid_stone", center_chunk: solid_chunk(BlockType::Stone), rendered: CHUNK_VOLUME as u16, neighbors: HashMap::new() },
-        FullScenario { name: "surface_terrain", center_chunk: surface_terrain_chunk(), rendered: count_rendered_blocks(&surface_terrain_chunk()), neighbors: HashMap::new() },
-        FullScenario { name: "checkerboard_leaves", center_chunk: checkerboard_leaves_chunk(), rendered: count_rendered_blocks(&checkerboard_leaves_chunk()), neighbors: HashMap::new() },
-        FullScenario { name: "hollow_chamber", center_chunk: hollow_chamber_chunk(), rendered: count_rendered_blocks(&hollow_chamber_chunk()), neighbors: HashMap::new() },
-        FullScenario { name: "cave", center_chunk: cave_chunk(), rendered: count_rendered_blocks(&cave_chunk()), neighbors: HashMap::new() },
-        FullScenario { name: "glass_column", center_chunk: glass_column_chunk(), rendered: count_rendered_blocks(&glass_column_chunk()), neighbors: HashMap::new() },
-        FullScenario { name: "glowstone_lattice", center_chunk: glowstone_lattice_chunk(), rendered: count_rendered_blocks(&glowstone_lattice_chunk()), neighbors: HashMap::new() },
-        FullScenario { name: "surface_terrain_cross", center_chunk: surface_terrain_chunk(), rendered: count_rendered_blocks(&surface_terrain_chunk()), neighbors: full_neighborhood() },
+        FullScenario {
+            name: "empty",
+            center_chunk: empty_chunk(),
+            rendered: 0,
+            neighbors: HashMap::new(),
+        },
+        FullScenario {
+            name: "solid_stone",
+            center_chunk: solid_chunk(BlockType::Stone),
+            rendered: CHUNK_VOLUME as u16,
+            neighbors: HashMap::new(),
+        },
+        FullScenario {
+            name: "surface_terrain",
+            center_chunk: surface_terrain_chunk(),
+            rendered: count_rendered_blocks(&surface_terrain_chunk()),
+            neighbors: HashMap::new(),
+        },
+        FullScenario {
+            name: "checkerboard_leaves",
+            center_chunk: checkerboard_leaves_chunk(),
+            rendered: count_rendered_blocks(&checkerboard_leaves_chunk()),
+            neighbors: HashMap::new(),
+        },
+        FullScenario {
+            name: "hollow_chamber",
+            center_chunk: hollow_chamber_chunk(),
+            rendered: count_rendered_blocks(&hollow_chamber_chunk()),
+            neighbors: HashMap::new(),
+        },
+        FullScenario {
+            name: "cave",
+            center_chunk: cave_chunk(),
+            rendered: count_rendered_blocks(&cave_chunk()),
+            neighbors: HashMap::new(),
+        },
+        FullScenario {
+            name: "glass_column",
+            center_chunk: glass_column_chunk(),
+            rendered: count_rendered_blocks(&glass_column_chunk()),
+            neighbors: HashMap::new(),
+        },
+        FullScenario {
+            name: "glowstone_lattice",
+            center_chunk: glowstone_lattice_chunk(),
+            rendered: count_rendered_blocks(&glowstone_lattice_chunk()),
+            neighbors: HashMap::new(),
+        },
+        FullScenario {
+            name: "surface_terrain_cross",
+            center_chunk: surface_terrain_chunk(),
+            rendered: count_rendered_blocks(&surface_terrain_chunk()),
+            neighbors: full_neighborhood(),
+        },
     ]
 }
 
@@ -192,12 +243,16 @@ fn bench_full_light_compute(c: &mut Criterion) {
 
     for scenario in &scenarios {
         // Pre-build block refs (immutable, shared across iterations)
-        let blocks: HashMap<IVec3, &Chunk> = scenario.neighbors.iter()
+        let blocks: HashMap<IVec3, &Chunk> = scenario
+            .neighbors
+            .iter()
             .map(|(pos, (chunk, _light))| (*pos, chunk))
             .collect();
 
         // Template for neighbor lights (cloned fresh each iteration)
-        let neighbor_template: Vec<(IVec3, ChunkLight)> = scenario.neighbors.iter()
+        let neighbor_template: Vec<(IVec3, ChunkLight)> = scenario
+            .neighbors
+            .iter()
             .map(|(pos, (_, light))| (*pos, light.clone()))
             .collect();
 
@@ -206,8 +261,8 @@ fn bench_full_light_compute(c: &mut Criterion) {
                 let mut center_light = ChunkLight::default();
                 let mut heightmap = ChunkHeightmap::default();
                 let neighbor_lights: Vec<(IVec3, ChunkLight)> = neighbor_template.clone();
-                let mut lights_map: HashMap<IVec3, ChunkLight> = neighbor_lights.into_iter()
-                    .collect();
+                let mut lights_map: HashMap<IVec3, ChunkLight> =
+                    neighbor_lights.into_iter().collect();
                 let mut dirty = 0;
                 compute_light(
                     black_box(&scenario.center_chunk),
@@ -269,10 +324,14 @@ fn bench_incremental_light(c: &mut Criterion) {
     sky_group.throughput(Throughput::Elements(1));
 
     for scenario in &scenarios {
-        let blocks: HashMap<IVec3, &Chunk> = scenario.neighbors.iter()
+        let blocks: HashMap<IVec3, &Chunk> = scenario
+            .neighbors
+            .iter()
             .map(|(pos, (chunk, _))| (*pos, chunk))
             .collect();
-        let neighbor_template: Vec<(IVec3, ChunkLight)> = scenario.neighbors.iter()
+        let neighbor_template: Vec<(IVec3, ChunkLight)> = scenario
+            .neighbors
+            .iter()
             .map(|(pos, (_, light))| (*pos, light.clone()))
             .collect();
 
@@ -283,8 +342,8 @@ fn bench_incremental_light(c: &mut Criterion) {
                 // First do a full compute to establish baseline lighting
                 let mut heightmap = ChunkHeightmap::default();
                 let neighbor_lights: Vec<(IVec3, ChunkLight)> = neighbor_template.clone();
-                let mut lights_map: HashMap<IVec3, ChunkLight> = neighbor_lights.into_iter()
-                    .collect();
+                let mut lights_map: HashMap<IVec3, ChunkLight> =
+                    neighbor_lights.into_iter().collect();
                 let mut dirty = 0;
                 compute_light(
                     black_box(&scenario.center_chunk),
@@ -316,10 +375,14 @@ fn bench_incremental_light(c: &mut Criterion) {
     block_group.throughput(Throughput::Elements(1));
 
     for scenario in &scenarios {
-        let blocks: HashMap<IVec3, &Chunk> = scenario.neighbors.iter()
+        let blocks: HashMap<IVec3, &Chunk> = scenario
+            .neighbors
+            .iter()
             .map(|(pos, (chunk, _))| (*pos, chunk))
             .collect();
-        let neighbor_template: Vec<(IVec3, ChunkLight)> = scenario.neighbors.iter()
+        let neighbor_template: Vec<(IVec3, ChunkLight)> = scenario
+            .neighbors
+            .iter()
             .map(|(pos, (_, light))| (*pos, light.clone()))
             .collect();
 
@@ -328,8 +391,8 @@ fn bench_incremental_light(c: &mut Criterion) {
                 let mut center_light = ChunkLight::default();
                 let mut heightmap = ChunkHeightmap::default();
                 let neighbor_lights: Vec<(IVec3, ChunkLight)> = neighbor_template.clone();
-                let mut lights_map: HashMap<IVec3, ChunkLight> = neighbor_lights.into_iter()
-                    .collect();
+                let mut lights_map: HashMap<IVec3, ChunkLight> =
+                    neighbor_lights.into_iter().collect();
                 let mut dirty = 0;
                 compute_light(
                     black_box(&scenario.center_chunk),
@@ -357,5 +420,110 @@ fn bench_incremental_light(c: &mut Criterion) {
     block_group.finish();
 }
 
-criterion_group!(benches, bench_full_light_compute, bench_incremental_light);
+struct RegionScenario {
+    name: &'static str,
+    chunks: HashMap<IVec3, Chunk>,
+    targets: HashSet<IVec3>,
+    height_chunks: i32,
+}
+
+fn region_scenarios() -> Vec<RegionScenario> {
+    let metadata = WorldMetadata::default();
+    let height_chunks = metadata.height_chunks as i32;
+
+    let mut empty_column = HashMap::new();
+    let mut terrain_column = HashMap::new();
+    for y in 0..height_chunks {
+        let pos = ivec3(0, y, 0);
+        empty_column.insert(pos, empty_chunk());
+        terrain_column.insert(pos, generate_chunk(&metadata, pos));
+    }
+
+    let mut empty_chunks = HashMap::new();
+    let mut terrain_chunks = HashMap::new();
+    for x in -1..=1 {
+        for z in -1..=1 {
+            for y in 0..height_chunks {
+                let pos = ivec3(x, y, z);
+                empty_chunks.insert(pos, empty_chunk());
+                terrain_chunks.insert(pos, generate_chunk(&metadata, pos));
+            }
+        }
+    }
+
+    vec![
+        RegionScenario {
+            name: "empty_1_column",
+            targets: empty_column.keys().copied().collect(),
+            chunks: empty_column,
+            height_chunks,
+        },
+        RegionScenario {
+            name: "terrain_1_column",
+            targets: terrain_column.keys().copied().collect(),
+            chunks: terrain_column,
+            height_chunks,
+        },
+        RegionScenario {
+            name: "empty_3x3_columns",
+            targets: empty_chunks.keys().copied().collect(),
+            chunks: empty_chunks,
+            height_chunks,
+        },
+        RegionScenario {
+            name: "terrain_3x3_columns",
+            targets: terrain_chunks.keys().copied().collect(),
+            chunks: terrain_chunks,
+            height_chunks,
+        },
+    ]
+}
+
+fn bench_region_light_rebuild(c: &mut Criterion) {
+    let scenarios = region_scenarios();
+    let mut group = c.benchmark_group("light_region_rebuild");
+    group.throughput(Throughput::Elements(1));
+
+    for scenario in &scenarios {
+        let chunks = scenario
+            .chunks
+            .iter()
+            .map(|(&pos, chunk)| (pos, chunk))
+            .collect::<HashMap<_, _>>();
+        let light_template = scenario
+            .chunks
+            .keys()
+            .map(|&pos| (pos, ChunkLight::default()))
+            .collect::<HashMap<_, _>>();
+        let heightmap_template = scenario
+            .chunks
+            .keys()
+            .map(|&pos| (pos, ChunkHeightmap::default()))
+            .collect::<HashMap<_, _>>();
+
+        group.bench_function(BenchmarkId::from_parameter(scenario.name), move |b| {
+            b.iter(|| {
+                let mut lights = light_template.clone();
+                let mut heightmaps = heightmap_template.clone();
+                compute_light_region(
+                    black_box(&chunks),
+                    black_box(&mut lights),
+                    black_box(&mut heightmaps),
+                    black_box(&scenario.targets),
+                    scenario.height_chunks,
+                );
+                black_box((&lights, &heightmaps));
+            });
+        });
+    }
+
+    group.finish();
+}
+
+criterion_group!(
+    benches,
+    bench_full_light_compute,
+    bench_incremental_light,
+    bench_region_light_rebuild
+);
 criterion_main!(benches);

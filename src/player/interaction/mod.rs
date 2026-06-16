@@ -206,6 +206,7 @@ fn apply_block_interaction_requests(
                     ChunkNeedsLightRebuild,
                 ));
                 mark_boundary_neighbor_meshes_dirty(&mut commands, &dimension, pos);
+                mark_block_edit_light_columns_dirty(&mut commands, &dimension, pos.chunk);
             }
             BlockInteractionKind::Place => {
                 if block_place_would_intersect(pos, &spatial_query) {
@@ -234,6 +235,7 @@ fn apply_block_interaction_requests(
                     ChunkNeedsLightRebuild,
                 ));
                 mark_boundary_neighbor_meshes_dirty(&mut commands, &dimension, pos);
+                mark_block_edit_light_columns_dirty(&mut commands, &dimension, pos.chunk);
             }
         }
     }
@@ -251,6 +253,20 @@ fn mark_boundary_neighbor_meshes_dirty(
 
         commands.entity(entity).insert(ChunkNeedsMeshRebuild);
     }
+}
+
+fn mark_block_edit_light_columns_dirty(commands: &mut Commands, dimension: &Dimension, pos: IVec3) {
+    for (&chunk_pos, &entity) in &dimension.chunks {
+        if !block_edit_light_reaches_column(pos, chunk_pos) {
+            continue;
+        }
+
+        commands.entity(entity).insert(ChunkNeedsLightRebuild);
+    }
+}
+
+fn block_edit_light_reaches_column(edit_chunk: IVec3, chunk_pos: IVec3) -> bool {
+    (chunk_pos.x - edit_chunk.x).abs() <= 1 && (chunk_pos.z - edit_chunk.z).abs() <= 1
 }
 
 fn block_place_would_intersect(pos: BlockPos, spatial_query: &SpatialQuery) -> bool {

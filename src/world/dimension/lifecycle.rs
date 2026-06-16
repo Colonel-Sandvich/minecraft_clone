@@ -10,9 +10,8 @@ use crate::{
     player::Player,
     world::{
         chunk::{
-            CHUNK_SIZE, ChunkNeedsColliderRebuild,
-            ChunkNeedsLightRebuild, ChunkNeedsMeshRebuild, ChunkNeedsSave, ChunkPosition,
-            chunk_neighbor_offsets,
+            CHUNK_SIZE, ChunkNeedsColliderRebuild, ChunkNeedsLightRebuild, ChunkNeedsMeshRebuild,
+            ChunkNeedsSave, ChunkPosition, chunk_neighbor_offsets,
         },
         generation::WorldMetadata,
         loading::{ChunkLoadRequest, load_or_generate_chunk},
@@ -198,6 +197,18 @@ fn mark_loaded_neighbor_meshes_dirty(commands: &mut Commands, dimension: &Dimens
 
         commands.entity(entity).insert(ChunkNeedsMeshRebuild);
     }
+
+    mark_loaded_light_column_dirty(commands, dimension, pos);
+}
+
+fn mark_loaded_light_column_dirty(commands: &mut Commands, dimension: &Dimension, pos: IVec3) {
+    for (&chunk_pos, &entity) in &dimension.chunks {
+        if chunk_pos.x != pos.x || chunk_pos.z != pos.z {
+            continue;
+        }
+
+        commands.entity(entity).insert(ChunkNeedsLightRebuild);
+    }
 }
 
 #[cfg(test)]
@@ -334,6 +345,52 @@ mod tests {
         assert!(
             world
                 .get::<ChunkNeedsMeshRebuild>(chunks[&non_neighbor])
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn chunk_load_marks_only_same_column_for_light_rebuild() {
+        let mut metadata = test_metadata();
+        metadata.height_chunks = 2;
+        let loaded_pos = IVec3::ZERO;
+        let same_column = ivec3(0, 1, 0);
+        let horizontal_neighbor = IVec3::X;
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(metadata)
+            .insert_resource(ViewDistance::new(TEST_VIEW_DISTANCE))
+            .insert_resource(ChunkSpawnBudget(usize::MAX))
+            .insert_resource(ChunkLoadTasks::default())
+            .add_systems(Update, finish_chunk_load_tasks);
+
+        let (dimension_entity, chunks) =
+            spawn_dimension_with_chunks(&mut app, [same_column, horizontal_neighbor]);
+        insert_chunk_load_task(&mut app, loaded_pos);
+
+        update_until(&mut app, |world| {
+            world
+                .get::<Dimension>(dimension_entity)
+                .unwrap()
+                .chunk_entity(loaded_pos)
+                .is_some()
+        });
+
+        let world = app.world();
+        let loaded_entity = world
+            .get::<Dimension>(dimension_entity)
+            .unwrap()
+            .chunk_entity(loaded_pos)
+            .unwrap();
+        assert!(world.get::<ChunkNeedsLightRebuild>(loaded_entity).is_some());
+        assert!(
+            world
+                .get::<ChunkNeedsLightRebuild>(chunks[&same_column])
+                .is_some()
+        );
+        assert!(
+            world
+                .get::<ChunkNeedsLightRebuild>(chunks[&horizontal_neighbor])
                 .is_none()
         );
     }
