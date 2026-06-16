@@ -1,5 +1,7 @@
 /target
-/assets
+/assets/*
+!/assets/shaders/
+!/assets/shaders/**
 /saves
 perf.data.old
 flamegraph_reference_full.svg
