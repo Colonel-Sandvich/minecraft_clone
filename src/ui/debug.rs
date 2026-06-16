@@ -8,9 +8,7 @@ use crate::{
     player::Player,
     player::cam::MouseCam,
     world::chunk::ambient_occlusion::AmbientOcclusionSettings,
-    world::chunk::{
-        CHUNK_ISIZE, ChunkLight, ChunkPosition, light::world_to_chunk_local,
-    },
+    world::chunk::{CHUNK_ISIZE, ChunkLight, ChunkPosition, light::world_to_chunk_local},
     world::dimension::ViewDistance,
 };
 
@@ -21,7 +19,8 @@ impl Plugin for DebugPlugin {
         app.init_resource::<DebugVisible>()
             .init_resource::<ChunkBordersVisible>()
             .init_resource::<LightOverlayVisible>()
-            .add_systems(Startup, spawn_debug_overlay)
+            .add_systems(Startup, (spawn_debug_overlay, spawn_label_parent))
+            .add_systems(PreUpdate, manage_light_labels)
             .add_systems(
                 Update,
                 (
@@ -30,7 +29,7 @@ impl Plugin for DebugPlugin {
                     toggle_chunk_borders,
                     toggle_light_overlay,
                     draw_chunk_borders,
-                    draw_light_overlay,
+                    update_light_label_positions,
                 ),
             );
     }
@@ -38,6 +37,9 @@ impl Plugin for DebugPlugin {
 
 #[derive(Component)]
 struct DebugOverlay;
+
+#[derive(Component)]
+struct LightOverlayLabel;
 
 #[derive(Resource, Default)]
 struct DebugVisible(bool);
@@ -66,6 +68,18 @@ fn spawn_debug_overlay(mut commands: Commands) {
     ));
 }
 
+fn spawn_label_parent(mut commands: Commands) {
+    commands.spawn((
+        Node {
+            width: Val::Vw(100.0),
+            height: Val::Vh(100.0),
+            position_type: PositionType::Absolute,
+            ..default()
+        },
+        LightLabelParent,
+    ));
+}
+
 // TODO: need to swap some keys from just_pressed to just_released for these multi key keybindings
 // e.g. F3, F3 + G
 fn toggle_debug(keys: Res<ButtonInput<KeyCode>>, mut visible: ResMut<DebugVisible>) {
@@ -78,7 +92,7 @@ fn update_debug_text(
     visible: Res<DebugVisible>,
     diagnostics: Res<DiagnosticsStore>,
     player_q: Single<&Transform, With<Player>>,
-    cam_q: Single<&Transform, (With<MouseCam>, Without<Player>)>,
+    cam_q: Single<(&Transform, &GlobalTransform), (With<MouseCam>, Without<Player>)>,
     view_distance: Res<ViewDistance>,
     ao: Res<AmbientOcclusionSettings>,
     chunk_count: Query<(), With<crate::world::chunk::Chunk>>,
@@ -103,20 +117,19 @@ fn update_debug_text(
     let cy = (pos.y / CHUNK_ISIZE as f32).floor() as i32;
     let cz = (pos.z / CHUNK_ISIZE as f32).floor() as i32;
 
-    let foot_world = IVec3::new(bx, by - 1, bz);
-    let (foot_chunk, foot_local) = world_to_chunk_local(foot_world);
-    let light_map: HashMap<IVec3, &ChunkLight> = chunk_lights
-        .iter()
-        .map(|(p, l)| (p.0, l))
-        .collect();
-    let foot_light = light_map
-        .get(&foot_chunk)
-        .map(|l| l.packed_light(foot_local))
+    let (cam_transform, cam_global) = *cam_q;
+    let light_world = cam_global.translation().floor().as_ivec3() + IVec3::NEG_Y;
+    let (light_chunk, light_local) = world_to_chunk_local(light_world);
+    let light_map: HashMap<IVec3, &ChunkLight> =
+        chunk_lights.iter().map(|(p, l)| (p.0, l)).collect();
+    let current_light = light_map
+        .get(&light_chunk)
+        .map(|l| l.packed_light(light_local))
         .unwrap_or(0xF0);
-    let foot_sky = foot_light >> 4;
-    let foot_block = foot_light & 0x0F;
+    let current_sky = current_light >> 4;
+    let current_block = current_light & 0x0F;
 
-    let facing = facing_dir(&cam_q);
+    let facing = facing_dir(cam_transform);
     let loaded = chunk_count.iter().count();
 
     text.0 = format!(
@@ -135,8 +148,8 @@ fn update_debug_text(
         x = pos.x,
         y = pos.y,
         z = pos.z,
-        ft_sky = foot_sky,
-        ft_block = foot_block,
+        ft_sky = current_sky,
+        ft_block = current_block,
         facing = facing,
         loaded = loaded,
         vd = view_distance.chunks(),
@@ -169,80 +182,112 @@ fn toggle_chunk_borders(keys: Res<ButtonInput<KeyCode>>, mut borders: ResMut<Chu
     }
 }
 
-fn toggle_light_overlay(
-    keys: Res<ButtonInput<KeyCode>>,
-    mut overlay: ResMut<LightOverlayVisible>,
-) {
+fn toggle_light_overlay(keys: Res<ButtonInput<KeyCode>>, mut overlay: ResMut<LightOverlayVisible>) {
     if keys.just_pressed(KeyCode::KeyL) && keys.pressed(KeyCode::F3) {
         overlay.0 = !overlay.0;
     }
 }
 
-fn light_color(level: u8) -> Color {
-    let t = level as f32 / 15.0;
-    if level < 7 {
-        Color::srgba(1.0, t * 0.5, 0.0, 0.7)
-    } else {
-        Color::srgba(t * 0.6, 0.9, t * 0.3, 0.6)
-    }
-}
+const LIGHT_LABEL_RADIUS: i32 = 4;
 
-fn draw_light_overlay(
+#[derive(Component)]
+struct LightLabelPos(IVec3);
+
+#[derive(Component)]
+struct LightLabelParent;
+
+fn manage_light_labels(
+    mut commands: Commands,
     overlay: Res<LightOverlayVisible>,
-    mut gizmos: Gizmos,
-    player_q: Single<&Transform, With<Player>>,
-    chunks: Query<(&ChunkPosition, &ChunkLight)>,
+    parent: Single<Entity, With<LightLabelParent>>,
+    labels: Query<(Entity, &LightLabelPos)>,
+    cam_q: Single<&GlobalTransform, With<MouseCam>>,
+    chunk_lights: Query<(&ChunkPosition, &ChunkLight)>,
 ) {
     if !overlay.0 {
+        for (entity, _) in &labels {
+            commands.entity(entity).despawn();
+        }
         return;
     }
 
-    let chunk_map: HashMap<IVec3, &ChunkLight> = chunks
-        .iter()
-        .map(|(pos, light)| (pos.0, light))
-        .collect();
+    let center = cam_q.translation().floor().as_ivec3() + IVec3::NEG_Y;
 
-    let radius: i32 = 5;
-    let player_pos = player_q.translation;
-    let origin = IVec3::new(
-        player_pos.x.floor() as i32,
-        player_pos.y.floor() as i32,
-        player_pos.z.floor() as i32,
-    );
+    let light_map: HashMap<IVec3, &ChunkLight> =
+        chunk_lights.iter().map(|(p, l)| (p.0, l)).collect();
 
-    for dx in -radius..=radius {
-        for dy in -radius..=radius {
-            for dz in -radius..=radius {
-                let world = origin + IVec3::new(dx, dy, dz);
-                let (chunk_pos, local) = world_to_chunk_local(world);
+    let existing: Vec<(Entity, IVec3)> = labels.iter().map(|(e, p)| (e, p.0)).collect();
 
-                let light = chunk_map
-                    .get(&chunk_pos)
-                    .map(|l| l.packed_light(local))
-                    .unwrap_or(0xF0);
-
-                let block_light = light & 0x0F;
-
-                let base = Vec3::new(world.x as f32, world.y as f32, world.z as f32);
-                let s = 1.01;
-                let color = light_color(block_light);
-
-                gizmos.line(base, base + Vec3::X * s, color);
-                gizmos.line(base, base + Vec3::Z * s, color);
-                gizmos.line(base + Vec3::X * s, base + Vec3::X * s + Vec3::Z * s, color);
-                gizmos.line(base + Vec3::Z * s, base + Vec3::X * s + Vec3::Z * s, color);
-
-                gizmos.line(base + Vec3::Y * s, base + Vec3::X * s + Vec3::Y * s, color);
-                gizmos.line(base + Vec3::Y * s, base + Vec3::Z * s + Vec3::Y * s, color);
-                gizmos.line(base + Vec3::X * s + Vec3::Y * s, base + Vec3::X * s + Vec3::Z * s + Vec3::Y * s, color);
-                gizmos.line(base + Vec3::Z * s + Vec3::Y * s, base + Vec3::X * s + Vec3::Z * s + Vec3::Y * s, color);
-
-                gizmos.line(base, base + Vec3::Y * s, color);
-                gizmos.line(base + Vec3::X * s, base + Vec3::X * s + Vec3::Y * s, color);
-                gizmos.line(base + Vec3::Z * s, base + Vec3::Z * s + Vec3::Y * s, color);
-                gizmos.line(base + Vec3::X * s + Vec3::Z * s, base + Vec3::X * s + Vec3::Z * s + Vec3::Y * s, color);
-            }
+    let mut needed: HashMap<IVec3, String> = HashMap::new();
+    for dx in -LIGHT_LABEL_RADIUS..=LIGHT_LABEL_RADIUS {
+        for dz in -LIGHT_LABEL_RADIUS..=LIGHT_LABEL_RADIUS {
+            let world = center + IVec3::new(dx, 0, dz);
+            let (chunk, local) = world_to_chunk_local(world);
+            let light = light_map
+                .get(&chunk)
+                .map(|l| l.packed_light(local))
+                .unwrap_or(0xF0);
+            let sky = light >> 4;
+            let block = light & 0x0F;
+            needed.insert(world, format!("B{block}\nS{sky}"));
         }
+    }
+
+    let mut to_despawn: Vec<Entity> = Vec::new();
+    for (entity, pos) in &existing {
+        if let Some(label) = needed.remove(pos) {
+            commands.entity(*entity).insert(Text::new(label));
+        } else {
+            to_despawn.push(*entity);
+        }
+    }
+
+    for entity in to_despawn {
+        commands.entity(entity).despawn();
+    }
+
+    let parent_entity = *parent;
+    for (world, label) in needed {
+        commands.entity(parent_entity).with_children(|p| {
+            p.spawn((
+                Text::new(label),
+                TextFont {
+                    font_size: 10.0,
+                    ..default()
+                },
+                TextColor(Color::srgb(1.0, 0.95, 0.75)),
+                Node {
+                    position_type: PositionType::Absolute,
+                    left: Val::Px(0.0),
+                    top: Val::Px(0.0),
+                    ..default()
+                },
+                LightLabelPos(world),
+                LightOverlayLabel,
+            ));
+        });
+    }
+}
+
+fn update_light_label_positions(
+    camera_q: Single<(&Camera, &GlobalTransform), With<MouseCam>>,
+    mut labels: Query<(&LightLabelPos, &mut Node)>,
+) {
+    let (camera, cam_transform) = *camera_q;
+
+    for (pos, mut node) in &mut labels {
+        let world = Vec3::new(
+            pos.0.x as f32 + 0.5,
+            pos.0.y as f32 + 0.5,
+            pos.0.z as f32 + 0.5,
+        );
+        let screen = match camera.world_to_viewport(cam_transform, world) {
+            Ok(vp) => vp,
+            Err(_) => Vec2::new(-9999.0, -9999.0),
+        };
+
+        node.left = Val::Px(screen.x - 10.0);
+        node.top = Val::Px(screen.y - 10.0);
     }
 }
 
