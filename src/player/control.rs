@@ -1,4 +1,5 @@
 use crate::{
+    input::DoubleTap,
     mob::controller::{FlyController, Flying, Velocity},
     world::{
         chunk::ambient_occlusion::AmbientOcclusionSettings, dimension::ViewDistance,
@@ -40,7 +41,6 @@ pub struct KeyBindings {
     pub jump: KeyCode,
     pub sprint: KeyCode,
     pub toggle_grab_cursor: KeyCode,
-    pub toggle_fly: KeyCode,
     pub change_gamemode: KeyCode,
     pub toggle_ambient_occlusion: KeyCode,
     pub debug_reset_character: KeyCode,
@@ -105,7 +105,6 @@ impl Default for KeyBindings {
             jump: KeyCode::Space,
             sprint: KeyCode::ShiftLeft,
             toggle_grab_cursor: KeyCode::Escape,
-            toggle_fly: KeyCode::KeyF,
             change_gamemode: KeyCode::F4,
             toggle_ambient_occlusion: KeyCode::F6,
             debug_reset_character: KeyCode::KeyR,
@@ -147,18 +146,19 @@ fn change_gamemode(
 fn toggle_fly(
     mut commands: Commands,
     keys: Res<ButtonInput<KeyCode>>,
-    key_bindings: Res<KeyBindings>,
+    time: Res<Time>,
     flyer: Single<(Entity, Has<Flying>), With<FlyController>>,
+    mut double_tap: Local<DoubleTap>,
 ) {
+    if !double_tap.just_double_tapped(KeyCode::Space, &keys, &time) {
+        return;
+    }
     let (entity, flying) = *flyer;
     let entity = &mut commands.get_entity(entity).unwrap();
-
-    if keys.just_pressed(key_bindings.toggle_fly) {
-        match flying {
-            true => entity.remove::<Flying>(),
-            false => entity.insert(Flying),
-        };
-    }
+    match flying {
+        true => entity.remove::<Flying>(),
+        false => entity.insert(Flying),
+    };
 }
 
 fn toggle_ambient_occlusion_mode(

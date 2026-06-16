@@ -5,6 +5,7 @@ use bevy::{
 };
 
 use crate::{
+    input::ModifierCombo,
     player::Player,
     player::cam::MouseCam,
     world::chunk::ambient_occlusion::AmbientOcclusionSettings,
@@ -19,6 +20,7 @@ impl Plugin for DebugPlugin {
         app.init_resource::<DebugVisible>()
             .init_resource::<ChunkBordersVisible>()
             .init_resource::<LightOverlayVisible>()
+            .init_resource::<ModifierCombo>()
             .add_systems(Startup, (spawn_debug_overlay, spawn_label_parent))
             .add_systems(PreUpdate, manage_light_labels)
             .add_systems(
@@ -80,10 +82,12 @@ fn spawn_label_parent(mut commands: Commands) {
     ));
 }
 
-// TODO: need to swap some keys from just_pressed to just_released for these multi key keybindings
-// e.g. F3, F3 + G
-fn toggle_debug(keys: Res<ButtonInput<KeyCode>>, mut visible: ResMut<DebugVisible>) {
-    if keys.just_pressed(KeyCode::F3) {
+fn toggle_debug(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut visible: ResMut<DebugVisible>,
+    mut combo: ResMut<ModifierCombo>,
+) {
+    if keys.just_released(KeyCode::F3) && combo.check_solo() {
         visible.0 = !visible.0;
     }
 }
@@ -173,18 +177,28 @@ fn facing_dir(cam: &Transform) -> String {
         _ => "Southeast",
     };
 
-    format!("{dir} ({norm:.1}°)")
+    format!("{dir} ({norm:.1})")
 }
 
-fn toggle_chunk_borders(keys: Res<ButtonInput<KeyCode>>, mut borders: ResMut<ChunkBordersVisible>) {
+fn toggle_chunk_borders(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut borders: ResMut<ChunkBordersVisible>,
+    mut combo: ResMut<ModifierCombo>,
+) {
     if keys.just_pressed(KeyCode::KeyG) && keys.pressed(KeyCode::F3) {
         borders.0 = !borders.0;
+        combo.mark_combo();
     }
 }
 
-fn toggle_light_overlay(keys: Res<ButtonInput<KeyCode>>, mut overlay: ResMut<LightOverlayVisible>) {
+fn toggle_light_overlay(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut overlay: ResMut<LightOverlayVisible>,
+    mut combo: ResMut<ModifierCombo>,
+) {
     if keys.just_pressed(KeyCode::KeyL) && keys.pressed(KeyCode::F3) {
         overlay.0 = !overlay.0;
+        combo.mark_combo();
     }
 }
 
