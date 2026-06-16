@@ -13,12 +13,14 @@ use crate::world::chunk::mesh::{
 };
 use crate::world::chunk::{CHUNK_SIZE, Chunk, ChunkNeedsMeshRebuild, ChunkPosition};
 
+use super::vertex_pulling;
 use super::{
     DirectChunkMesher, FullCubeShellChunkMesher, GreedyChunkMesher, HybridChunkMesher,
     PartitionedGreedyChunkMesher, ReferenceChunkMesher, SweepChunkMesher,
 };
 use super::{
-    GROUND_BOUNCE_FACE_BRIGHTNESS, HORIZON_FACE_BRIGHTNESS, SKY_FACE_BRIGHTNESS, face_brightness,
+    GROUND_BOUNCE_FACE_BRIGHTNESS, HORIZON_FACE_BRIGHTNESS, SKY_FACE_BRIGHTNESS,
+    face_ao_from_indices, face_brightness, padded_chunk_index,
 };
 
 fn test_texture_map() -> crate::block::BlockTextureMap {
@@ -220,6 +222,31 @@ fn all_meshers_match_reference_for_all_chunks() {
 }
 
 #[test]
+fn vertex_pulling_descriptors_match_reference_face_counts() {
+    let texture_map = test_texture_map();
+
+    for case in test_chunks() {
+        let blocks = ChunkMeshBlocks::from_chunk(&case.chunk);
+        let input = ChunkMeshInput {
+            blocks: &blocks,
+            block_texture_map: &texture_map,
+            ao_brightness: AO_BRIGHTNESS,
+        };
+
+        let reference_faces: Vec<_> = mesh_signature(ReferenceChunkMesher.mesh(input))
+            .into_iter()
+            .map(|(layer, _vertices, indices)| (layer, indices / 6))
+            .collect();
+        let descriptor_faces: Vec<_> = vertex_pulling::build_descriptors(&blocks)
+            .into_iter()
+            .map(|(layer, descriptors)| (layer, descriptors.len()))
+            .collect();
+
+        assert_eq!(reference_faces, descriptor_faces, "{}", case.name);
+    }
+}
+
+#[test]
 fn greedy_matches_direct_for_checkerboard_no_adjacent_faces_to_merge() {
     let texture_map = test_texture_map();
     let mut chunk = Chunk::default();
@@ -386,6 +413,41 @@ fn face_ao_samples_loaded_corner_neighbor_chunk() {
 }
 
 #[test]
+fn indexed_face_ao_matches_reference_corner_order_for_all_directions() {
+    let mut chunk = Chunk::default();
+    for x in 0..CHUNK_SIZE {
+        for y in 0..CHUNK_SIZE {
+            for z in 0..CHUNK_SIZE {
+                let hash = x * 17 + y * 31 + z * 43;
+                chunk.blocks[x][z][y] = match hash % 5 {
+                    0 | 3 => BlockType::Stone,
+                    1 => BlockType::Glass,
+                    _ => BlockType::Air,
+                };
+            }
+        }
+    }
+
+    let blocks = ChunkMeshBlocks::from_chunk(&chunk);
+    for x in 0..CHUNK_SIZE {
+        for y in 0..CHUNK_SIZE {
+            for z in 0..CHUNK_SIZE {
+                let padded_index = padded_chunk_index(x + 1, y + 1, z + 1);
+                let voxel = IVec3::new(x as i32, y as i32, z as i32);
+
+                for side in Direction::iter() {
+                    assert_eq!(
+                        face_ao_from_indices(&blocks, padded_index, side as usize),
+                        face_ao(&blocks, voxel, side),
+                        "voxel={voxel:?} side={side:?}",
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn boundary_faces_are_culled_against_loaded_neighbor_chunks() {
     let texture_map = test_texture_map();
     let mut centre = Chunk::default();
@@ -411,6 +473,7 @@ fn mesh_bakes_ao_into_colours_and_chooses_less_biased_diagonal() {
         color,
         uv: Rect::new(0.0, 0.0, 1.0, 1.0),
         ao: [3, 0, 0, 3],
+        block_type: BlockType::Stone,
     });
 
     let mesh = make_mesh_from_quad_groups_with_ao_brightness(&groups, AO_BRIGHTNESS).unwrap();
@@ -462,6 +525,7 @@ fn mesh_bakes_face_lighting_and_ao_into_colours() {
         color,
         uv: Rect::new(0.0, 0.0, 1.0, 1.0),
         ao: [3, 2, 1, 0],
+        block_type: BlockType::Stone,
     });
 
     let ao_brightness = [0.25, 0.5, 0.75, 1.0];
@@ -522,7 +586,10 @@ fn mesh_rebuild_marker_is_removed_after_rebuild() {
     let children = world.get::<Children>(chunk_entity).unwrap();
     let mesh_child_count = children
         .iter()
-        .filter(|child| world.get::<Mesh3d>(*child).is_some())
+        .filter(|child| {
+            world.get::<Mesh3d>(*child).is_some()
+                || world.get::<super::VertexPullingMesh>(*child).is_some()
+        })
         .count();
     assert_eq!(mesh_child_count, 1);
 }

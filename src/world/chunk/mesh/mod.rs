@@ -8,6 +8,7 @@ mod hybrid;
 mod reference;
 mod shell;
 mod sweep;
+pub mod vertex_pulling;
 
 use self::reference::make_layered_quad_groups_from_blocks;
 pub use blocks::ChunkMeshBlocks;
@@ -20,6 +21,9 @@ pub use hybrid::HybridChunkMesher;
 pub use reference::ReferenceChunkMesher;
 pub use shell::FullCubeShellChunkMesher;
 pub use sweep::SweepChunkMesher;
+pub use vertex_pulling::{VertexPullingMesh, VpAtlasState};
+
+const USE_VERTEX_PULLING: bool = true;
 
 use bevy::asset::RenderAssetUsages;
 use bevy::camera::primitives::Aabb;
@@ -34,7 +38,7 @@ use crate::quad::{Direction, QuadGroups, get_normals, get_positions, urect_to_uv
 use crate::textures::{BlockStandardMaterials, TextureState};
 
 use super::{
-    CHUNK_ISIZE, CHUNK_SIZE, CHUNK_VOLUME, Chunk, ChunkNeedsMeshRebuild, ChunkPosition,
+    CHUNK_ISIZE, CHUNK_SIZE, CHUNK_VOLUME, Chunk, ChunkLight, ChunkNeedsMeshRebuild, ChunkPosition,
     ambient_occlusion::{AO_BRIGHTNESS, AmbientOcclusionSettings},
 };
 
@@ -218,9 +222,13 @@ fn rebuild_chunk_meshes(
     ao_settings: Res<AmbientOcclusionSettings>,
     dirty_chunks_q: Query<(&ChunkPosition, Entity), (With<Chunk>, With<ChunkNeedsMeshRebuild>)>,
     all_chunks_q: Query<(&ChunkPosition, &Chunk)>,
+    light_q: Query<(&ChunkPosition, &ChunkLight)>,
     children_q: Query<&Children>,
     mesh_children_q: Query<(Entity, &ChunkMaterialLayerMarker), With<Mesh3d>>,
     mut mesh_q: Query<&mut Mesh3d>,
+    vp_children_q: Query<(Entity, &ChunkMaterialLayerMarker), With<VertexPullingMesh>>,
+    mut vp_mesh_q: Query<&mut VertexPullingMesh>,
+    chunk_transform_q: Query<&Transform>,
 ) {
     if dirty_chunks_q.is_empty() {
         return;
@@ -231,42 +239,119 @@ fn rebuild_chunk_meshes(
         .iter()
         .map(|(pos, chunk)| (pos.0, chunk))
         .collect::<HashMap<_, _>>();
-    let mut build_queue = Parallel::<Vec<ChunkMeshBuild>>::default();
 
-    dirty_chunks_q.par_iter().for_each_init(
-        || build_queue.borrow_local_mut(),
-        |builds, (chunk_pos, chunk_entity)| {
-            let blocks = ChunkMeshBlocks::from_chunks(chunk_pos.0, &chunks_by_pos);
-            let meshes = GreedyChunkMesher.mesh(ChunkMeshInput {
-                blocks: &blocks,
-                block_texture_map: &block_texture_map,
-                ao_brightness,
-            });
-            builds.push(ChunkMeshBuild {
-                entity: chunk_entity,
-                meshes,
-            });
-        },
-    );
+    if USE_VERTEX_PULLING {
+        // Populate VpAtlasState from current texture map (only when changed)
+        let tables = BlockMeshTables::from_texture_map(&block_texture_map);
+        let tile_offsets: Vec<[f32; 2]> = (0..BLOCK_TYPE_COUNT)
+            .flat_map(|bt| {
+                (0..DIRECTION_COUNT).map(move |dir| {
+                    let r = tables.uvs[bt][dir];
+                    [r.min.x, r.min.y]
+                })
+            })
+            .collect();
+        let tint_colors: Vec<[f32; 4]> = (0..BLOCK_TYPE_COUNT)
+            .flat_map(|bt| {
+                (0..DIRECTION_COUNT).map(move |dir| {
+                    let c = tables.colors[bt][dir];
+                    [c.x, c.y, c.z, c.w]
+                })
+            })
+            .collect();
+        let tile_size = {
+            let stone = tables.uvs[BlockType::Stone as usize][0];
+            Vec2::new(stone.width(), stone.height())
+        };
 
-    let mut builds = Vec::new();
-    build_queue.drain_into(&mut builds);
+        let atlas_state = VpAtlasState {
+            atlas_handle: block_materials.atlas.clone(),
+            tile_size,
+            tile_offsets,
+            tint_colors,
+            ao_brightness,
+        };
+        commands.insert_resource(atlas_state);
 
-    for build in builds {
-        update_chunk_mesh_children(
-            &mut commands,
-            &mut meshes,
-            &block_materials,
-            &mesh_children_q,
-            &mut mesh_q,
-            build.entity,
-            children_q.get(build.entity).ok(),
-            build.meshes,
+        let lights_by_pos: HashMap<IVec3, &ChunkLight> =
+            light_q.iter().map(|(pos, light)| (pos.0, light)).collect();
+
+        let mut build_queue = Parallel::<Vec<VpChunkBuild>>::default();
+        dirty_chunks_q.par_iter().for_each_init(
+            || build_queue.borrow_local_mut(),
+            |builds, (chunk_pos, chunk_entity)| {
+                let blocks = ChunkMeshBlocks::from_chunks(chunk_pos.0, &chunks_by_pos);
+                let layers = vertex_pulling::build_descriptors(&blocks);
+                let light_data = ChunkLight::build_padded_light_data(chunk_pos.0, &lights_by_pos);
+                builds.push(VpChunkBuild {
+                    entity: chunk_entity,
+                    layers,
+                    light_data,
+                });
+            },
         );
-        commands
-            .entity(build.entity)
-            .remove::<ChunkNeedsMeshRebuild>();
+        let mut builds = Vec::new();
+        build_queue.drain_into(&mut builds);
+        for build in builds {
+            let origin = chunk_transform_q
+                .get(build.entity)
+                .map(|t| t.translation)
+                .unwrap_or(Vec3::ZERO);
+            update_chunk_vp_children(
+                &mut commands,
+                &vp_children_q,
+                &mut vp_mesh_q,
+                build.entity,
+                children_q.get(build.entity).ok(),
+                build.layers,
+                origin,
+                build.light_data,
+            );
+            commands
+                .entity(build.entity)
+                .remove::<ChunkNeedsMeshRebuild>();
+        }
+    } else {
+        let mut build_queue = Parallel::<Vec<ChunkMeshBuild>>::default();
+        dirty_chunks_q.par_iter().for_each_init(
+            || build_queue.borrow_local_mut(),
+            |builds, (chunk_pos, chunk_entity)| {
+                let blocks = ChunkMeshBlocks::from_chunks(chunk_pos.0, &chunks_by_pos);
+                let meshes = GreedyChunkMesher.mesh(ChunkMeshInput {
+                    blocks: &blocks,
+                    block_texture_map: &block_texture_map,
+                    ao_brightness,
+                });
+                builds.push(ChunkMeshBuild {
+                    entity: chunk_entity,
+                    meshes,
+                });
+            },
+        );
+        let mut builds = Vec::new();
+        build_queue.drain_into(&mut builds);
+        for build in builds {
+            update_chunk_mesh_children(
+                &mut commands,
+                &mut meshes,
+                &block_materials,
+                &mesh_children_q,
+                &mut mesh_q,
+                build.entity,
+                children_q.get(build.entity).ok(),
+                build.meshes,
+            );
+            commands
+                .entity(build.entity)
+                .remove::<ChunkNeedsMeshRebuild>();
+        }
     }
+}
+
+struct VpChunkBuild {
+    entity: Entity,
+    layers: Vec<(BlockMaterialLayer, Vec<vertex_pulling::FaceDescriptor>)>,
+    light_data: Box<[u32]>,
 }
 
 struct ChunkMeshBuild {
@@ -318,6 +403,75 @@ fn update_chunk_mesh_children(
         }
 
         commands.entity(entity).despawn();
+    }
+}
+
+fn update_chunk_vp_children(
+    commands: &mut Commands,
+    vp_children_q: &Query<(Entity, &ChunkMaterialLayerMarker), With<VertexPullingMesh>>,
+    vp_mesh_q: &mut Query<&mut VertexPullingMesh>,
+    chunk_entity: Entity,
+    children: Option<&Children>,
+    layers: Vec<(BlockMaterialLayer, Vec<vertex_pulling::FaceDescriptor>)>,
+    chunk_origin: Vec3,
+    light_data: Box<[u32]>,
+) {
+    let existing = children
+        .map(|children| {
+            vp_children_q
+                .iter_many(children)
+                .map(|(entity, marker)| (marker.0, entity))
+                .collect::<HashMap<_, _>>()
+        })
+        .unwrap_or_default();
+
+    let mut updated = Vec::new();
+    for (layer, descriptors) in layers {
+        let face_count = descriptors.len() as u32;
+        updated.push(layer);
+
+        if let Some(entity) = existing.get(&layer) {
+            if let Ok(mut mesh) = vp_mesh_q.get_mut(*entity) {
+                mesh.descriptors = descriptors;
+                mesh.face_count = face_count;
+                mesh.material_layer = layer;
+                mesh.chunk_origin = chunk_origin;
+                mesh.light_data = light_data.clone();
+            }
+            commands.entity(*entity).insert(chunk_render_aabb());
+            continue;
+        }
+
+        commands.spawn((
+            ChildOf(chunk_entity),
+            ChunkMaterialLayerMarker(layer),
+            Transform::default(),
+            Visibility::default(),
+            chunk_render_aabb(),
+            VertexPullingMesh {
+                descriptors,
+                face_count,
+                material_layer: layer,
+                chunk_origin,
+                light_data: light_data.clone(),
+            },
+        ));
+    }
+
+    for (layer, entity) in existing {
+        if updated.contains(&layer) {
+            continue;
+        }
+        commands.entity(entity).despawn();
+    }
+}
+
+const fn chunk_render_aabb() -> Aabb {
+    let half = CHUNK_SIZE as f32 / 2.0;
+    let v = vec3a(half, half, half);
+    Aabb {
+        center: v,
+        half_extents: v,
     }
 }
 
