@@ -89,6 +89,7 @@ pub(crate) fn make_layered_quad_groups_from_blocks(
                             uv: block_texture_map.block_to_mesh(block, side),
                             color: block_to_colour(block, side),
                             ao: face_ao(blocks, IVec3::new(x, y, z), side),
+                            block_type: block,
                         },
                     );
                 }

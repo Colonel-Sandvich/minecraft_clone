@@ -1,14 +1,15 @@
 use bevy::math::{IVec3, Rect, UVec3, Vec2, Vec3, Vec4, vec2};
 use strum::EnumIter;
 
+use crate::block::BlockType;
+
 #[derive(Copy, Clone, Debug)]
 pub struct Quad {
     pub voxel: UVec3,
     pub color: Vec4,
     pub uv: Rect,
     pub ao: [u8; 4],
-    // pub width: u32,
-    // pub height: u32,
+    pub block_type: BlockType,
 }
 
 #[derive(Debug, Default)]

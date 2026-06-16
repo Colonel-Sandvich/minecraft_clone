@@ -15,6 +15,8 @@ const SKY_LIGHT_MAX: u8 = 15;
 const PADDED_CHUNK_SIZE: usize = CHUNK_SIZE + 2;
 const PADDED_CHUNK_LAYER_SIZE: usize = PADDED_CHUNK_SIZE * PADDED_CHUNK_SIZE;
 const PADDED_CHUNK_VOLUME: usize = PADDED_CHUNK_SIZE * PADDED_CHUNK_SIZE * PADDED_CHUNK_SIZE;
+const PADDED_LIGHT_WORDS: usize = PADDED_CHUNK_VOLUME.div_ceil(4);
+const MISSING_PADDED_LIGHT_WORD: u32 = 0xF0F0F0F0;
 
 /// Direction order: pairs at indices (0,1), (2,3), (4,5) are opposites.
 /// Opposite of idx = idx ^ 1.
@@ -87,13 +89,13 @@ impl ChunkLight {
     ///
     /// `center_pos` is the chunk's position in chunk coords,
     /// `lights` is a map of all available chunks' light data (keyed by chunk position).
-    /// Returns a flat array of u32 values, one per padded cell (18*18*18 = 5832).
-    /// Layout: `index = x + z * 18 + y * 18 * 18`.
+    /// Returns a flat array of u32 values, with four packed padded cells per word.
+    /// Cell layout before packing: `index = x + z * 18 + y * 18 * 18`.
     pub fn build_padded_light_data(
         center_pos: IVec3,
         lights: &HashMap<IVec3, &ChunkLight>,
     ) -> Box<[u32]> {
-        let mut data = vec![0u32; PADDED_CHUNK_VOLUME].into_boxed_slice();
+        let mut data = vec![MISSING_PADDED_LIGHT_WORD; PADDED_LIGHT_WORDS].into_boxed_slice();
 
         // Copy center chunk (offset 0,0,0)
         if let Some(center) = lights.get(&center_pos) {
@@ -103,7 +105,7 @@ impl ChunkLight {
                         let padded_idx = (x + 1)
                             + (z + 1) * PADDED_CHUNK_SIZE
                             + (y + 1) * PADDED_CHUNK_LAYER_SIZE;
-                        data[padded_idx] = center.packed_light_at(x, z, y) as u32;
+                        write_padded_light(&mut data, padded_idx, center.packed_light_at(x, z, y));
                     }
                 }
             }
@@ -124,7 +126,11 @@ impl ChunkLight {
                         let padded_idx = px as usize
                             + pz as usize * PADDED_CHUNK_SIZE
                             + py as usize * PADDED_CHUNK_LAYER_SIZE;
-                        data[padded_idx] = neighbor.packed_light_at(x, z, y) as u32;
+                        write_padded_light(
+                            &mut data,
+                            padded_idx,
+                            neighbor.packed_light_at(x, z, y),
+                        );
                     }
                 }
             }
@@ -166,6 +172,13 @@ impl ChunkLight {
             }
         }
     }
+}
+
+fn write_padded_light(data: &mut [u32], padded_idx: usize, packed_light: u8) {
+    let word_idx = padded_idx / 4;
+    let shift = (padded_idx % 4) * 8;
+    let mask = 0xFFu32 << shift;
+    data[word_idx] = (data[word_idx] & !mask) | ((packed_light as u32) << shift);
 }
 
 #[derive(Component, Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -1840,6 +1853,43 @@ mod tests {
         let packed = light.packed_light(pos);
         assert_eq!((packed >> 4) & 0x0F, 13);
         assert_eq!(packed & 0x0F, 9);
+    }
+
+    #[test]
+    fn padded_light_data_packs_four_cells_per_word() {
+        let center_pos = IVec3::ZERO;
+        let mut center = ChunkLight::default();
+        center.set_sky_light(uvec3(0, 0, 0), 1);
+        center.set_block_light(uvec3(0, 0, 0), 2);
+
+        let mut right = ChunkLight::default();
+        right.set_sky_light(uvec3(0, 0, 0), 10);
+        right.set_block_light(uvec3(0, 0, 0), 11);
+
+        let lights = HashMap::from([(center_pos, &center), (IVec3::X, &right)]);
+        let data = ChunkLight::build_padded_light_data(center_pos, &lights);
+
+        assert_eq!(data.len(), PADDED_LIGHT_WORDS);
+        assert_eq!(
+            unpack_padded_light(&data, padded_light_index(1, 1, 1)),
+            0x12
+        );
+        assert_eq!(
+            unpack_padded_light(&data, padded_light_index(17, 1, 1)),
+            0xAB
+        );
+        assert_eq!(
+            unpack_padded_light(&data, padded_light_index(0, 0, 0)),
+            0xF0
+        );
+    }
+
+    fn padded_light_index(x: usize, y: usize, z: usize) -> usize {
+        x + z * PADDED_CHUNK_SIZE + y * PADDED_CHUNK_LAYER_SIZE
+    }
+
+    fn unpack_padded_light(data: &[u32], idx: usize) -> u8 {
+        ((data[idx / 4] >> ((idx % 4) * 8)) & 0xFF) as u8
     }
 
     #[test]
