@@ -19,6 +19,7 @@ use crate::{
     player::PlayerPlugin,
     textures::BlockTextureAtlasPlugin,
     ui::UIPlugin,
+    world::chunk::mesh::vertex_pulling::VertexPullingPlugin,
     world::{WorldConfig, WorldMetadata, WorldPlugin},
 };
 
@@ -56,6 +57,7 @@ impl Plugin for AppPlugin {
             }
         })
         .add_plugins(WorldPlugin)
+        .add_plugins(VertexPullingPlugin)
         .add_plugins(UIPlugin)
         .insert_resource(Time::<Fixed>::from_hz(FIXED_TICK_RATE_HZ))
         .insert_resource(Time::<Virtual>::from_max_delta(Duration::from_secs_f64(
@@ -63,12 +65,7 @@ impl Plugin for AppPlugin {
         )))
         .add_plugins(PhysicsPlugins::default())
         // .add_plugins(PhysicsDebugPlugin::default())
-        .add_plugins((
-            FrameTimeDiagnosticsPlugin::default(),
-            // LogDiagnosticsPlugin::default(),
-            // bevy::diagnostic::EntityCountDiagnosticsPlugin,
-            // bevy::diagnostic::SystemInformationDiagnosticsPlugin,
-        ))
+        .add_plugins((FrameTimeDiagnosticsPlugin::default(),))
         .add_plugins(WorldInspectorPlugin::new().run_if(input_toggle_active(false, KeyCode::F5)))
         .add_plugins(FramepacePlugin);
         // .insert_resource(FramepaceSettings {
