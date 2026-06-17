@@ -196,18 +196,11 @@ fn adjust_view_distance(
     key_bindings: Res<KeyBindings>,
     mut view_distance: ResMut<ViewDistance>,
 ) {
-    let old_distance = view_distance.chunks();
-
     if keys.just_pressed(key_bindings.view_distance_decrease) {
         view_distance.decrease();
     }
     if keys.just_pressed(key_bindings.view_distance_increase) {
         view_distance.increase();
-    }
-
-    let new_distance = view_distance.chunks();
-    if new_distance != old_distance {
-        info!(view_distance = new_distance, "View distance changed");
     }
 }
 
