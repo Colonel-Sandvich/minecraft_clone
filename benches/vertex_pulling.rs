@@ -210,24 +210,16 @@ fn vp_face_count(layers: &[(BlockMaterialLayer, Vec<vertex_pulling::FaceDescript
 fn bench_vertex_pulling(c: &mut Criterion) {
     let scenarios = make_scenarios();
 
-    let inputs: Vec<(&Scenario, ChunkMeshBlocks)> = scenarios
-        .iter()
-        .map(|s| {
-            let chunk_refs = s.chunk_refs();
-            (s, ChunkMeshBlocks::from_chunks(s.center_pos, &chunk_refs))
-        })
-        .collect();
-
-    // ------- vp_mesh: ChunkMeshBlocks + build_descriptors -------
+    // ------- Chunk refs -> padded mesh blocks -> descriptors -------
     {
         let mut group = c.benchmark_group("vp_mesh");
         group.throughput(Throughput::Elements(1));
-        for (scenario, _blocks) in &inputs {
+        for scenario in &scenarios {
             let chunk_refs = scenario.chunk_refs();
             let center = scenario.center_pos;
             group.bench_function(BenchmarkId::from_parameter(scenario.name), |b| {
                 b.iter(|| {
-                    let blocks = ChunkMeshBlocks::from_chunks(center, &chunk_refs);
+                    let blocks = ChunkMeshBlocks::from_chunks(center, black_box(&chunk_refs));
                     black_box(vertex_pulling::build_descriptors(&blocks))
                 });
             });
@@ -239,8 +231,10 @@ fn bench_vertex_pulling(c: &mut Criterion) {
     println!();
     println!("--- Data size comparison ---");
     println!("  {:<30} {:>8} {:>10}", "scenario", "vp faces", "vp desc",);
-    for (scenario, blocks) in &inputs {
-        let vp_layers = vertex_pulling::build_descriptors(blocks);
+    for scenario in &scenarios {
+        let chunk_refs = scenario.chunk_refs();
+        let blocks = ChunkMeshBlocks::from_chunks(scenario.center_pos, &chunk_refs);
+        let vp_layers = vertex_pulling::build_descriptors(&blocks);
         let vp_desc_bytes: usize = vp_layers
             .iter()
             .map(|(_, desc)| desc.len() * FACEDESCRIPTOR_BYTES)

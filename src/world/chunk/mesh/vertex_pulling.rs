@@ -42,7 +42,7 @@ use bevy::{
     },
 };
 
-use crate::block::BlockMaterialLayer;
+use crate::block::{BlockMaterialLayer, BlockType};
 
 use super::{
     CHUNK_SIZE, ChunkMeshBlocks, DIRECTION_COUNT, DIRECTION_INDEX_OFFSETS, block_mesh_flags,
@@ -99,10 +99,22 @@ pub fn build_descriptors(
                         let neighbor_index =
                             (padded_index as isize + DIRECTION_INDEX_OFFSETS[side_index]) as usize;
                         let neighbor = unsafe { *blocks.blocks.get_unchecked(neighbor_index) };
-                        let neighbor_flags = block_mesh_flags(neighbor);
 
-                        if should_emit_face_from_flags(block, block_flags, neighbor, neighbor_flags)
-                        {
+                        let should_emit_face = if neighbor == BlockType::Air {
+                            true
+                        } else if blocks.is_full_cube_at(neighbor_index) {
+                            false
+                        } else {
+                            let neighbor_flags = block_mesh_flags(neighbor);
+                            should_emit_face_from_flags(
+                                block,
+                                block_flags,
+                                neighbor,
+                                neighbor_flags,
+                            )
+                        };
+
+                        if should_emit_face {
                             let ao_key = face_ao_key_from_indices(blocks, padded_index, side_index);
                             descriptors[material_layer_index_from_flags(block_flags)].push(
                                 FaceDescriptor::new(
