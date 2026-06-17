@@ -29,14 +29,6 @@ bincode = { version = "2", features = ["serde"] }
 criterion = "0.8.2"
 
 [[bench]]
-name = "chunk_meshing"
-harness = false
-
-[[bench]]
-name = "chunk_mesh_pipeline"
-harness = false
-
-[[bench]]
 name = "light_propagation"
 harness = false
 

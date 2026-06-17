@@ -45,12 +45,8 @@ impl MovementTest {
         frame_duration: Duration,
     ) -> Self {
         let mut app = App::new();
-        app.add_plugins((
-            MinimalPlugins,
-            AssetPlugin::default(),
-            ScenePlugin::default(),
-        ))
-        .init_asset::<Mesh>();
+        app.add_plugins((MinimalPlugins, AssetPlugin::default(), ScenePlugin))
+            .init_asset::<Mesh>();
         app.add_plugins(PhysicsPlugins::default());
         app.insert_resource(Time::<Fixed>::from_hz(20.0))
             .insert_resource(TimeUpdateStrategy::ManualDuration(frame_duration))

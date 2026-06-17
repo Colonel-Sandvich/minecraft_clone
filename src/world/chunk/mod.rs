@@ -135,7 +135,7 @@ impl Chunk {
     }
 
     pub fn get_i(&self, x: i32, y: i32, z: i32) -> Option<BlockType> {
-        let outside = |a: i32| a < 0 || a >= CHUNK_ISIZE;
+        let outside = |a: i32| !(0..CHUNK_ISIZE).contains(&a);
         if outside(x) || outside(y) || outside(z) {
             return None;
         }
@@ -237,7 +237,7 @@ impl Chunk {
             .enumerate()
             .map(|(i, &b)| (b, i as u8))
             .collect();
-        let indices: Vec<u8> = self.iter().map(|(b, _)| block_to_idx[&b]).collect();
+        let indices: Vec<u8> = self.iter().map(|(b, _)| block_to_idx[b]).collect();
 
         let mut bytes = Vec::new();
 
@@ -252,7 +252,7 @@ impl Chunk {
 
         // bit-packed body
         let body_start = bytes.len();
-        let body_bytes = (indices.len() * bits as usize + 7) / 8;
+        let body_bytes = (indices.len() * bits as usize).div_ceil(8);
         bytes.resize(body_start + body_bytes, 0);
         pack(&mut bytes[body_start..], &indices, bits);
 
@@ -316,7 +316,7 @@ impl Chunk {
         }
 
         let block_body_bits = bit_pos;
-        let block_body_bytes = (block_body_bits + 7) / 8;
+        let block_body_bytes = block_body_bits.div_ceil(8);
         let light_start = pos + block_body_bytes;
 
         let mut light = ChunkLight::default();

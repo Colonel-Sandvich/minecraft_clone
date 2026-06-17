@@ -431,12 +431,11 @@ fn update_hotbar_ui(
 
     for (slot, children) in &slot_children {
         for child in children.iter() {
-            if let Ok(mut img) = images.get_mut(child) {
-                if let Some(block_type) = hotbar.slots[slot.0] {
-                    if let Some(handle) = block_icons.icons.get(&block_type) {
-                        img.image = handle.clone();
-                    }
-                }
+            if let Ok(mut img) = images.get_mut(child)
+                && let Some(block_type) = hotbar.slots[slot.0]
+                && let Some(handle) = block_icons.icons.get(&block_type)
+            {
+                img.image = handle.clone();
             }
         }
     }

@@ -1,31 +1,19 @@
-//! Benchmarks: vertex-pulling vs greedy meshing head-to-head.
-//!
-//! Each path is measured end-to-end from dirty chunk → GPU-ready output.
-//! VP: ChunkMeshBlocks::from_chunks + build_descriptors
-//! Greedy: ChunkMeshBlocks::from_chunks + GreedyChunkMesher::mesh
-//! Light buffer excluded — it's a light-system concern, not mesh generation.
+//! Vertex-pulling mesh generation benchmark (8 scenarios).
 
 use std::hint::black_box;
 use std::time::Duration;
 
-use bevy::{math::Rect, platform::collections::HashMap, prelude::*};
+use bevy::{platform::collections::HashMap, prelude::*};
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use minecraft_clone::{
-    block::{BlockMaterialLayer, BlockTextureMap, BlockType, block_and_side_to_texture_path},
-    quad::Direction,
+    block::{BlockMaterialLayer, BlockType},
     world::{
         WorldMetadata,
-        chunk::{
-            CHUNK_SIZE, Chunk, ChunkLight,
-            ambient_occlusion::AmbientOcclusionSettings,
-            mesh::{
-                ChunkMeshBlocks, ChunkMeshInput, ChunkMesher, GreedyChunkMesher, vertex_pulling,
-            },
-        },
+        chunk::mesh::{ChunkMeshBlocks, vertex_pulling},
+        chunk::{CHUNK_SIZE, Chunk},
         generation::generate_chunk,
     },
 };
-use strum::IntoEnumIterator;
 
 // ---------------------------------------------------------------------------
 // Bench scenario
@@ -76,7 +64,6 @@ fn make_scenarios() -> Vec<Scenario> {
             center_pos: IVec3::ZERO,
             chunks: vec![(IVec3::ZERO, realistic_terrain_chunk())],
         },
-        // realistic_terrain with neighbors (proper occlusion)
         realistic_terrain_buried_scenario("realistic_terrain_buried"),
     ]
 }
@@ -84,9 +71,7 @@ fn make_scenarios() -> Vec<Scenario> {
 fn realistic_terrain_buried_scenario(name: &'static str) -> Scenario {
     let center = realistic_terrain_chunk();
     let mut chunks = Vec::with_capacity(27);
-    // Center
     chunks.push((IVec3::ZERO, center));
-    // 26 neighbors: all filled with stone (provides occlusion)
     for x in -1..=1 {
         for y in -1..=1 {
             for z in -1..=1 {
@@ -105,7 +90,7 @@ fn realistic_terrain_buried_scenario(name: &'static str) -> Scenario {
 }
 
 // ---------------------------------------------------------------------------
-// Chunk helpers (mirroring chunk_meshing.rs)
+// Chunk helpers
 // ---------------------------------------------------------------------------
 
 fn filled_chunk(block: BlockType) -> Chunk {
@@ -209,71 +194,13 @@ fn realistic_terrain_chunk() -> Chunk {
 }
 
 // ---------------------------------------------------------------------------
-// Texture map
-// ---------------------------------------------------------------------------
-
-fn bench_texture_map() -> BlockTextureMap {
-    let mut paths = HashMap::default();
-    for block in BlockType::iter() {
-        if block == BlockType::Air {
-            continue;
-        }
-        for side in Direction::iter() {
-            let path = block_and_side_to_texture_path(block, side);
-            let next = paths.len() as f32;
-            paths.entry(path.to_owned()).or_insert_with(|| {
-                let min = next * 0.01;
-                Rect::new(min, min, min + 0.005, min + 0.005)
-            });
-        }
-    }
-    BlockTextureMap(paths)
-}
-
-// ---------------------------------------------------------------------------
 // Data size helpers
 // ---------------------------------------------------------------------------
 
 const FACEDESCRIPTOR_BYTES: usize = std::mem::size_of::<vertex_pulling::FaceDescriptor>();
 
-fn vp_data_bytes(
-    layers: &[(BlockMaterialLayer, Vec<vertex_pulling::FaceDescriptor>)],
-    light_data: &[u32],
-) -> usize {
-    let descriptor_bytes: usize = layers
-        .iter()
-        .map(|(_, desc)| desc.len() * FACEDESCRIPTOR_BYTES)
-        .sum();
-    let light_bytes = light_data.len() * std::mem::size_of::<u32>();
-    descriptor_bytes + light_bytes
-}
-
 fn vp_face_count(layers: &[(BlockMaterialLayer, Vec<vertex_pulling::FaceDescriptor>)]) -> usize {
     layers.iter().map(|(_, desc)| desc.len()).sum()
-}
-
-fn greedy_data_bytes(meshes: &[(BlockMaterialLayer, Mesh)]) -> usize {
-    let mut total = 0usize;
-    for (_, mesh) in meshes {
-        total += mesh.get_vertex_buffer_size();
-        if let Some(index_bytes) = mesh.get_index_buffer_bytes() {
-            total += index_bytes.len();
-        }
-    }
-    total
-}
-
-fn greedy_face_count(meshes: &[(BlockMaterialLayer, Mesh)]) -> usize {
-    let mut total = 0usize;
-    for (_, mesh) in meshes {
-        if let Some(indices) = mesh.indices() {
-            total += match indices {
-                bevy::mesh::Indices::U16(raw) => raw.len(),
-                bevy::mesh::Indices::U32(raw) => raw.len(),
-            } / 3;
-        }
-    }
-    total
 }
 
 // ---------------------------------------------------------------------------
@@ -281,13 +208,8 @@ fn greedy_face_count(meshes: &[(BlockMaterialLayer, Mesh)]) -> usize {
 // ---------------------------------------------------------------------------
 
 fn bench_vertex_pulling(c: &mut Criterion) {
-    let texture_map = bench_texture_map();
-    let ao_brightness = AmbientOcclusionSettings::default().brightness_curve();
     let scenarios = make_scenarios();
 
-    let lights_by_pos: HashMap<IVec3, &ChunkLight> = HashMap::new();
-
-    // Build ChunkMeshBlocks once per scenario
     let inputs: Vec<(&Scenario, ChunkMeshBlocks)> = scenarios
         .iter()
         .map(|s| {
@@ -296,7 +218,7 @@ fn bench_vertex_pulling(c: &mut Criterion) {
         })
         .collect();
 
-    // ------- vp_mesh: ChunkMeshBlocks + build_descriptors (end-to-end VP pipeline) -------
+    // ------- vp_mesh: ChunkMeshBlocks + build_descriptors -------
     {
         let mut group = c.benchmark_group("vp_mesh");
         group.throughput(Throughput::Elements(1));
@@ -313,56 +235,21 @@ fn bench_vertex_pulling(c: &mut Criterion) {
         group.finish();
     }
 
-    // ------- greedy_mesh: ChunkMeshBlocks + GreedyChunkMesher (end-to-end greedy pipeline) -------
-    {
-        let mut group = c.benchmark_group("greedy_mesh");
-        group.throughput(Throughput::Elements(1));
-        for (scenario, _blocks) in &inputs {
-            let chunk_refs = scenario.chunk_refs();
-            let center = scenario.center_pos;
-            group.bench_function(BenchmarkId::from_parameter(scenario.name), |b| {
-                b.iter(|| {
-                    let blocks = ChunkMeshBlocks::from_chunks(center, &chunk_refs);
-                    let meshes = GreedyChunkMesher.mesh(ChunkMeshInput {
-                        blocks: &blocks,
-                        block_texture_map: &texture_map,
-                        ao_brightness,
-                    });
-                    black_box(meshes)
-                });
-            });
-        }
-        group.finish();
-    }
-
-    // ------- Print data-size comparison per scenario -------
+    // ------- Data-size summary -------
     println!();
     println!("--- Data size comparison ---");
-    println!(
-        "  {:<30} {:>8} {:>8} {:>10} {:>12} {:>12}",
-        "scenario", "vp faces", "gr faces", "vp desc", "vp+light", "gr bytes",
-    );
+    println!("  {:<30} {:>8} {:>10}", "scenario", "vp faces", "vp desc",);
     for (scenario, blocks) in &inputs {
         let vp_layers = vertex_pulling::build_descriptors(blocks);
-        let light_data = ChunkLight::build_padded_light_data(scenario.center_pos, &lights_by_pos);
         let vp_desc_bytes: usize = vp_layers
             .iter()
             .map(|(_, desc)| desc.len() * FACEDESCRIPTOR_BYTES)
             .sum();
-        let vp_total = vp_data_bytes(&vp_layers, &light_data);
         let vp_faces = vp_face_count(&vp_layers);
 
-        let greedy_meshes = GreedyChunkMesher.mesh(ChunkMeshInput {
-            blocks,
-            block_texture_map: &texture_map,
-            ao_brightness,
-        });
-        let greedy_bytes = greedy_data_bytes(&greedy_meshes);
-        let greedy_faces = greedy_face_count(&greedy_meshes);
-
         println!(
-            "  {:<30} {:>8} {:>8} {:>10} {:>12} {:>12}",
-            scenario.name, vp_faces, greedy_faces, vp_desc_bytes, vp_total, greedy_bytes,
+            "  {:<30} {:>8} {:>10}",
+            scenario.name, vp_faces, vp_desc_bytes,
         );
     }
     println!();

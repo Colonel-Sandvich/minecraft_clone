@@ -159,25 +159,13 @@ pub struct VpGlobals {
     pub group0_bind_group: BindGroup,
 }
 
-#[derive(Resource)]
+#[derive(Resource, Default)]
 pub struct VpStaticResources {
     pub tile_size_buf: Option<Buffer>,
     pub tile_offsets_buf: Option<Buffer>,
     pub tint_colors_buf: Option<Buffer>,
     pub ao_brightness_buf: Option<Buffer>,
     pub view_proj_buf: Option<Buffer>,
-}
-
-impl Default for VpStaticResources {
-    fn default() -> Self {
-        Self {
-            tile_size_buf: None,
-            tile_offsets_buf: None,
-            tint_colors_buf: None,
-            ao_brightness_buf: None,
-            view_proj_buf: None,
-        }
-    }
 }
 
 #[derive(Resource)]
