@@ -1,3 +1,5 @@
+use std::mem::size_of;
+
 use bevy::{
     platform::collections::{HashMap, HashSet},
     prelude::*,
@@ -16,6 +18,24 @@ pub(crate) struct ChunkLoadTasks {
 }
 
 impl ChunkLoadTasks {
+    pub(crate) fn stats(&self) -> ChunkLoadTaskStats {
+        let tasks = self.tasks.len();
+        let failures = self.failures.len();
+        ChunkLoadTaskStats {
+            tasks,
+            failures,
+            estimated_payload_bytes: tasks
+                .saturating_mul(
+                    size_of::<IVec3>()
+                        + size_of::<Task<ChunkLoadOutput>>()
+                        + size_of::<ChunkLoadOutput>(),
+                )
+                .saturating_add(
+                    failures.saturating_mul(size_of::<IVec3>() + size_of::<ChunkLoadFailure>()),
+                ),
+        }
+    }
+
     pub(crate) fn retain_visible(&mut self, chunks_in_view: &HashSet<IVec3>) {
         self.tasks.retain(|pos, _| chunks_in_view.contains(pos));
         self.failures.retain(|pos, _| chunks_in_view.contains(pos));
@@ -67,6 +87,13 @@ impl ChunkLoadTasks {
             },
         );
     }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct ChunkLoadTaskStats {
+    pub(crate) tasks: usize,
+    pub(crate) failures: usize,
+    pub(crate) estimated_payload_bytes: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

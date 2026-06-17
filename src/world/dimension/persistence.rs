@@ -1,3 +1,5 @@
+use std::mem::size_of;
+
 use bevy::{
     platform::collections::HashMap,
     prelude::*,
@@ -21,6 +23,25 @@ pub(crate) struct ChunkSaveTasks {
 }
 
 impl ChunkSaveTasks {
+    pub(crate) fn stats(&self) -> ChunkSaveTaskStats {
+        let tasks = self.tasks.len();
+        let failures = self.failures.len();
+        ChunkSaveTaskStats {
+            tasks,
+            failures,
+            estimated_payload_bytes: tasks
+                .saturating_mul(
+                    size_of::<Entity>()
+                        + size_of::<Task<ChunkSaveOutput>>()
+                        + size_of::<ChunkSaveRequest>()
+                        + size_of::<ChunkSaveOutput>(),
+                )
+                .saturating_add(
+                    failures.saturating_mul(size_of::<Entity>() + size_of::<ChunkSaveFailure>()),
+                ),
+        }
+    }
+
     fn tick_retry_backoffs(&mut self) {
         for failure in self.failures.values_mut() {
             failure.retry_after_updates = failure.retry_after_updates.saturating_sub(1);
@@ -55,6 +76,13 @@ impl ChunkSaveTasks {
             },
         );
     }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct ChunkSaveTaskStats {
+    pub(crate) tasks: usize,
+    pub(crate) failures: usize,
+    pub(crate) estimated_payload_bytes: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

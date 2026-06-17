@@ -4,6 +4,7 @@ pub mod block_material;
 pub mod game_state;
 pub mod input;
 pub mod light;
+pub mod memory;
 pub mod mob;
 pub mod player;
 pub mod quad;

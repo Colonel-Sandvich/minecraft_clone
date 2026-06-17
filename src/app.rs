@@ -15,6 +15,7 @@ use crate::{
     block_material::BlockMaterial,
     game_state::GameStatePlugin,
     light::LightPlugin,
+    memory::{MemoryTrackingPlugin, memory_profiler_enabled},
     mob::MobControllerPlugin,
     player::PlayerPlugin,
     textures::BlockTextureAtlasPlugin,
@@ -68,6 +69,9 @@ impl Plugin for AppPlugin {
         .add_plugins((FrameTimeDiagnosticsPlugin::default(),))
         .add_plugins(WorldInspectorPlugin::new().run_if(input_toggle_active(false, KeyCode::F5)))
         .add_plugins(FramepacePlugin);
+        if memory_profiler_enabled() {
+            app.add_plugins(MemoryTrackingPlugin);
+        }
         // .insert_resource(FramepaceSettings {
         //     limiter: Limiter::from_framerate(60.0),
         // })

@@ -6,6 +6,7 @@ use bevy::{
 
 use crate::{
     input::ModifierCombo,
+    memory::GameMemorySnapshot,
     player::Player,
     player::cam::MouseCam,
     world::chunk::ambient_occlusion::AmbientOcclusionSettings,
@@ -99,6 +100,7 @@ fn update_debug_text(
     cam_q: Single<(&Transform, &GlobalTransform), (With<MouseCam>, Without<Player>)>,
     view_distance: Res<ViewDistance>,
     ao: Res<AmbientOcclusionSettings>,
+    memory: Option<Res<GameMemorySnapshot>>,
     chunk_count: Query<(), With<crate::world::chunk::Chunk>>,
     chunk_lights: Query<(&ChunkPosition, &ChunkLight)>,
     mut text: Single<&mut Text, With<DebugOverlay>>,
@@ -135,6 +137,10 @@ fn update_debug_text(
 
     let facing = facing_dir(cam_transform);
     let loaded = chunk_count.iter().count();
+    let memory = memory
+        .as_deref()
+        .map(|memory| format!("\n\nMemory:\n{}", memory.format_for_debug()))
+        .unwrap_or_default();
 
     text.0 = format!(
         "Minecraft Clone\n\
@@ -148,7 +154,7 @@ fn update_debug_text(
          Facing: {facing}\n\
          Chunks loaded: {loaded}\n\
          View dist: {vd}\n\
-         AO: {ao:?}",
+         AO: {ao:?}{memory}",
         x = pos.x,
         y = pos.y,
         z = pos.z,
@@ -158,6 +164,7 @@ fn update_debug_text(
         loaded = loaded,
         vd = view_distance.chunks(),
         ao = ao.mode,
+        memory = memory,
     );
 }
 

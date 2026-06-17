@@ -19,13 +19,11 @@ use core::future::Future;
 use self::{
     lifecycle::{finish_chunk_load_tasks, maintain_chunk_view, start_chunk_load_tasks},
     light::rebuild_chunk_light,
-    persistence::{
-        ChunkSaveBudget, ChunkSaveTasks, finish_chunk_save_tasks, start_chunk_save_tasks,
-    },
-    tasks::ChunkLoadTasks,
+    persistence::{ChunkSaveBudget, finish_chunk_save_tasks, start_chunk_save_tasks},
 };
 use super::{generation::WorldMetadata, storage::ChunkRepository};
 
+pub(crate) use self::{persistence::ChunkSaveTasks, tasks::ChunkLoadTasks};
 pub use self::{
     tasks::{ChunkLoadBudget, ChunkSpawnBudget},
     view::{ViewDistance, chunk_positions_in_view},

@@ -20,7 +20,9 @@ impl Plugin for ChunkPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(AmbientOcclusionPlugin);
         app.add_plugins(ChunkMeshPlugin);
-        app.add_plugins(ChunkColliderPlugin);
+        if std::env::var_os("MINECRAFT_CLONE_DISABLE_CHUNK_COLLIDERS").is_none() {
+            app.add_plugins(ChunkColliderPlugin);
+        }
     }
 }
 
