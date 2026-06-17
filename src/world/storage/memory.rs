@@ -55,10 +55,8 @@ impl ChunkStore for InMemoryChunkStore {
             return Ok(None);
         };
 
-        let (chunk, light) = Chunk::try_from_storage_bytes(
-            bytes,
-            self.metadata.chunk_format_version,
-        )?;
+        let (chunk, light) =
+            Chunk::try_from_storage_bytes(bytes, self.metadata.chunk_format_version)?;
         let heightmap = inner
             .column_heightmaps
             .get(&(pos.x, pos.z))
@@ -83,11 +81,11 @@ impl ChunkStore for InMemoryChunkStore {
             .filter(|(pos, _)| pos.x == column.x && pos.z == column.y)
             .map(|(pos, bytes)| {
                 let (chunk, light) = Chunk::try_from_storage_bytes(bytes, fmt)?;
-            Ok(StoredChunk {
-                pos: *pos,
-                chunk,
-                light,
-            })
+                Ok(StoredChunk {
+                    pos: *pos,
+                    chunk,
+                    light,
+                })
             })
             .collect::<ChunkStoreResult<Vec<_>>>()?;
         chunks.sort_by_key(|chunk| chunk.pos.y);

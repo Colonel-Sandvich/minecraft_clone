@@ -11,12 +11,12 @@ use bevy::prelude::*;
 
 use chunk::ChunkPlugin;
 use dimension::DimensionPlugin;
-#[cfg(feature = "turso-store")]
-use storage::{TursoChunkStore, development_turso_path};
 use storage::{
     ChunkRepository, ChunkStoreResult, InMemoryChunkStore, NoopChunkStore, SqliteChunkStore,
     development_world_path,
 };
+#[cfg(feature = "turso-store")]
+use storage::{TursoChunkStore, development_turso_path};
 
 pub use generation::WorldMetadata;
 

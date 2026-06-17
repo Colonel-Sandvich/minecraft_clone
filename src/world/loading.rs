@@ -201,11 +201,7 @@ mod tests {
         let pos = ivec3(3, 0, -1);
 
         repository
-            .save_chunk(
-                pos,
-                &Chunk::default(),
-                &ChunkHeightmap::default(),
-            )
+            .save_chunk(pos, &Chunk::default(), &ChunkHeightmap::default())
             .unwrap();
 
         let loaded = load_or_generate_chunk(ChunkLoadRequest::new(pos), repository.clone());
@@ -213,10 +209,7 @@ mod tests {
         assert_eq!(repository.metadata(), &metadata);
         assert_eq!(loaded.result.unwrap().source, ChunkLoadSource::Stored);
         assert_eq!(
-            repository
-                .load_chunk(pos)
-                .unwrap()
-                .map(|(c, _l, _h)| c),
+            repository.load_chunk(pos).unwrap().map(|(c, _l, _h)| c),
             Some(Chunk::default()),
         );
     }

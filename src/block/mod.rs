@@ -11,7 +11,21 @@ impl Plugin for BlockPlugin {
     }
 }
 
-#[derive(Default, Clone, Copy, Debug, Display, Reflect, PartialEq, Eq, Hash, EnumIter, EnumCount, EnumString, FromRepr)]
+#[derive(
+    Default,
+    Clone,
+    Copy,
+    Debug,
+    Display,
+    Reflect,
+    PartialEq,
+    Eq,
+    Hash,
+    EnumIter,
+    EnumCount,
+    EnumString,
+    FromRepr,
+)]
 #[repr(u16)]
 #[strum(serialize_all = "snake_case")]
 pub enum BlockType {

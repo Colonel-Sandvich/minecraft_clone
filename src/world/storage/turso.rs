@@ -1,4 +1,7 @@
-use std::{io::ErrorKind, path::{Path, PathBuf}};
+use std::{
+    io::ErrorKind,
+    path::{Path, PathBuf},
+};
 
 use bevy::prelude::*;
 
@@ -134,11 +137,11 @@ impl ChunkStore for TursoChunkStore {
                 let y = row.get::<i32>(0)?;
                 let bytes = row.get::<Vec<u8>>(1)?;
                 let (chunk, light) = Chunk::try_from_storage_bytes(&bytes, fmt)?;
-            chunks.push(StoredChunk {
-                pos: ivec3(column.x, y, column.y),
-                chunk,
-                light,
-            });
+                chunks.push(StoredChunk {
+                    pos: ivec3(column.x, y, column.y),
+                    chunk,
+                    light,
+                });
             }
 
             Ok(chunks)
@@ -165,13 +168,7 @@ impl ChunkStore for TursoChunkStore {
                     .execute(SQL_INSERT_CHUNK, (pos.x, pos.z, pos.y, blocks))
                     .await?;
             }
-            save_column_heightmap(
-                &transaction,
-                pos.x,
-                pos.z,
-                &heightmap_bytes,
-            )
-            .await?;
+            save_column_heightmap(&transaction, pos.x, pos.z, &heightmap_bytes).await?;
             transaction.commit().await?;
 
             Ok(())
@@ -241,7 +238,10 @@ async fn save_column_heightmap(
     heightmap_bytes: &[u8],
 ) -> ChunkStoreResult<()> {
     connection
-        .execute(SQL_UPSERT_COLUMN_HEIGHTMAP, (x, z, heightmap_bytes.to_vec()))
+        .execute(
+            SQL_UPSERT_COLUMN_HEIGHTMAP,
+            (x, z, heightmap_bytes.to_vec()),
+        )
         .await?;
     Ok(())
 }

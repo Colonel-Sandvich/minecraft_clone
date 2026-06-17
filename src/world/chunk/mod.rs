@@ -304,8 +304,8 @@ impl Chunk {
         for y in 0..CHUNK_SIZE {
             for z in 0..CHUNK_SIZE {
                 for x in 0..CHUNK_SIZE {
-                    let idx = read_bits(body, &mut bit_pos, bits)
-                        .ok_or(ChunkDecodeError::Truncated)?;
+                    let idx =
+                        read_bits(body, &mut bit_pos, bits).ok_or(ChunkDecodeError::Truncated)?;
                     let idx = (idx & mask) as usize;
                     if idx >= palette.len() {
                         return Err(ChunkDecodeError::InvalidHeader);

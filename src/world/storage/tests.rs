@@ -102,9 +102,7 @@ fn sqlite_store_roundtrips_full_chunks() {
     let mut chunk = chunk_with_block(BlockType::Grass);
     chunk.blocks[15][15][15] = BlockType::OakLeaves;
 
-    store
-        .save_chunk(pos, &chunk, &default_heightmap())
-        .unwrap();
+    store.save_chunk(pos, &chunk, &default_heightmap()).unwrap();
 
     let (loaded, _l, _h) = store.load_chunk(pos).unwrap().unwrap();
     assert_eq!(loaded, chunk);
@@ -126,7 +124,11 @@ fn sqlite_store_loads_columns_by_xz() {
         .save_chunk(ivec3(column.x, 0, column.y), &lower, &default_heightmap())
         .unwrap();
     store
-        .save_chunk(ivec3(column.x + 1, 0, column.y), &other_column, &default_heightmap())
+        .save_chunk(
+            ivec3(column.x + 1, 0, column.y),
+            &other_column,
+            &default_heightmap(),
+        )
         .unwrap();
 
     let column_data = store.load_stored_column(column).unwrap();
@@ -167,7 +169,11 @@ fn noop_store_discards_chunks() {
     let pos = ivec3(1, 0, 2);
 
     store
-        .save_chunk(pos, &chunk_with_block(BlockType::Grass), &default_heightmap())
+        .save_chunk(
+            pos,
+            &chunk_with_block(BlockType::Grass),
+            &default_heightmap(),
+        )
         .unwrap();
 
     assert_eq!(store.load_chunk(pos).unwrap(), None);
@@ -183,9 +189,7 @@ fn turso_store_roundtrips_full_chunks() {
     let mut chunk = chunk_with_block(BlockType::Grass);
     chunk.blocks[15][15][15] = BlockType::OakLeaves;
 
-    store
-        .save_chunk(pos, &chunk, &default_heightmap())
-        .unwrap();
+    store.save_chunk(pos, &chunk, &default_heightmap()).unwrap();
 
     let (loaded, _l, _h) = store.load_chunk(pos).unwrap().unwrap();
     assert_eq!(loaded, chunk);
@@ -222,9 +226,11 @@ fn sqlite_store_rejects_world_metadata_mismatch() {
     let mut incompatible = metadata.clone();
     incompatible.height_chunks += 1;
 
-    assert!(store
-        .save_chunk(IVec3::ZERO, &Chunk::default(), &default_heightmap())
-        .is_ok());
+    assert!(
+        store
+            .save_chunk(IVec3::ZERO, &Chunk::default(), &default_heightmap())
+            .is_ok()
+    );
     assert!(SqliteChunkStore::open(&store.path, &incompatible).is_err());
 }
 

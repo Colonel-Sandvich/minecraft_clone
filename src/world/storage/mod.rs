@@ -55,11 +55,7 @@ pub trait ChunkStore: Send + Sync + 'static {
         for y in 0..self.metadata().height_chunks as i32 {
             let pos = ivec3(column.x, y, column.y);
             if let Some((chunk, light, _heightmap)) = self.load_chunk(pos)? {
-                chunks.push(StoredChunk {
-                    pos,
-                    chunk,
-                    light,
-                });
+                chunks.push(StoredChunk { pos, chunk, light });
             }
         }
 

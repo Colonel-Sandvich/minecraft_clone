@@ -1,17 +1,12 @@
 use std::collections::HashMap;
 
 use bevy::{
-    asset::RenderAssetUsages,
-    input::mouse::MouseWheel,
-    prelude::*,
-    render::render_resource::*,
+    asset::RenderAssetUsages, input::mouse::MouseWheel, prelude::*, render::render_resource::*,
 };
-use image::{imageops::FilterType, GenericImageView, Rgba, RgbaImage};
+use image::{GenericImageView, Rgba, RgbaImage, imageops::FilterType};
 use strum::IntoEnumIterator;
 
-use crate::block::{
-    block_and_side_to_texture_path, block_to_colour, BlockTextureMap, BlockType,
-};
+use crate::block::{BlockTextureMap, BlockType, block_and_side_to_texture_path, block_to_colour};
 use crate::quad::Direction;
 use crate::textures::BlockStandardMaterials;
 
@@ -95,17 +90,17 @@ fn setup_gui_textures(
     *spawned = true;
 
     let hotbar_bg = load_scale("textures/gui/sprites/hud/hotbar.png", 546, 66, &mut images);
-    let selection = load_scale("textures/gui/sprites/hud/hotbar_selection.png", 72, 69, &mut images);
+    let selection = load_scale(
+        "textures/gui/sprites/hud/hotbar_selection.png",
+        72,
+        69,
+        &mut images,
+    );
 
     spawn_hotbar_ui(&mut commands, &hotbar_bg, &selection);
 }
 
-fn load_scale(
-    path: &str,
-    w: u32,
-    h: u32,
-    images: &mut ResMut<Assets<Image>>,
-) -> Handle<Image> {
+fn load_scale(path: &str, w: u32, h: u32, images: &mut ResMut<Assets<Image>>) -> Handle<Image> {
     let img = image::open(format!("assets/{path}"))
         .expect("missing GUI texture asset")
         .to_rgba8();
@@ -123,11 +118,7 @@ fn load_scale(
     ))
 }
 
-fn spawn_hotbar_ui(
-    commands: &mut Commands,
-    bg_handle: &Handle<Image>,
-    sel_handle: &Handle<Image>,
-) {
+fn spawn_hotbar_ui(commands: &mut Commands, bg_handle: &Handle<Image>, sel_handle: &Handle<Image>) {
     commands
         .spawn(Node {
             width: Val::Vw(100.0),
@@ -270,12 +261,9 @@ fn generate_block_icons(
 const ICON_W: u32 = 48;
 const ICON_H: u32 = 48;
 
-static TOP_FACE: [(f32, f32); 4] =
-    [(24.0, 4.5), (42.0, 13.5), (24.0, 22.5), (6.0, 13.5)];
-static LEFT_FACE: [(f32, f32); 4] =
-    [(6.0, 13.5), (24.0, 22.5), (24.0, 43.5), (6.0, 34.5)];
-static RIGHT_FACE: [(f32, f32); 4] =
-    [(24.0, 22.5), (42.0, 13.5), (42.0, 34.5), (24.0, 43.5)];
+static TOP_FACE: [(f32, f32); 4] = [(24.0, 4.5), (42.0, 13.5), (24.0, 22.5), (6.0, 13.5)];
+static LEFT_FACE: [(f32, f32); 4] = [(6.0, 13.5), (24.0, 22.5), (24.0, 43.5), (6.0, 34.5)];
+static RIGHT_FACE: [(f32, f32); 4] = [(24.0, 22.5), (42.0, 13.5), (42.0, 34.5), (24.0, 43.5)];
 
 static TOP_UV: [(f32, f32); 4] = [(1.0, 1.0), (1.0, 0.0), (0.0, 0.0), (0.0, 1.0)];
 static SIDE_UV: [(f32, f32); 4] = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)];
@@ -303,7 +291,14 @@ fn render_isometric_block(
     let mut canvas = RgbaImage::new(ICON_W, ICON_H);
 
     warp_face(&mut canvas, &side_tex, &LEFT_FACE, &SIDE_UV, side_tint, 0.8);
-    warp_face(&mut canvas, &side_tex, &RIGHT_FACE, &SIDE_UV, side_tint, 0.6);
+    warp_face(
+        &mut canvas,
+        &side_tex,
+        &RIGHT_FACE,
+        &SIDE_UV,
+        side_tint,
+        0.6,
+    );
     warp_face(&mut canvas, &top_tex, &TOP_FACE, &TOP_UV, top_tint, 1.0);
 
     Image::new(
