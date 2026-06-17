@@ -45,8 +45,9 @@ use bevy::{
 use crate::block::BlockMaterialLayer;
 
 use super::{
-    CHUNK_SIZE, ChunkMeshBlocks, DIRECTION_COUNT, DIRECTION_INDEX_OFFSETS, face_ao_from_indices,
-    padded_chunk_index, should_emit_face_from_indices,
+    CHUNK_SIZE, ChunkMeshBlocks, DIRECTION_COUNT, DIRECTION_INDEX_OFFSETS, block_mesh_flags,
+    face_ao_key_from_indices, material_layer_index_from_flags, padded_chunk_index,
+    should_emit_face_from_flags,
 };
 
 // ---------------------------------------------------------------------------
@@ -70,10 +71,6 @@ impl FaceDescriptor {
     }
 }
 
-fn pack_ao(ao: [u8; 4]) -> u32 {
-    (ao[0] as u32) | ((ao[1] as u32) << 2) | ((ao[2] as u32) << 4) | ((ao[3] as u32) << 6)
-}
-
 // ---------------------------------------------------------------------------
 // Padded chunk blocks → non-greedy FaceDescriptors (per material layer)
 // ---------------------------------------------------------------------------
@@ -94,24 +91,29 @@ pub fn build_descriptors(
             let mut padded_index = padded_chunk_index(1, y + 1, z + 1);
 
             for x in 0..CHUNK_SIZE {
-                let block = blocks.blocks[padded_index];
+                let block = unsafe { *blocks.blocks.get_unchecked(padded_index) };
+                let block_flags = block_mesh_flags(block);
 
-                if block.is_rendered() {
+                if block_flags != 0 {
                     for side_index in 0..DIRECTION_COUNT {
-                        let neighbor = blocks.blocks[(padded_index as isize
-                            + DIRECTION_INDEX_OFFSETS[side_index])
-                            as usize];
+                        let neighbor_index =
+                            (padded_index as isize + DIRECTION_INDEX_OFFSETS[side_index]) as usize;
+                        let neighbor = unsafe { *blocks.blocks.get_unchecked(neighbor_index) };
+                        let neighbor_flags = block_mesh_flags(neighbor);
 
-                        if should_emit_face_from_indices(block, neighbor) {
-                            let ao = face_ao_from_indices(blocks, padded_index, side_index);
-                            descriptors[block.material_layer_index()].push(FaceDescriptor::new(
-                                x as u32,
-                                y as u32,
-                                z as u32,
-                                side_index as u32,
-                                block as u32,
-                                pack_ao(ao),
-                            ));
+                        if should_emit_face_from_flags(block, block_flags, neighbor, neighbor_flags)
+                        {
+                            let ao_key = face_ao_key_from_indices(blocks, padded_index, side_index);
+                            descriptors[material_layer_index_from_flags(block_flags)].push(
+                                FaceDescriptor::new(
+                                    x as u32,
+                                    y as u32,
+                                    z as u32,
+                                    side_index as u32,
+                                    block as u32,
+                                    ao_key,
+                                ),
+                            );
                         }
                     }
                 }

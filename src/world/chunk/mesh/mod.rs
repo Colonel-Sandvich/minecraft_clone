@@ -22,6 +22,10 @@ pub(crate) const PADDED_CHUNK_VOLUME: usize =
 pub(crate) const PADDED_CHUNK_LAYER_SIZE: usize = PADDED_CHUNK_SIZE * PADDED_CHUNK_SIZE;
 pub(crate) const BLOCK_TYPE_COUNT: usize = BlockType::COUNT;
 pub(crate) const DIRECTION_COUNT: usize = 6;
+pub(crate) const BLOCK_FLAG_RENDERED: u8 = 1 << 0;
+pub(crate) const BLOCK_FLAG_FULL_CUBE: u8 = 1 << 1;
+pub(crate) const BLOCK_FLAG_EMITS_INTERNAL_FACES: u8 = 1 << 2;
+pub(crate) const BLOCK_FLAG_CUTOUT: u8 = 1 << 3;
 pub(crate) const DIRECTION_INDEX_OFFSETS: [isize; DIRECTION_COUNT] = [
     -1,
     1,
@@ -30,45 +34,68 @@ pub(crate) const DIRECTION_INDEX_OFFSETS: [isize; DIRECTION_COUNT] = [
     -(PADDED_CHUNK_SIZE as isize),
     PADDED_CHUNK_SIZE as isize,
 ];
-pub(crate) const VERTEX_AO: [u8; 8] = [3, 2, 2, 0, 2, 1, 1, 0];
-pub(crate) const AO_SAMPLE_INDEX_OFFSETS: [[[isize; 3]; 4]; DIRECTION_COUNT] = [
-    [
-        [-325, 17, -307],
-        [-325, -19, -343],
-        [323, 17, 341],
-        [323, -19, 305],
-    ],
-    [
-        [-323, -17, -341],
-        [-323, 19, -305],
-        [325, -17, 307],
-        [325, 19, 343],
-    ],
-    [
-        [-325, -306, -307],
-        [-323, -306, -305],
-        [-325, -342, -343],
-        [-323, -342, -341],
-    ],
-    [
-        [323, 342, 341],
-        [323, 306, 305],
-        [325, 342, 343],
-        [325, 306, 307],
-    ],
-    [
-        [-19, -342, -343],
-        [-17, -342, -341],
-        [-19, 306, 305],
-        [-17, 306, 307],
-    ],
-    [
-        [19, -306, -305],
-        [17, -306, -307],
-        [19, 342, 343],
-        [17, 342, 341],
-    ],
+pub(crate) const BLOCK_MESH_FLAGS: [u8; BLOCK_TYPE_COUNT] = [
+    0,
+    BLOCK_FLAG_RENDERED | BLOCK_FLAG_FULL_CUBE,
+    BLOCK_FLAG_RENDERED | BLOCK_FLAG_FULL_CUBE,
+    BLOCK_FLAG_RENDERED | BLOCK_FLAG_FULL_CUBE,
+    BLOCK_FLAG_RENDERED | BLOCK_FLAG_FULL_CUBE,
+    BLOCK_FLAG_RENDERED | BLOCK_FLAG_CUTOUT,
+    BLOCK_FLAG_RENDERED | BLOCK_FLAG_FULL_CUBE,
+    BLOCK_FLAG_RENDERED | BLOCK_FLAG_CUTOUT | BLOCK_FLAG_EMITS_INTERNAL_FACES,
+    BLOCK_FLAG_RENDERED | BLOCK_FLAG_FULL_CUBE,
 ];
+pub(crate) const VERTEX_AO: [u32; 8] = [3, 2, 2, 0, 2, 1, 1, 0];
+
+#[inline(always)]
+pub(crate) fn block_mesh_flags(block: BlockType) -> u8 {
+    unsafe { *BLOCK_MESH_FLAGS.get_unchecked(block as usize) }
+}
+
+#[inline(always)]
+pub(crate) const fn material_layer_index_from_flags(flags: u8) -> usize {
+    ((flags & BLOCK_FLAG_CUTOUT) != 0) as usize
+}
+
+// Each face has 4 AO corners but only 8 unique sample cells. These macros encode
+// the two corner-order layouts used by the six face directions and avoid the old
+// 12 block-classification loads per face. `indexed_face_ao_matches_reference...`
+// guards the numeric offsets and corner ordering.
+macro_rules! ao_key_ab {
+    ($blocks:expr, $padded_index:expr, $a0:expr, $a1:expr, $b0:expr, $b1:expr, $c00:expr, $c01:expr, $c10:expr, $c11:expr) => {{
+        let a0 = block_occludes_ambient_light_bit($blocks, $padded_index, $a0);
+        let a1 = block_occludes_ambient_light_bit($blocks, $padded_index, $a1);
+        let b0 = block_occludes_ambient_light_bit($blocks, $padded_index, $b0);
+        let b1 = block_occludes_ambient_light_bit($blocks, $padded_index, $b1);
+        let c00 = block_occludes_ambient_light_bit($blocks, $padded_index, $c00);
+        let c01 = block_occludes_ambient_light_bit($blocks, $padded_index, $c01);
+        let c10 = block_occludes_ambient_light_bit($blocks, $padded_index, $c10);
+        let c11 = block_occludes_ambient_light_bit($blocks, $padded_index, $c11);
+
+        vertex_ao_key(a0, b0, c00)
+            | (vertex_ao_key(a0, b1, c01) << 2)
+            | (vertex_ao_key(a1, b0, c10) << 4)
+            | (vertex_ao_key(a1, b1, c11) << 6)
+    }};
+}
+
+macro_rules! ao_key_ba {
+    ($blocks:expr, $padded_index:expr, $a0:expr, $a1:expr, $b0:expr, $b1:expr, $c00:expr, $c01:expr, $c10:expr, $c11:expr) => {{
+        let a0 = block_occludes_ambient_light_bit($blocks, $padded_index, $a0);
+        let a1 = block_occludes_ambient_light_bit($blocks, $padded_index, $a1);
+        let b0 = block_occludes_ambient_light_bit($blocks, $padded_index, $b0);
+        let b1 = block_occludes_ambient_light_bit($blocks, $padded_index, $b1);
+        let c00 = block_occludes_ambient_light_bit($blocks, $padded_index, $c00);
+        let c01 = block_occludes_ambient_light_bit($blocks, $padded_index, $c01);
+        let c10 = block_occludes_ambient_light_bit($blocks, $padded_index, $c10);
+        let c11 = block_occludes_ambient_light_bit($blocks, $padded_index, $c11);
+
+        vertex_ao_key(a0, b0, c00)
+            | (vertex_ao_key(a1, b0, c10) << 2)
+            | (vertex_ao_key(a0, b1, c01) << 4)
+            | (vertex_ao_key(a1, b1, c11) << 6)
+    }};
+}
 
 pub struct ChunkMeshPlugin;
 
@@ -281,64 +308,130 @@ const fn chunk_render_aabb() -> Aabb {
 }
 
 #[inline(always)]
-pub(crate) fn should_emit_face_from_indices(block: BlockType, neighbor: BlockType) -> bool {
-    if !neighbor.is_rendered() {
+pub(crate) fn should_emit_face_from_flags(
+    block: BlockType,
+    block_flags: u8,
+    neighbor: BlockType,
+    neighbor_flags: u8,
+) -> bool {
+    if neighbor_flags & BLOCK_FLAG_RENDERED == 0 {
         return true;
     }
 
-    if neighbor.is_full_cube() {
+    if neighbor_flags & BLOCK_FLAG_FULL_CUBE != 0 {
         return false;
     }
 
-    if block == neighbor && !block.is_full_cube() && !neighbor.is_full_cube() {
-        return block.emits_internal_faces();
+    if block == neighbor && block_flags & BLOCK_FLAG_FULL_CUBE == 0 {
+        return block_flags & BLOCK_FLAG_EMITS_INTERNAL_FACES != 0;
     }
 
     true
 }
 
 #[inline(always)]
+pub(crate) fn face_ao_key_from_indices(
+    blocks: &ChunkMeshBlocks,
+    padded_index: usize,
+    side_index: usize,
+) -> u32 {
+    match side_index {
+        0 => ao_key_ab!(
+            blocks,
+            padded_index,
+            -325,
+            323,
+            17,
+            -19,
+            -307,
+            -343,
+            341,
+            305
+        ),
+        1 => ao_key_ab!(
+            blocks,
+            padded_index,
+            -323,
+            325,
+            -17,
+            19,
+            -341,
+            -305,
+            307,
+            343
+        ),
+        2 => ao_key_ba!(
+            blocks,
+            padded_index,
+            -325,
+            -323,
+            -306,
+            -342,
+            -307,
+            -343,
+            -305,
+            -341
+        ),
+        3 => ao_key_ab!(blocks, padded_index, 323, 325, 342, 306, 341, 305, 343, 307),
+        4 => ao_key_ba!(
+            blocks,
+            padded_index,
+            -19,
+            -17,
+            -342,
+            306,
+            -343,
+            305,
+            -341,
+            307
+        ),
+        _ => ao_key_ba!(
+            blocks,
+            padded_index,
+            19,
+            17,
+            -306,
+            342,
+            -305,
+            343,
+            -307,
+            341
+        ),
+    }
+}
+
+#[inline(always)]
+#[cfg(test)]
 pub(crate) fn face_ao_from_indices(
     blocks: &ChunkMeshBlocks,
     padded_index: usize,
     side_index: usize,
 ) -> [u8; 4] {
-    let all = AO_SAMPLE_INDEX_OFFSETS[side_index];
-
-    let offsets0 = all[0];
-    let s10 = block_occludes_ambient_light_from_index(blocks, padded_index, offsets0[0]);
-    let s20 = block_occludes_ambient_light_from_index(blocks, padded_index, offsets0[1]);
-    let c0 = block_occludes_ambient_light_from_index(blocks, padded_index, offsets0[2]);
-    let ao0 = VERTEX_AO[s10 as usize | ((s20 as usize) << 1) | ((c0 as usize) << 2)];
-
-    let offsets1 = all[1];
-    let s11 = block_occludes_ambient_light_from_index(blocks, padded_index, offsets1[0]);
-    let s21 = block_occludes_ambient_light_from_index(blocks, padded_index, offsets1[1]);
-    let c1 = block_occludes_ambient_light_from_index(blocks, padded_index, offsets1[2]);
-    let ao1 = VERTEX_AO[s11 as usize | ((s21 as usize) << 1) | ((c1 as usize) << 2)];
-
-    let offsets2 = all[2];
-    let s12 = block_occludes_ambient_light_from_index(blocks, padded_index, offsets2[0]);
-    let s22 = block_occludes_ambient_light_from_index(blocks, padded_index, offsets2[1]);
-    let c2 = block_occludes_ambient_light_from_index(blocks, padded_index, offsets2[2]);
-    let ao2 = VERTEX_AO[s12 as usize | ((s22 as usize) << 1) | ((c2 as usize) << 2)];
-
-    let offsets3 = all[3];
-    let s13 = block_occludes_ambient_light_from_index(blocks, padded_index, offsets3[0]);
-    let s23 = block_occludes_ambient_light_from_index(blocks, padded_index, offsets3[1]);
-    let c3 = block_occludes_ambient_light_from_index(blocks, padded_index, offsets3[2]);
-    let ao3 = VERTEX_AO[s13 as usize | ((s23 as usize) << 1) | ((c3 as usize) << 2)];
-
-    [ao0, ao1, ao2, ao3]
+    let key = face_ao_key_from_indices(blocks, padded_index, side_index);
+    [
+        (key & 0x3) as u8,
+        ((key >> 2) & 0x3) as u8,
+        ((key >> 4) & 0x3) as u8,
+        ((key >> 6) & 0x3) as u8,
+    ]
 }
 
 #[inline(always)]
-pub(crate) fn block_occludes_ambient_light_from_index(
+fn vertex_ao_key(s1: u32, s2: u32, corner: u32) -> u32 {
+    VERTEX_AO[(s1 | (s2 << 1) | (corner << 2)) as usize]
+}
+
+#[inline(always)]
+fn block_occludes_ambient_light_bit(
     blocks: &ChunkMeshBlocks,
     padded_index: usize,
     offset: isize,
-) -> bool {
-    blocks.blocks[(padded_index as isize + offset) as usize].is_full_cube()
+) -> u32 {
+    let index = (padded_index as isize + offset) as usize;
+    debug_assert!(index < PADDED_CHUNK_VOLUME);
+    unsafe {
+        ((block_mesh_flags(*blocks.blocks.get_unchecked(index)) & BLOCK_FLAG_FULL_CUBE) >> 1) as u32
+    }
 }
 
 pub(crate) fn padded_chunk_index(x: usize, y: usize, z: usize) -> usize {
