@@ -1,10 +1,6 @@
 use std::ops::Mul;
 
-use bevy::{
-    platform::collections::HashSet,
-    prelude::*,
-    tasks::{AsyncComputeTaskPool, futures::check_ready},
-};
+use bevy::{platform::collections::HashSet, prelude::*, tasks::futures::check_ready};
 
 use crate::{
     player::Player,
@@ -20,7 +16,7 @@ use crate::{
 };
 
 use super::{
-    Active, Dimension,
+    Active, ChunkTaskPool, Dimension,
     tasks::{ChunkLoadBudget, ChunkLoadTasks, ChunkSpawnBudget},
     view::{ViewDistance, chunk_positions_in_view},
 };
@@ -72,6 +68,7 @@ pub(crate) fn start_chunk_load_tasks(
     view_distance: Res<ViewDistance>,
     load_budget: Res<ChunkLoadBudget>,
     mut load_tasks: ResMut<ChunkLoadTasks>,
+    task_pool: Res<ChunkTaskPool>,
 ) {
     load_tasks.tick_failure_backoffs();
 
@@ -86,7 +83,6 @@ pub(crate) fn start_chunk_load_tasks(
 
     let centre = maybe_player_q.map_or(Transform::default(), |q| **q);
     let dim = dimension.into_inner();
-    let thread_pool = AsyncComputeTaskPool::get();
     let mut started = 0;
 
     for pos in chunk_positions_in_view(
@@ -104,7 +100,7 @@ pub(crate) fn start_chunk_load_tasks(
 
         let request = ChunkLoadRequest::new(pos);
         let repository = repository.clone();
-        let task = thread_pool.spawn(async move { load_or_generate_chunk(request, repository) });
+        let task = task_pool.spawn(async move { load_or_generate_chunk(request, repository) });
         load_tasks.tasks.insert(pos, task);
         started += 1;
     }
@@ -233,7 +229,8 @@ mod tests {
     }
 
     fn add_chunk_lifecycle_systems(app: &mut App) {
-        app.insert_resource(ChunkLoadTasks::default())
+        app.insert_resource(ChunkTaskPool::new_for_test())
+            .insert_resource(ChunkLoadTasks::default())
             .insert_resource(ViewDistance::new(TEST_VIEW_DISTANCE))
             .add_systems(
                 Update,
@@ -297,7 +294,8 @@ mod tests {
                 source: ChunkLoadSource::Generated,
             }),
         };
-        let task = AsyncComputeTaskPool::get().spawn(async move { output });
+        let pool = app.world().resource::<ChunkTaskPool>();
+        let task = pool.spawn(async move { output });
         app.world_mut()
             .resource_mut::<ChunkLoadTasks>()
             .tasks
@@ -313,6 +311,7 @@ mod tests {
         let non_neighbor = ivec3(2, 0, 0);
         let mut app = App::new();
         app.add_plugins(MinimalPlugins)
+            .insert_resource(ChunkTaskPool::new_for_test())
             .insert_resource(metadata.clone())
             .insert_resource(ViewDistance::new(TEST_VIEW_DISTANCE))
             .insert_resource(ChunkSpawnBudget(usize::MAX))
@@ -358,6 +357,7 @@ mod tests {
         let horizontal_neighbor = IVec3::X;
         let mut app = App::new();
         app.add_plugins(MinimalPlugins)
+            .insert_resource(ChunkTaskPool::new_for_test())
             .insert_resource(metadata)
             .insert_resource(ViewDistance::new(TEST_VIEW_DISTANCE))
             .insert_resource(ChunkSpawnBudget(usize::MAX))

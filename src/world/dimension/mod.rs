@@ -4,9 +4,17 @@ mod persistence;
 mod tasks;
 mod view;
 
-use bevy::{platform::collections::HashMap, prelude::*};
+use bevy::{
+    platform::collections::HashMap,
+    prelude::*,
+    tasks::{AsyncComputeTaskPool, Task},
+};
+
+#[cfg(test)]
+use bevy::tasks::{TaskPool, TaskPoolBuilder};
 
 use crate::game_state::{GameState, Playing};
+use core::future::Future;
 
 use self::{
     lifecycle::{finish_chunk_load_tasks, maintain_chunk_view, start_chunk_load_tasks},
@@ -22,6 +30,39 @@ pub use self::{
     tasks::{ChunkLoadBudget, ChunkSpawnBudget},
     view::{ViewDistance, chunk_positions_in_view},
 };
+
+#[derive(Resource)]
+pub(crate) struct ChunkTaskPool(ChunkTaskPoolInner);
+
+enum ChunkTaskPoolInner {
+    Global,
+    #[cfg(test)]
+    Test(TaskPool),
+}
+
+impl ChunkTaskPool {
+    pub(crate) fn global() -> Self {
+        Self(ChunkTaskPoolInner::Global)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_for_test() -> Self {
+        Self(ChunkTaskPoolInner::Test(
+            TaskPoolBuilder::new().num_threads(1).build(),
+        ))
+    }
+
+    pub(crate) fn spawn<T: Send + 'static>(
+        &self,
+        future: impl Future<Output = T> + Send + 'static,
+    ) -> Task<T> {
+        match &self.0 {
+            ChunkTaskPoolInner::Global => AsyncComputeTaskPool::get().spawn(future),
+            #[cfg(test)]
+            ChunkTaskPoolInner::Test(pool) => pool.spawn(future),
+        }
+    }
+}
 
 #[derive(Default, Component)]
 pub struct Dimension {
@@ -42,7 +83,8 @@ pub struct DimensionPlugin;
 
 impl Plugin for DimensionPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<WorldMetadata>()
+        app.insert_resource(ChunkTaskPool::global())
+            .init_resource::<WorldMetadata>()
             .init_resource::<ChunkRepository>()
             .init_resource::<ChunkLoadBudget>()
             .init_resource::<ChunkSpawnBudget>()

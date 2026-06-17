@@ -110,10 +110,8 @@ impl ChunkStore for SqliteChunkStore {
             return Ok(None);
         };
 
-        let (chunk, light) = Chunk::try_from_storage_bytes(
-            &bytes,
-            self.metadata.chunk_format_version,
-        )?;
+        let (chunk, light) =
+            Chunk::try_from_storage_bytes(&bytes, self.metadata.chunk_format_version)?;
         let heightmap = load_column_heightmap(&connection, pos.x, pos.z)?;
 
         Ok(Some((chunk, light, heightmap)))
@@ -132,11 +130,11 @@ impl ChunkStore for SqliteChunkStore {
         for row in rows {
             let (y, bytes) = row?;
             let (chunk, light) = Chunk::try_from_storage_bytes(&bytes, fmt)?;
-        chunks.push(StoredChunk {
-            pos: ivec3(column.x, y, column.y),
-            chunk,
-            light,
-        });
+            chunks.push(StoredChunk {
+                pos: ivec3(column.x, y, column.y),
+                chunk,
+                light,
+            });
         }
 
         Ok(chunks)
@@ -148,10 +146,12 @@ impl ChunkStore for SqliteChunkStore {
         chunk: &Chunk,
         heightmap: &ChunkHeightmap,
     ) -> ChunkStoreResult<()> {
-        let connection = self.open_connection()?;
+        let mut connection = self.open_connection()?;
         let blocks = chunk.to_storage_bytes();
-        connection.execute(SQL_UPSERT_CHUNK, params![pos.x, pos.z, pos.y, &blocks])?;
-        save_column_heightmap(&connection, pos.x, pos.z, heightmap)?;
+        let tx = connection.transaction()?;
+        tx.execute(SQL_UPSERT_CHUNK, params![pos.x, pos.z, pos.y, &blocks])?;
+        save_column_heightmap(&tx, pos.x, pos.z, heightmap)?;
+        tx.commit()?;
 
         Ok(())
     }
@@ -213,11 +213,9 @@ fn load_column_heightmap(
     z: i32,
 ) -> ChunkStoreResult<ChunkHeightmap> {
     let bytes = connection
-        .query_row(
-            SQL_SELECT_COLUMN_HEIGHTMAP,
-            params![x, z],
-            |row| row.get::<_, Vec<u8>>(0),
-        )
+        .query_row(SQL_SELECT_COLUMN_HEIGHTMAP, params![x, z], |row| {
+            row.get::<_, Vec<u8>>(0)
+        })
         .optional()?;
 
     Ok(bytes

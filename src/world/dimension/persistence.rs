@@ -1,8 +1,10 @@
 use bevy::{
     platform::collections::HashMap,
     prelude::*,
-    tasks::{AsyncComputeTaskPool, Task, futures::check_ready},
+    tasks::{Task, futures::check_ready},
 };
+
+use super::ChunkTaskPool;
 
 use crate::world::{
     chunk::{Chunk, ChunkHeightmap, ChunkNeedsSave, ChunkPosition},
@@ -127,9 +129,7 @@ pub(crate) fn finish_chunk_save_tasks(
                     continue;
                 };
 
-                if *chunk == output.saved_chunk
-                    && *heightmap == output.saved_heightmap
-                {
+                if *chunk == output.saved_chunk && *heightmap == output.saved_heightmap {
                     commands.entity(entity).remove::<ChunkNeedsSave>();
                     save_tasks.record_success(entity);
                 }
@@ -143,18 +143,11 @@ pub(crate) fn finish_chunk_save_tasks(
 }
 
 pub(crate) fn start_chunk_save_tasks(
-    dirty_chunks: Query<
-        (
-            Entity,
-            &Chunk,
-            &ChunkHeightmap,
-            &ChunkPosition,
-        ),
-        With<ChunkNeedsSave>,
-    >,
+    dirty_chunks: Query<(Entity, &Chunk, &ChunkHeightmap, &ChunkPosition), With<ChunkNeedsSave>>,
     repository: Res<ChunkRepository>,
     save_budget: Res<ChunkSaveBudget>,
     mut save_tasks: ResMut<ChunkSaveTasks>,
+    task_pool: Res<ChunkTaskPool>,
 ) {
     if save_budget.0 == 0 {
         return;
@@ -167,7 +160,6 @@ pub(crate) fn start_chunk_save_tasks(
         return;
     }
 
-    let thread_pool = AsyncComputeTaskPool::get();
     let mut started = 0;
     for (entity, chunk, heightmap, position) in dirty_chunks.iter() {
         if started >= available_slots {
@@ -184,18 +176,14 @@ pub(crate) fn start_chunk_save_tasks(
             heightmap: *heightmap,
         };
         let repository = repository.clone();
-        let task = thread_pool.spawn(async move { save_chunk_snapshot(request, repository) });
+        let task = task_pool.spawn(async move { save_chunk_snapshot(request, repository) });
         save_tasks.tasks.insert(entity, task);
         started += 1;
     }
 }
 
 fn save_chunk_snapshot(request: ChunkSaveRequest, repository: ChunkRepository) -> ChunkSaveOutput {
-    let result = repository.save_chunk(
-        request.pos,
-        &request.chunk,
-        &request.heightmap,
-    );
+    let result = repository.save_chunk(request.pos, &request.chunk, &request.heightmap);
 
     ChunkSaveOutput {
         entity: request.entity,
@@ -231,10 +219,12 @@ mod tests {
     }
 
     fn add_chunk_save_systems(app: &mut App) {
-        app.insert_resource(ChunkSaveTasks::default()).add_systems(
-            Update,
-            (finish_chunk_save_tasks, start_chunk_save_tasks).chain(),
-        );
+        app.insert_resource(ChunkTaskPool::new_for_test())
+            .insert_resource(ChunkSaveTasks::default())
+            .add_systems(
+                Update,
+                (finish_chunk_save_tasks, start_chunk_save_tasks).chain(),
+            );
     }
 
     fn test_save_error() -> ChunkStoreError {
@@ -372,7 +362,13 @@ mod tests {
 
         let chunk_entity = app
             .world_mut()
-            .spawn((ChunkPosition(pos), chunk, ChunkLight::default(), ChunkHeightmap::default(), ChunkNeedsSave))
+            .spawn((
+                ChunkPosition(pos),
+                chunk,
+                ChunkLight::default(),
+                ChunkHeightmap::default(),
+                ChunkNeedsSave,
+            ))
             .id();
 
         app.update();
