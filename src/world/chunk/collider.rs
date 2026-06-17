@@ -1,7 +1,6 @@
 use super::{Chunk, ChunkBlockCounts, ChunkNeedsColliderRebuild};
 use crate::world::WORLD_COLLISION_LAYERS;
 use avian3d::prelude::*;
-use bevy::math::vec3;
 use bevy::prelude::*;
 
 pub struct ChunkColliderPlugin;
@@ -23,26 +22,22 @@ fn insert_one(
         return;
     }
 
-    let mut cubes = Vec::with_capacity(solid);
+    let mut voxels = Vec::with_capacity(solid);
     for (block, (x, y, z)) in chunk.iter() {
         if !block.is_solid() {
             continue;
         }
 
-        cubes.push((
-            vec3(x as f32, y as f32, z as f32) + Vec3::splat(0.5),
-            Quat::IDENTITY,
-            Collider::cuboid(1.0, 1.0, 1.0),
-        ));
+        voxels.push(IVec3::new(x as i32, y as i32, z as i32));
     }
 
-    if cubes.is_empty() {
+    if voxels.is_empty() {
         return;
     }
 
     commands.spawn((
         ChildOf(chunk_entity),
-        Collider::compound(cubes),
+        Collider::voxels(Vec3::ONE, &voxels),
         WORLD_COLLISION_LAYERS,
         RigidBody::Static,
     ));
