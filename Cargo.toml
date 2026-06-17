@@ -40,6 +40,10 @@ harness = false
 name = "light_propagation"
 harness = false
 
+[[bench]]
+name = "vertex_pulling"
+harness = false
+
 
 # Enable a small amount of optimization in debug mode
 [profile.dev]

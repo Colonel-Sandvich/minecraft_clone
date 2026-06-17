@@ -85,9 +85,9 @@ pub fn build_descriptors(
         return Vec::new();
     }
 
-    let counts = count_descriptor_faces(blocks);
+    let capacity = blocks.center_rendered_blocks as usize;
     let mut descriptors: [Vec<FaceDescriptor>; BlockMaterialLayer::COUNT] =
-        std::array::from_fn(|i| Vec::with_capacity(counts[i]));
+        std::array::from_fn(|_| Vec::with_capacity(capacity));
 
     for y in 0..CHUNK_SIZE {
         for z in 0..CHUNK_SIZE {
@@ -128,36 +128,6 @@ pub fn build_descriptors(
             (!layer_descriptors.is_empty()).then_some((layer, layer_descriptors))
         })
         .collect()
-}
-
-fn count_descriptor_faces(blocks: &ChunkMeshBlocks) -> [usize; BlockMaterialLayer::COUNT] {
-    let mut counts = [0; BlockMaterialLayer::COUNT];
-
-    for y in 0..CHUNK_SIZE {
-        for z in 0..CHUNK_SIZE {
-            let mut padded_index = padded_chunk_index(1, y + 1, z + 1);
-
-            for _x in 0..CHUNK_SIZE {
-                let block = blocks.blocks[padded_index];
-
-                if block.is_rendered() {
-                    for side_index in 0..DIRECTION_COUNT {
-                        let neighbor = blocks.blocks[(padded_index as isize
-                            + DIRECTION_INDEX_OFFSETS[side_index])
-                            as usize];
-
-                        if should_emit_face_from_indices(block, neighbor) {
-                            counts[block.material_layer_index()] += 1;
-                        }
-                    }
-                }
-
-                padded_index += 1;
-            }
-        }
-    }
-
-    counts
 }
 
 // ---------------------------------------------------------------------------
