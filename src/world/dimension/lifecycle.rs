@@ -6,8 +6,8 @@ use crate::{
     player::Player,
     world::{
         chunk::{
-            CHUNK_SIZE, ChunkNeedsColliderRebuild, ChunkNeedsLightRebuild, ChunkNeedsMeshRebuild,
-            ChunkNeedsSave, ChunkPosition, chunk_neighbor_offsets,
+            CHUNK_SIZE, ChunkNeedsColliderRebuild, ChunkNeedsLightRebuild, ChunkNeedsLightUpload,
+            ChunkNeedsMeshRebuild, ChunkNeedsSave, ChunkPosition, chunk_neighbor_offsets,
         },
         generation::WorldMetadata,
         loading::{ChunkLoadRequest, load_or_generate_chunk},
@@ -191,7 +191,9 @@ fn mark_loaded_neighbor_meshes_dirty(commands: &mut Commands, dimension: &Dimens
             continue;
         };
 
-        commands.entity(entity).insert(ChunkNeedsMeshRebuild);
+        commands
+            .entity(entity)
+            .insert((ChunkNeedsMeshRebuild, ChunkNeedsLightUpload));
     }
 
     mark_loaded_light_column_dirty(commands, dimension, pos);

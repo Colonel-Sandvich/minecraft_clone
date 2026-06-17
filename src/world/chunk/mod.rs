@@ -105,6 +105,9 @@ pub struct ChunkNeedsSave;
 pub struct ChunkNeedsMeshRebuild;
 
 #[derive(Component, Debug, Clone, Copy)]
+pub struct ChunkNeedsLightUpload;
+
+#[derive(Component, Debug, Clone, Copy)]
 pub struct ChunkNeedsColliderRebuild;
 
 #[derive(Component, Debug, Clone, Copy)]

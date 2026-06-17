@@ -5,7 +5,7 @@ use bevy::{
 
 use crate::world::{
     chunk::{
-        Chunk, ChunkHeightmap, ChunkLight, ChunkNeedsLightRebuild, ChunkNeedsMeshRebuild,
+        Chunk, ChunkHeightmap, ChunkLight, ChunkNeedsLightRebuild, ChunkNeedsLightUpload,
         ChunkPosition, chunk_neighbor_offsets, light::compute_light_region,
     },
     generation::WorldMetadata,
@@ -101,29 +101,34 @@ pub(crate) fn rebuild_chunk_light(
         metadata.height_chunks as i32,
     );
 
-    let mut changed_positions = HashSet::new();
+    let mut changed_light_positions = HashSet::new();
     for &pos in &targets {
         let Some((entity, _, old_light, old_heightmap)) = chunk_map.get(&pos) else {
             continue;
         };
         let new_light = lights.get(&pos).cloned().unwrap_or_default();
         let new_heightmap = heightmaps.get(&pos).copied().unwrap_or_default();
+        let light_changed = new_light != **old_light;
+        let heightmap_changed = new_heightmap != **old_heightmap;
 
-        if new_light != **old_light || new_heightmap != **old_heightmap {
+        if light_changed {
             commands
                 .entity(*entity)
-                .insert((new_light, new_heightmap, ChunkNeedsMeshRebuild));
-            changed_positions.insert(pos);
+                .insert((new_light, ChunkNeedsLightUpload));
+            changed_light_positions.insert(pos);
+        }
+        if heightmap_changed {
+            commands.entity(*entity).insert(new_heightmap);
         }
         commands.entity(*entity).remove::<ChunkNeedsLightRebuild>();
     }
 
-    for pos in changed_positions {
+    for pos in changed_light_positions {
         for offset in chunk_neighbor_offsets() {
             let Some(entity) = loaded_chunks.get(&(pos + offset)) else {
                 continue;
             };
-            commands.entity(*entity).insert(ChunkNeedsMeshRebuild);
+            commands.entity(*entity).insert(ChunkNeedsLightUpload);
         }
     }
 }
@@ -156,7 +161,9 @@ mod tests {
     use super::*;
     use crate::{
         block::BlockType,
-        world::chunk::{CHUNK_SIZE, ChunkNeedsLightRebuild, ChunkNeedsMeshRebuild},
+        world::chunk::{
+            CHUNK_SIZE, ChunkNeedsLightRebuild, ChunkNeedsLightUpload, ChunkNeedsMeshRebuild,
+        },
     };
 
     fn app_with_light_system(height_chunks: usize) -> App {
@@ -234,7 +241,7 @@ mod tests {
     }
 
     #[test]
-    fn changed_light_marks_padded_neighbor_mesh_dirty() {
+    fn changed_light_marks_padded_neighbor_light_upload_dirty() {
         let mut app = app_with_light_system(1);
         let center_entity = app
             .world_mut()
@@ -268,8 +275,15 @@ mod tests {
         );
         assert!(
             world
-                .get::<ChunkNeedsMeshRebuild>(neighbor_entity)
+                .get::<ChunkNeedsLightUpload>(neighbor_entity)
                 .is_some()
+        );
+        assert!(world.get::<ChunkNeedsLightUpload>(center_entity).is_some());
+        assert!(world.get::<ChunkNeedsMeshRebuild>(center_entity).is_none());
+        assert!(
+            world
+                .get::<ChunkNeedsMeshRebuild>(neighbor_entity)
+                .is_none()
         );
     }
 

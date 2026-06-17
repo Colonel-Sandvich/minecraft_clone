@@ -3,12 +3,12 @@ use bevy::prelude::*;
 
 use crate::block::{BlockMaterialLayer, BlockType};
 use crate::quad::Direction;
-use crate::world::chunk::Chunk;
 use crate::world::chunk::mesh::vertex_pulling;
+use crate::world::chunk::{Chunk, ChunkLight, ChunkNeedsLightUpload};
 
 use super::{
     CHUNK_ISIZE, CHUNK_SIZE, ChunkMeshBlocks, ChunkNeedsMeshRebuild, ChunkPosition,
-    face_ao_from_indices, padded_chunk_index,
+    VertexPullingLight, face_ao_from_indices, padded_chunk_index,
 };
 
 // Mirrors the removed mod.rs VERTEX_OFFSETS — only needed in test AO helpers.
@@ -327,6 +327,52 @@ fn mesh_rebuild_marker_is_removed_after_rebuild() {
         .filter(|child| world.get::<super::VertexPullingMesh>(*child).is_some())
         .count();
     assert_eq!(mesh_child_count, 1);
+}
+
+#[test]
+fn light_upload_marker_updates_existing_vertex_pulling_light() {
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins)
+        .add_systems(Update, super::upload_chunk_lights);
+
+    let mut chunk_light = ChunkLight::default();
+    chunk_light.set_packed_light(uvec3(0, 0, 0), 0xAF);
+    let expected_light_data = ChunkLight::build_padded_light_data(
+        IVec3::ZERO,
+        &HashMap::from([(IVec3::ZERO, &chunk_light)]),
+    );
+
+    let chunk_entity = app
+        .world_mut()
+        .spawn((
+            ChunkPosition(IVec3::ZERO),
+            Chunk::default(),
+            chunk_light,
+            ChunkNeedsLightUpload,
+        ))
+        .id();
+    let child_entity = app
+        .world_mut()
+        .spawn((
+            ChildOf(chunk_entity),
+            VertexPullingLight {
+                light_data: ChunkLight::build_padded_light_data(IVec3::ZERO, &HashMap::default()),
+            },
+        ))
+        .id();
+
+    app.update();
+
+    let world = app.world();
+    assert!(world.get::<ChunkNeedsLightUpload>(chunk_entity).is_none());
+    assert!(world.get::<ChunkNeedsMeshRebuild>(chunk_entity).is_none());
+    assert_eq!(
+        world
+            .get::<VertexPullingLight>(child_entity)
+            .unwrap()
+            .light_data,
+        expected_light_data
+    );
 }
 
 #[test]

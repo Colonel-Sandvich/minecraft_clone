@@ -7,14 +7,14 @@
 //! Bind group 0 (per frame): view_proj + atlas texture + tile_offsets
 //! Bind group 1 (per chunk): face descriptor SSBO + chunk_origin + light_data
 
-use std::borrow::Cow;
+use std::{borrow::Cow, collections::HashSet};
 
 use bevy::{
     asset::AssetId,
     camera::visibility::{self, VisibilityClass},
     core_pipeline::core_3d::{Opaque3d, Opaque3dBatchSetKey, Opaque3dBinKey},
     ecs::{
-        change_detection::Tick,
+        change_detection::{Ref, Tick},
         component::Component,
         system::{
             SystemParamItem,
@@ -142,6 +142,10 @@ pub struct VertexPullingMesh {
     pub face_count: u32,
     pub material_layer: BlockMaterialLayer,
     pub chunk_origin: Vec3,
+}
+
+#[derive(Component, Clone)]
+pub struct VertexPullingLight {
     pub light_data: Box<[u32]>,
 }
 
@@ -154,6 +158,9 @@ pub struct PreparedChunkVp {
     pub bind_group: BindGroup,
     pub face_count: u32,
     pub material_layer: BlockMaterialLayer,
+    desc_buf: Buffer,
+    origin_buf: Buffer,
+    light_buf: Buffer,
 }
 
 #[derive(Resource)]
@@ -263,7 +270,10 @@ impl Plugin for VertexPullingPlugin {
         };
 
         render_app
-            .add_systems(ExtractSchedule, extract_changed_vp_meshes)
+            .add_systems(
+                ExtractSchedule,
+                (extract_changed_vp_meshes, extract_changed_vp_lights),
+            )
             .init_resource::<VpStaticResources>()
             .add_systems(
                 Render,
@@ -602,6 +612,18 @@ fn extract_changed_vp_meshes(
     );
 }
 
+fn extract_changed_vp_lights(
+    mut commands: Commands,
+    lights: Extract<Query<(RenderEntity, &VertexPullingLight), Changed<VertexPullingLight>>>,
+) {
+    commands.try_insert_batch(
+        lights
+            .iter()
+            .map(|(entity, light)| (entity, light.clone()))
+            .collect::<Vec<_>>(),
+    );
+}
+
 fn prepare_gpu_data(
     mut commands: Commands,
     render_device: Res<RenderDevice>,
@@ -609,7 +631,13 @@ fn prepare_gpu_data(
     pipeline: Option<Res<VpPipeline>>,
     atlas_state: Option<Res<VpAtlasState>>,
     gpu_images: Res<RenderAssets<GpuImage>>,
-    chunks_q: Query<(Entity, &VertexPullingMesh), Changed<VertexPullingMesh>>,
+    chunks_q: Query<
+        (Entity, &VertexPullingMesh, Option<Ref<VertexPullingLight>>),
+        Changed<VertexPullingMesh>,
+    >,
+    lights_q: Query<(Entity, Ref<VertexPullingLight>), Changed<VertexPullingLight>>,
+    all_meshes_q: Query<&VertexPullingMesh>,
+    prepared_q: Query<&PreparedChunkVp>,
     cameras_q: Query<&ExtractedView>,
     mut globals: ResMut<VpGlobals>,
     mut static_res: ResMut<VpStaticResources>,
@@ -758,64 +786,152 @@ fn prepare_gpu_data(
         bytemuck::cast_slice(&atlas.ao_brightness),
     );
 
-    // Update per-chunk bind groups only for changed meshes
-    for (entity, mesh) in &chunks_q {
+    let mut mesh_prepared = HashSet::new();
+
+    // Mesh changes rebuild descriptor/origin buffers. Existing light buffers are reused unless
+    // this entity's light component changed in the same extract pass.
+    for (entity, mesh, light) in &chunks_q {
+        mesh_prepared.insert(entity);
+
         if mesh.face_count == 0 {
             commands.entity(entity).remove::<PreparedChunkVp>();
             continue;
         }
 
-        let desc_buf = render_device.create_buffer_with_data(&BufferInitDescriptor {
-            label: Some("vp_desc"),
-            contents: bytemuck::cast_slice(&mesh.descriptors),
-            usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
-        });
-
-        let origin_uniform = ChunkOriginUniform {
-            origin: [
-                mesh.chunk_origin.x,
-                mesh.chunk_origin.y,
-                mesh.chunk_origin.z,
-                0.0,
-            ],
+        let existing = prepared_q.get(entity).ok();
+        let desc_buf = create_descriptor_buffer(&render_device, mesh);
+        let origin_buf = create_origin_buffer(&render_device, mesh);
+        let light_buf = match (light.as_ref(), existing) {
+            (Some(light), _) if light.is_changed() => create_light_buffer(&render_device, &**light),
+            (_, Some(prepared)) => prepared.light_buf.clone(),
+            (Some(light), _) => create_light_buffer(&render_device, &**light),
+            (None, _) => continue,
         };
-        let origin_buf = render_device.create_buffer_with_data(&BufferInitDescriptor {
-            label: Some("vp_origin"),
-            contents: bytemuck::bytes_of(&origin_uniform),
-            usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
-        });
-
-        let light_buf = render_device.create_buffer_with_data(&BufferInitDescriptor {
-            label: Some("vp_light"),
-            contents: bytemuck::cast_slice(&mesh.light_data),
-            usage: BufferUsages::STORAGE,
-        });
-
-        let bind_group = render_device.create_bind_group(
-            "vp_chunk",
-            &pipeline.chunk_bind_group_layout,
-            &[
-                BindGroupEntry {
-                    binding: 0,
-                    resource: desc_buf.as_entire_binding(),
-                },
-                BindGroupEntry {
-                    binding: 1,
-                    resource: origin_buf.as_entire_binding(),
-                },
-                BindGroupEntry {
-                    binding: 2,
-                    resource: light_buf.as_entire_binding(),
-                },
-            ],
+        let bind_group = create_chunk_bind_group(
+            &render_device,
+            &pipeline,
+            &desc_buf,
+            &origin_buf,
+            &light_buf,
         );
 
         commands.entity(entity).insert(PreparedChunkVp {
             bind_group,
             face_count: mesh.face_count,
             material_layer: mesh.material_layer,
+            desc_buf,
+            origin_buf,
+            light_buf,
         });
     }
+
+    // Light-only changes reuse descriptor/origin buffers and rebuild only the light buffer plus
+    // bind group. If a mesh was prepared above, it already consumed the latest light data.
+    for (entity, light) in &lights_q {
+        if mesh_prepared.contains(&entity) {
+            continue;
+        }
+
+        let light_buf = create_light_buffer(&render_device, &*light);
+        let (desc_buf, origin_buf, face_count, material_layer) =
+            if let Ok(prepared) = prepared_q.get(entity) {
+                (
+                    prepared.desc_buf.clone(),
+                    prepared.origin_buf.clone(),
+                    prepared.face_count,
+                    prepared.material_layer,
+                )
+            } else {
+                let Ok(mesh) = all_meshes_q.get(entity) else {
+                    continue;
+                };
+                if mesh.face_count == 0 {
+                    commands.entity(entity).remove::<PreparedChunkVp>();
+                    continue;
+                }
+                (
+                    create_descriptor_buffer(&render_device, mesh),
+                    create_origin_buffer(&render_device, mesh),
+                    mesh.face_count,
+                    mesh.material_layer,
+                )
+            };
+        let bind_group = create_chunk_bind_group(
+            &render_device,
+            &pipeline,
+            &desc_buf,
+            &origin_buf,
+            &light_buf,
+        );
+
+        commands.entity(entity).insert(PreparedChunkVp {
+            bind_group,
+            face_count,
+            material_layer,
+            desc_buf,
+            origin_buf,
+            light_buf,
+        });
+    }
+}
+
+fn create_descriptor_buffer(render_device: &RenderDevice, mesh: &VertexPullingMesh) -> Buffer {
+    render_device.create_buffer_with_data(&BufferInitDescriptor {
+        label: Some("vp_desc"),
+        contents: bytemuck::cast_slice(&mesh.descriptors),
+        usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
+    })
+}
+
+fn create_origin_buffer(render_device: &RenderDevice, mesh: &VertexPullingMesh) -> Buffer {
+    let origin_uniform = ChunkOriginUniform {
+        origin: [
+            mesh.chunk_origin.x,
+            mesh.chunk_origin.y,
+            mesh.chunk_origin.z,
+            0.0,
+        ],
+    };
+    render_device.create_buffer_with_data(&BufferInitDescriptor {
+        label: Some("vp_origin"),
+        contents: bytemuck::bytes_of(&origin_uniform),
+        usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+    })
+}
+
+fn create_light_buffer(render_device: &RenderDevice, light: &VertexPullingLight) -> Buffer {
+    render_device.create_buffer_with_data(&BufferInitDescriptor {
+        label: Some("vp_light"),
+        contents: bytemuck::cast_slice(&light.light_data),
+        usage: BufferUsages::STORAGE,
+    })
+}
+
+fn create_chunk_bind_group(
+    render_device: &RenderDevice,
+    pipeline: &VpPipeline,
+    desc_buf: &Buffer,
+    origin_buf: &Buffer,
+    light_buf: &Buffer,
+) -> BindGroup {
+    render_device.create_bind_group(
+        "vp_chunk",
+        &pipeline.chunk_bind_group_layout,
+        &[
+            BindGroupEntry {
+                binding: 0,
+                resource: desc_buf.as_entire_binding(),
+            },
+            BindGroupEntry {
+                binding: 1,
+                resource: origin_buf.as_entire_binding(),
+            },
+            BindGroupEntry {
+                binding: 2,
+                resource: light_buf.as_entire_binding(),
+            },
+        ],
+    )
 }
 
 fn queue_vp_meshes(
