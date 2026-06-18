@@ -5,7 +5,7 @@ use super::{
     cam::{MouseCam, MouseSettings},
 };
 use avian3d::prelude::{Collider, Position, RigidBody, TransformInterpolation};
-use bevy::{camera::visibility::NoCpuCulling, prelude::*, render::view::NoIndirectDrawing};
+use bevy::prelude::*;
 
 use crate::{
     game_state::GameState,
@@ -58,8 +58,6 @@ fn spawn_player(
                 ..default()
             }),
             IsDefaultUiCamera,
-            NoCpuCulling,
-            NoIndirectDrawing,
         )],
     ));
 }
