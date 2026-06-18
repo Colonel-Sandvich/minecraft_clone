@@ -4,15 +4,13 @@ use bevy::prelude::*;
 use crate::block::BlockType;
 
 use super::{
-    CHUNK_ISIZE, CHUNK_SIZE, CHUNK_VOLUME, Chunk, FULL_CUBE_BITMASK_SIZE, PADDED_CHUNK_VOLUME,
-    padded_chunk_index,
+    CHUNK_ISIZE, CHUNK_SIZE, CHUNK_VOLUME, Chunk, PADDED_CHUNK_VOLUME, padded_chunk_index,
 };
 
 use super::super::chunk_neighbor_offsets;
 
 pub struct ChunkMeshBlocks {
     pub(crate) blocks: Box<[BlockType; PADDED_CHUNK_VOLUME]>,
-    pub(crate) full_cube_bitmask: Box<[u32; FULL_CUBE_BITMASK_SIZE]>,
     pub(crate) center_rendered_blocks: u16,
     pub(crate) center_full_cube_blocks: u16,
 }
@@ -45,22 +43,9 @@ impl ChunkMeshBlocks {
     fn empty() -> Self {
         Self {
             blocks: Box::new([BlockType::Air; PADDED_CHUNK_VOLUME]),
-            full_cube_bitmask: Box::new([0u32; FULL_CUBE_BITMASK_SIZE]),
             center_rendered_blocks: 0,
             center_full_cube_blocks: 0,
         }
-    }
-
-    #[inline(always)]
-    pub(crate) fn is_full_cube_at(&self, index: usize) -> bool {
-        self.full_cube_bit_at(index) != 0
-    }
-
-    #[inline(always)]
-    pub(crate) fn full_cube_bit_at(&self, index: usize) -> u32 {
-        debug_assert!(index < PADDED_CHUNK_VOLUME);
-        let word = unsafe { *self.full_cube_bitmask.get_unchecked(index >> 5) };
-        (word >> (index & 31)) & 1
     }
 
     fn copy_center_chunk(&mut self, chunk: &Chunk) {
@@ -105,11 +90,7 @@ impl ChunkMeshBlocks {
         let x = (x + 1) as usize;
         let y = (y + 1) as usize;
         let z = (z + 1) as usize;
-        let index = padded_chunk_index(x, y, z);
-        self.blocks[index] = block;
-        if block.is_full_cube() {
-            self.full_cube_bitmask[index >> 5] |= 1u32 << (index & 31);
-        }
+        self.blocks[padded_chunk_index(x, y, z)] = block;
     }
 
     pub(crate) fn can_skip_mesh(&self) -> bool {
@@ -124,8 +105,8 @@ impl ChunkMeshBlocks {
     fn neighbor_face_shells_are_full_cube(&self) -> bool {
         for y in 1..=CHUNK_SIZE {
             for z in 1..=CHUNK_SIZE {
-                if !self.is_full_cube_at(padded_chunk_index(0, y, z))
-                    || !self.is_full_cube_at(padded_chunk_index(CHUNK_SIZE + 1, y, z))
+                if !self.blocks[padded_chunk_index(0, y, z)].is_full_cube()
+                    || !self.blocks[padded_chunk_index(CHUNK_SIZE + 1, y, z)].is_full_cube()
                 {
                     return false;
                 }
@@ -134,8 +115,8 @@ impl ChunkMeshBlocks {
 
         for x in 1..=CHUNK_SIZE {
             for z in 1..=CHUNK_SIZE {
-                if !self.is_full_cube_at(padded_chunk_index(x, 0, z))
-                    || !self.is_full_cube_at(padded_chunk_index(x, CHUNK_SIZE + 1, z))
+                if !self.blocks[padded_chunk_index(x, 0, z)].is_full_cube()
+                    || !self.blocks[padded_chunk_index(x, CHUNK_SIZE + 1, z)].is_full_cube()
                 {
                     return false;
                 }
@@ -144,8 +125,8 @@ impl ChunkMeshBlocks {
 
         for x in 1..=CHUNK_SIZE {
             for y in 1..=CHUNK_SIZE {
-                if !self.is_full_cube_at(padded_chunk_index(x, y, 0))
-                    || !self.is_full_cube_at(padded_chunk_index(x, y, CHUNK_SIZE + 1))
+                if !self.blocks[padded_chunk_index(x, y, 0)].is_full_cube()
+                    || !self.blocks[padded_chunk_index(x, y, CHUNK_SIZE + 1)].is_full_cube()
                 {
                     return false;
                 }

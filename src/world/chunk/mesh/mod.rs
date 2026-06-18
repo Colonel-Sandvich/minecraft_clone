@@ -21,7 +21,6 @@ use super::{
 pub(crate) const PADDED_CHUNK_SIZE: usize = CHUNK_SIZE + 2;
 pub(crate) const PADDED_CHUNK_VOLUME: usize =
     PADDED_CHUNK_SIZE * PADDED_CHUNK_SIZE * PADDED_CHUNK_SIZE;
-pub(crate) const FULL_CUBE_BITMASK_SIZE: usize = PADDED_CHUNK_VOLUME.div_ceil(32);
 pub(crate) const PADDED_CHUNK_LAYER_SIZE: usize = PADDED_CHUNK_SIZE * PADDED_CHUNK_SIZE;
 pub(crate) const BLOCK_TYPE_COUNT: usize = BlockType::COUNT;
 pub(crate) const DIRECTION_COUNT: usize = 6;
@@ -501,7 +500,9 @@ fn block_occludes_ambient_light_bit(
 ) -> u32 {
     let index = (padded_index as isize + offset) as usize;
     debug_assert!(index < PADDED_CHUNK_VOLUME);
-    blocks.full_cube_bit_at(index)
+    unsafe {
+        ((block_mesh_flags(*blocks.blocks.get_unchecked(index)) & BLOCK_FLAG_FULL_CUBE) >> 1) as u32
+    }
 }
 
 pub(crate) fn padded_chunk_index(x: usize, y: usize, z: usize) -> usize {
