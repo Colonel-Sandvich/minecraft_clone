@@ -2,7 +2,9 @@ mod blocks;
 pub mod vertex_pulling;
 
 pub use blocks::ChunkMeshBlocks;
-pub use vertex_pulling::{ChunkMeshDescriptors, VertexPullingLight, VertexPullingMesh, VpAtlasState};
+pub use vertex_pulling::{
+    ChunkMeshDescriptors, VertexPullingLight, VertexPullingMesh, VpAtlasState,
+};
 
 use std::sync::Arc;
 
@@ -195,6 +197,13 @@ fn rebuild_chunk_meshes(
             })
         })
         .collect();
+    let emission_factors: Vec<f32> = (0..BLOCK_TYPE_COUNT)
+        .flat_map(|bt| {
+            let block = BlockType::from_repr(bt as u16).unwrap_or(BlockType::Air);
+            let emission = f32::from(block.light_emission()) / 15.0;
+            (0..DIRECTION_COUNT).map(move |_| emission)
+        })
+        .collect();
     let tile_size = {
         let stone = tables.uvs[BlockType::Stone as usize][0];
         Vec2::new(stone.width(), stone.height())
@@ -205,6 +214,7 @@ fn rebuild_chunk_meshes(
         tile_size,
         tile_offsets,
         tint_colors,
+        emission_factors,
         ao_brightness,
     };
     commands.insert_resource(atlas_state);
@@ -289,10 +299,9 @@ fn update_chunk_vp_children(
                 mesh.material_layer = layer;
                 mesh.chunk_origin = chunk_origin;
             }
-            commands.entity(*entity).insert((
-                ChunkMeshDescriptors(descriptors),
-                chunk_render_aabb(),
-            ));
+            commands
+                .entity(*entity)
+                .insert((ChunkMeshDescriptors(descriptors), chunk_render_aabb()));
             continue;
         }
 

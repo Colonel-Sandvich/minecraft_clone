@@ -195,7 +195,9 @@ pub struct VpStaticResources {
     pub tile_size_buf: Option<Buffer>,
     pub tile_offsets_buf: Option<Buffer>,
     pub tint_colors_buf: Option<Buffer>,
+    pub emission_factors_buf: Option<Buffer>,
     pub ao_brightness_buf: Option<Buffer>,
+    pub visual_settings_buf: Option<Buffer>,
     pub view_proj_buf: Option<Buffer>,
 }
 
@@ -213,6 +215,7 @@ pub struct VpAtlasState {
     pub tile_size: Vec2,
     pub tile_offsets: Vec<[f32; 2]>,
     pub tint_colors: Vec<[f32; 4]>,
+    pub emission_factors: Vec<f32>,
     pub ao_brightness: [f32; 4],
 }
 
@@ -221,6 +224,80 @@ impl ExtractResource for VpAtlasState {
 
     fn extract_resource(source: &Self::Source) -> Self {
         source.clone()
+    }
+}
+
+#[derive(Resource, Reflect, Debug, Clone, Copy)]
+#[reflect(Resource)]
+pub struct TerrainVisualSettings {
+    pub sky_light_color: Vec3,
+    pub block_light_color: Vec3,
+    pub fog_color: Vec3,
+    pub fog_start: f32,
+    pub fog_end: f32,
+    pub fog_strength: f32,
+}
+
+impl Default for TerrainVisualSettings {
+    fn default() -> Self {
+        Self {
+            sky_light_color: vec3(0.94, 0.97, 1.0),
+            block_light_color: vec3(1.0, 0.78, 0.50),
+            fog_color: vec3(0.455, 0.702, 1.0),
+            fog_start: 220.0,
+            fog_end: 560.0,
+            fog_strength: 1.0,
+        }
+    }
+}
+
+impl ExtractResource for TerrainVisualSettings {
+    type Source = TerrainVisualSettings;
+
+    fn extract_resource(source: &Self::Source) -> Self {
+        *source
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct TerrainVisualSettingsUniform {
+    sky_light_color: [f32; 4],
+    block_light_color: [f32; 4],
+    fog_color: [f32; 4],
+    camera_position: [f32; 4],
+    fog_params: [f32; 4],
+}
+
+impl TerrainVisualSettingsUniform {
+    fn new(settings: TerrainVisualSettings, camera_position: Vec3) -> Self {
+        Self {
+            sky_light_color: [
+                settings.sky_light_color.x,
+                settings.sky_light_color.y,
+                settings.sky_light_color.z,
+                0.0,
+            ],
+            block_light_color: [
+                settings.block_light_color.x,
+                settings.block_light_color.y,
+                settings.block_light_color.z,
+                0.0,
+            ],
+            fog_color: [
+                settings.fog_color.x,
+                settings.fog_color.y,
+                settings.fog_color.z,
+                0.0,
+            ],
+            camera_position: [camera_position.x, camera_position.y, camera_position.z, 0.0],
+            fog_params: [
+                settings.fog_start,
+                settings.fog_end,
+                settings.fog_strength,
+                0.0,
+            ],
+        }
     }
 }
 
@@ -275,6 +352,8 @@ pub struct VertexPullingPlugin;
 
 impl Plugin for VertexPullingPlugin {
     fn build(&self, app: &mut App) {
+        app.init_resource::<TerrainVisualSettings>()
+            .register_type::<TerrainVisualSettings>();
         app.register_required_components::<VertexPullingMesh, Transform>()
             .register_required_components::<VertexPullingMesh, Visibility>()
             .register_required_components::<VertexPullingMesh, VisibilityClass>();
@@ -285,6 +364,7 @@ impl Plugin for VertexPullingPlugin {
         app.add_plugins((
             SyncComponentPlugin::<VertexPullingMesh>::default(),
             ExtractResourcePlugin::<VpAtlasState>::default(),
+            ExtractResourcePlugin::<TerrainVisualSettings>::default(),
         ));
 
         let Some(render_app) = app.get_sub_app_mut(RenderApp) else {
@@ -320,7 +400,7 @@ impl Plugin for VertexPullingPlugin {
             .resource_mut::<AssetServer>()
             .load(SHADER_PATH);
 
-        // Group 0: view_proj + atlas texture + sampler + tile_size + tile_offsets + tint_colors + AO curve
+        // Group 0: view_proj + atlas texture + sampler + tile_size + tile_offsets + tint_colors + AO curve + emission factors + visual settings
         let group0_entries = vec![
             BindGroupLayoutEntry {
                 binding: 0,
@@ -385,6 +465,28 @@ impl Plugin for VertexPullingPlugin {
                     ty: BufferBindingType::Uniform,
                     has_dynamic_offset: false,
                     min_binding_size: BufferSize::new(16),
+                },
+                count: None,
+            },
+            BindGroupLayoutEntry {
+                binding: 7,
+                visibility: ShaderStages::FRAGMENT,
+                ty: BindingType::Buffer {
+                    ty: BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            BindGroupLayoutEntry {
+                binding: 8,
+                visibility: ShaderStages::FRAGMENT,
+                ty: BindingType::Buffer {
+                    ty: BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: BufferSize::new(std::mem::size_of::<
+                        TerrainVisualSettingsUniform,
+                    >() as u64),
                 },
                 count: None,
             },
@@ -578,6 +680,19 @@ impl Plugin for VertexPullingPlugin {
             contents: bytemuck::cast_slice(&[1.0f32; 4]),
             usage: BufferUsages::UNIFORM,
         });
+        let dummy_emissions = render_device.create_buffer_with_data(&BufferInitDescriptor {
+            label: Some("vp_g0_dummy_emissions"),
+            contents: bytemuck::cast_slice(&vec![0.0f32; 54]),
+            usage: BufferUsages::STORAGE,
+        });
+        let dummy_visual_settings =
+            TerrainVisualSettingsUniform::new(TerrainVisualSettings::default(), Vec3::ZERO);
+        let dummy_visual_settings_buf =
+            render_device.create_buffer_with_data(&BufferInitDescriptor {
+                label: Some("vp_g0_dummy_visual_settings"),
+                contents: bytemuck::bytes_of(&dummy_visual_settings),
+                usage: BufferUsages::UNIFORM,
+            });
         let dummy_group0 = render_device.create_bind_group(
             "vp_g0_dummy",
             &group0_layout,
@@ -609,6 +724,14 @@ impl Plugin for VertexPullingPlugin {
                 BindGroupEntry {
                     binding: 6,
                     resource: dummy_ao.as_entire_binding(),
+                },
+                BindGroupEntry {
+                    binding: 7,
+                    resource: dummy_emissions.as_entire_binding(),
+                },
+                BindGroupEntry {
+                    binding: 8,
+                    resource: dummy_visual_settings_buf.as_entire_binding(),
                 },
             ],
         );
@@ -668,15 +791,17 @@ fn prepare_gpu_data(
     all_meshes_q: Query<&VertexPullingMesh>,
     prepared_q: Query<&PreparedChunkVp>,
     cameras_q: Query<&ExtractedView>,
+    visual_settings: Option<Res<TerrainVisualSettings>>,
     mut globals: ResMut<VpGlobals>,
     mut static_res: ResMut<VpStaticResources>,
 ) {
     let Some(pipeline) = pipeline else { return };
 
-    let view_proj = cameras_q
+    let view = cameras_q
         .iter()
         .find(|v| v.clip_from_view.col(2).w.abs() > 0.5)
-        .or_else(|| cameras_q.iter().next())
+        .or_else(|| cameras_q.iter().next());
+    let view_proj = view
         .map(|v| {
             v.clip_from_world.unwrap_or_else(|| {
                 let view_from_world = v.world_from_view.affine().inverse();
@@ -684,6 +809,14 @@ fn prepare_gpu_data(
             })
         })
         .unwrap_or(Mat4::IDENTITY);
+    let camera_position = view
+        .map(|v| v.world_from_view.translation())
+        .unwrap_or(Vec3::ZERO);
+    let visual_settings = visual_settings
+        .map(|settings| *settings)
+        .unwrap_or_default();
+    let visual_settings_uniform =
+        TerrainVisualSettingsUniform::new(visual_settings, camera_position);
 
     let Some(atlas) = atlas_state.as_deref() else {
         return;
@@ -728,6 +861,14 @@ fn prepare_gpu_data(
             },
         ));
 
+        static_res.emission_factors_buf = Some(render_device.create_buffer_with_data(
+            &BufferInitDescriptor {
+                label: Some("vp_emission_factors"),
+                contents: bytemuck::cast_slice(&atlas.emission_factors),
+                usage: BufferUsages::STORAGE,
+            },
+        ));
+
         static_res.view_proj_buf = Some(render_device.create_buffer_with_data(
             &BufferInitDescriptor {
                 label: Some("vp_view_proj"),
@@ -744,7 +885,15 @@ fn prepare_gpu_data(
             },
         ));
 
-        let group0_entries: [BindGroupEntry; 7] = [
+        static_res.visual_settings_buf = Some(render_device.create_buffer_with_data(
+            &BufferInitDescriptor {
+                label: Some("vp_visual_settings"),
+                contents: bytemuck::bytes_of(&visual_settings_uniform),
+                usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+            },
+        ));
+
+        let group0_entries: [BindGroupEntry; 9] = [
             BindGroupEntry {
                 binding: 0,
                 resource: static_res
@@ -793,6 +942,22 @@ fn prepare_gpu_data(
                     .unwrap()
                     .as_entire_binding(),
             },
+            BindGroupEntry {
+                binding: 7,
+                resource: static_res
+                    .emission_factors_buf
+                    .as_ref()
+                    .unwrap()
+                    .as_entire_binding(),
+            },
+            BindGroupEntry {
+                binding: 8,
+                resource: static_res
+                    .visual_settings_buf
+                    .as_ref()
+                    .unwrap()
+                    .as_entire_binding(),
+            },
         ];
 
         globals.group0_bind_group = render_device.create_bind_group(
@@ -813,6 +978,11 @@ fn prepare_gpu_data(
         static_res.ao_brightness_buf.as_ref().unwrap(),
         0,
         bytemuck::cast_slice(&atlas.ao_brightness),
+    );
+    render_queue.0.write_buffer(
+        static_res.visual_settings_buf.as_ref().unwrap(),
+        0,
+        bytemuck::bytes_of(&visual_settings_uniform),
     );
 
     let mut mesh_prepared = HashSet::new();
@@ -923,7 +1093,10 @@ fn prepare_gpu_data(
     }
 }
 
-fn create_descriptor_buffer_from_slice(render_device: &RenderDevice, descriptors: &[FaceDescriptor]) -> Buffer {
+fn create_descriptor_buffer_from_slice(
+    render_device: &RenderDevice,
+    descriptors: &[FaceDescriptor],
+) -> Buffer {
     render_device.create_buffer_with_data(&BufferInitDescriptor {
         label: Some("vp_desc"),
         contents: bytemuck::cast_slice(descriptors),

@@ -2,7 +2,7 @@ use bevy::prelude::*;
 
 use super::{Chunk, ChunkBlockCounts, ChunkNeedsMeshRebuild};
 
-pub(crate) const AO_BRIGHTNESS: [f32; 4] = [0.45, 0.65, 0.82, 1.0];
+pub(crate) const AO_BRIGHTNESS: [f32; 4] = [0.72, 0.84, 0.93, 1.0];
 const AO_CONTRAST_BRIGHTNESS: [f32; 4] = [0.0, 0.25, 0.6, 1.0];
 
 pub struct AmbientOcclusionPlugin;
