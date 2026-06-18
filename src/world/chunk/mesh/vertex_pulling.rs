@@ -7,7 +7,11 @@
 //! Bind group 0 (per frame): view_proj + atlas texture + tile_offsets
 //! Bind group 1 (per chunk): face descriptor SSBO + chunk_origin + light_data
 
-use std::{borrow::Cow, collections::HashSet};
+use std::{
+    borrow::Cow,
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 use bevy::{
     asset::AssetId,
@@ -158,7 +162,22 @@ pub struct VertexPullingMesh {
 
 #[derive(Component, Clone)]
 pub struct VertexPullingLight {
-    pub light_data: Box<[u32]>,
+    pub light_data: Arc<[u32]>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct SharedLightDataKey {
+    ptr: usize,
+    len: usize,
+}
+
+impl VertexPullingLight {
+    pub fn data_key(&self) -> SharedLightDataKey {
+        SharedLightDataKey {
+            ptr: self.light_data.as_ptr() as usize,
+            len: self.light_data.len(),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -799,6 +818,7 @@ fn prepare_gpu_data(
     );
 
     let mut mesh_prepared = HashSet::new();
+    let mut prepared_light_buffers = HashMap::new();
 
     // Mesh changes rebuild descriptor/origin buffers. Existing light buffers are reused unless
     // this entity's light component changed in the same extract pass.
@@ -814,9 +834,19 @@ fn prepare_gpu_data(
         let desc_buf = create_descriptor_buffer(&render_device, mesh);
         let origin_buf = create_origin_buffer(&render_device, mesh);
         let light_buf = match (light.as_ref(), existing) {
-            (Some(light), _) if light.is_changed() => create_light_buffer(&render_device, &**light),
-            (_, Some(prepared)) => prepared.light_buf.clone(),
-            (Some(light), _) => create_light_buffer(&render_device, &**light),
+            (Some(light), _) if light.is_changed() => {
+                light_buffer_for(&render_device, &mut prepared_light_buffers, light, None)
+            }
+            (Some(light), Some(prepared)) => light_buffer_for(
+                &render_device,
+                &mut prepared_light_buffers,
+                light,
+                Some(&prepared.light_buf),
+            ),
+            (Some(light), _) => {
+                light_buffer_for(&render_device, &mut prepared_light_buffers, light, None)
+            }
+            (None, Some(prepared)) => prepared.light_buf.clone(),
             (None, _) => continue,
         };
         let bind_group = create_chunk_bind_group(
@@ -844,7 +874,7 @@ fn prepare_gpu_data(
             continue;
         }
 
-        let light_buf = create_light_buffer(&render_device, &*light);
+        let light_buf = light_buffer_for(&render_device, &mut prepared_light_buffers, &light, None);
         let (desc_buf, origin_buf, face_count, material_layer) =
             if let Ok(prepared) = prepared_q.get(entity) {
                 (
@@ -914,9 +944,30 @@ fn create_origin_buffer(render_device: &RenderDevice, mesh: &VertexPullingMesh) 
 fn create_light_buffer(render_device: &RenderDevice, light: &VertexPullingLight) -> Buffer {
     render_device.create_buffer_with_data(&BufferInitDescriptor {
         label: Some("vp_light"),
-        contents: bytemuck::cast_slice(&light.light_data),
+        contents: bytemuck::cast_slice(light.light_data.as_ref()),
         usage: BufferUsages::STORAGE,
     })
+}
+
+fn light_buffer_for(
+    render_device: &RenderDevice,
+    prepared_light_buffers: &mut HashMap<SharedLightDataKey, Buffer>,
+    light: &VertexPullingLight,
+    reusable_existing: Option<&Buffer>,
+) -> Buffer {
+    let key = light.data_key();
+    if let Some(buffer) = prepared_light_buffers.get(&key) {
+        return buffer.clone();
+    }
+
+    if let Some(buffer) = reusable_existing {
+        prepared_light_buffers.insert(key, buffer.clone());
+        return buffer.clone();
+    }
+
+    let buffer = create_light_buffer(render_device, light);
+    prepared_light_buffers.insert(key, buffer.clone());
+    buffer
 }
 
 fn create_chunk_bind_group(

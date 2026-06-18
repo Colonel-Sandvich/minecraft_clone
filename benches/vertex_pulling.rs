@@ -1,7 +1,6 @@
 //! Vertex-pulling mesh generation benchmark (8 scenarios).
 
-use std::hint::black_box;
-use std::time::Duration;
+use std::{hint::black_box, sync::Arc, time::Duration};
 
 use bevy::{platform::collections::HashMap, prelude::*};
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
@@ -10,7 +9,7 @@ use minecraft_clone::{
     world::{
         WorldMetadata,
         chunk::mesh::{ChunkMeshBlocks, vertex_pulling},
-        chunk::{CHUNK_SIZE, Chunk},
+        chunk::{CHUNK_SIZE, Chunk, ChunkLight},
         generation::generate_chunk,
     },
 };
@@ -203,6 +202,42 @@ fn vp_face_count(layers: &[(BlockMaterialLayer, Vec<vertex_pulling::FaceDescript
     layers.iter().map(|(_, desc)| desc.len()).sum()
 }
 
+fn light_upload_lights(chunk_count: usize) -> Vec<(IVec3, ChunkLight)> {
+    let edge = (chunk_count as f32).cbrt().ceil() as i32;
+    let mut lights = Vec::with_capacity(chunk_count);
+    for x in 0..edge {
+        for y in 0..edge {
+            for z in 0..edge {
+                if lights.len() == chunk_count {
+                    return lights;
+                }
+                let pos = ivec3(x, y, z);
+                lights.push((pos, patterned_light(pos)));
+            }
+        }
+    }
+    lights
+}
+
+fn patterned_light(chunk_pos: IVec3) -> ChunkLight {
+    let mut light = ChunkLight::default();
+    for x in 0..CHUNK_SIZE {
+        for z in 0..CHUNK_SIZE {
+            for y in 0..CHUNK_SIZE {
+                let value = ((x as i32 * 3
+                    + y as i32 * 5
+                    + z as i32 * 7
+                    + chunk_pos.x * 11
+                    + chunk_pos.y * 13
+                    + chunk_pos.z * 17)
+                    & 0xFF) as u8;
+                light.set_packed_light(uvec3(x as u32, y as u32, z as u32), value);
+            }
+        }
+    }
+    light
+}
+
 // ---------------------------------------------------------------------------
 // Benchmark
 // ---------------------------------------------------------------------------
@@ -210,28 +245,32 @@ fn vp_face_count(layers: &[(BlockMaterialLayer, Vec<vertex_pulling::FaceDescript
 fn bench_vertex_pulling(c: &mut Criterion) {
     let scenarios = make_scenarios();
 
-    // ------- Chunk refs -> padded mesh blocks -> descriptors -------
-    {
-        let mut group = c.benchmark_group("vp_mesh");
-        group.throughput(Throughput::Elements(1));
-        for scenario in &scenarios {
-            let chunk_refs = scenario.chunk_refs();
-            let center = scenario.center_pos;
-            group.bench_function(BenchmarkId::from_parameter(scenario.name), |b| {
-                b.iter(|| {
-                    let blocks = ChunkMeshBlocks::from_chunks(center, black_box(&chunk_refs));
-                    black_box(vertex_pulling::build_descriptors(&blocks))
-                });
-            });
-        }
-        group.finish();
-    }
+    bench_mesh_descriptors(c, &scenarios);
+    print_data_size_summary(&scenarios);
+    bench_light_upload(c);
+}
 
-    // ------- Data-size summary -------
+fn bench_mesh_descriptors(c: &mut Criterion, scenarios: &[Scenario]) {
+    let mut group = c.benchmark_group("vp_mesh");
+    group.throughput(Throughput::Elements(1));
+    for scenario in scenarios {
+        let chunk_refs = scenario.chunk_refs();
+        let center = scenario.center_pos;
+        group.bench_function(BenchmarkId::from_parameter(scenario.name), |b| {
+            b.iter(|| {
+                let blocks = ChunkMeshBlocks::from_chunks(center, black_box(&chunk_refs));
+                black_box(vertex_pulling::build_descriptors(&blocks))
+            });
+        });
+    }
+    group.finish();
+}
+
+fn print_data_size_summary(scenarios: &[Scenario]) {
     println!();
     println!("--- Data size comparison ---");
     println!("  {:<30} {:>8} {:>10}", "scenario", "vp faces", "vp desc",);
-    for scenario in &scenarios {
+    for scenario in scenarios {
         let chunk_refs = scenario.chunk_refs();
         let blocks = ChunkMeshBlocks::from_chunks(scenario.center_pos, &chunk_refs);
         let vp_layers = vertex_pulling::build_descriptors(&blocks);
@@ -247,6 +286,47 @@ fn bench_vertex_pulling(c: &mut Criterion) {
         );
     }
     println!();
+}
+
+fn bench_light_upload(c: &mut Criterion) {
+    let chunk_count = 4096;
+    let layer_count = BlockMaterialLayer::COUNT;
+    let lights = light_upload_lights(chunk_count);
+    let light_refs = lights
+        .iter()
+        .map(|(pos, light)| (*pos, light))
+        .collect::<HashMap<_, _>>();
+    let positions = lights.iter().map(|(pos, _)| *pos).collect::<Vec<_>>();
+    let light_blobs = positions
+        .iter()
+        .map(|pos| {
+            let light_data: Arc<[u32]> =
+                ChunkLight::build_padded_light_data(*pos, &light_refs).into();
+            light_data
+        })
+        .collect::<Vec<_>>();
+    let empty_light: Arc<[u32]> =
+        ChunkLight::build_padded_light_data(IVec3::ZERO, &HashMap::default()).into();
+    let mut components = (0..chunk_count * layer_count)
+        .map(|_| vertex_pulling::VertexPullingLight {
+            light_data: empty_light.clone(),
+        })
+        .collect::<Vec<_>>();
+
+    let mut group = c.benchmark_group("vp_light_upload");
+    group.throughput(Throughput::Elements(chunk_count as u64));
+    group.bench_function("prebuilt_4096_chunks_all_layers", |b| {
+        b.iter(|| {
+            for (chunk_index, light_data) in light_blobs.iter().enumerate() {
+                let first_child = chunk_index * layer_count;
+                for layer_index in 0..layer_count {
+                    components[first_child + layer_index].light_data = light_data.clone();
+                }
+            }
+            black_box(&components);
+        });
+    });
+    group.finish();
 }
 
 criterion_group! {

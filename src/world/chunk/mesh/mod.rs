@@ -4,6 +4,8 @@ pub mod vertex_pulling;
 pub use blocks::ChunkMeshBlocks;
 pub use vertex_pulling::{VertexPullingLight, VertexPullingMesh, VpAtlasState};
 
+use std::sync::Arc;
+
 use bevy::{camera::primitives::Aabb, platform::collections::HashMap, prelude::*, utils::Parallel};
 use strum::{EnumCount, IntoEnumIterator};
 
@@ -152,6 +154,7 @@ fn rebuild_chunk_meshes(
     children_q: Query<&Children>,
     vp_children_q: Query<(Entity, &ChunkMaterialLayerMarker), With<VertexPullingMesh>>,
     mut vp_mesh_q: Query<&mut VertexPullingMesh>,
+    vp_light_q: Query<&VertexPullingLight>,
     chunk_transform_q: Query<&Transform>,
 ) {
     if dirty_chunks_q.is_empty() {
@@ -228,6 +231,7 @@ fn rebuild_chunk_meshes(
             build.layers,
             origin,
             &lights_by_pos,
+            &vp_light_q,
         );
         commands
             .entity(build.entity)
@@ -251,6 +255,7 @@ fn update_chunk_vp_children(
     layers: Vec<(BlockMaterialLayer, Vec<vertex_pulling::FaceDescriptor>)>,
     chunk_origin: Vec3,
     lights_by_pos: &HashMap<IVec3, &ChunkLight>,
+    vp_light_q: &Query<&VertexPullingLight>,
 ) {
     let existing = children
         .map(|children| {
@@ -262,7 +267,7 @@ fn update_chunk_vp_children(
         .unwrap_or_default();
 
     let mut updated = Vec::new();
-    let mut initial_light_data = None;
+    let mut shared_light_data = existing_child_light_data(&existing, vp_light_q);
     for (layer, descriptors) in layers {
         let face_count = descriptors.len() as u32;
         updated.push(layer);
@@ -278,9 +283,8 @@ fn update_chunk_vp_children(
             continue;
         }
 
-        let light_data = initial_light_data
-            .get_or_insert_with(|| ChunkLight::build_padded_light_data(chunk_pos, lights_by_pos))
-            .clone();
+        let light_data =
+            light_data_for_new_vp_child(&mut shared_light_data, chunk_pos, lights_by_pos);
 
         commands.spawn((
             ChildOf(chunk_entity),
@@ -308,6 +312,33 @@ fn update_chunk_vp_children(
     }
 }
 
+fn existing_child_light_data(
+    existing: &HashMap<BlockMaterialLayer, Entity>,
+    vp_light_q: &Query<&VertexPullingLight>,
+) -> Option<Arc<[u32]>> {
+    existing.values().find_map(|entity| {
+        vp_light_q
+            .get(*entity)
+            .ok()
+            .map(|light| light.light_data.clone())
+    })
+}
+
+fn light_data_for_new_vp_child(
+    shared_light_data: &mut Option<Arc<[u32]>>,
+    chunk_pos: IVec3,
+    lights_by_pos: &HashMap<IVec3, &ChunkLight>,
+) -> Arc<[u32]> {
+    shared_light_data
+        .get_or_insert_with(|| {
+            Arc::from(ChunkLight::build_padded_light_data(
+                chunk_pos,
+                lights_by_pos,
+            ))
+        })
+        .clone()
+}
+
 fn upload_chunk_lights(
     mut commands: Commands,
     dirty_chunks_q: Query<(&ChunkPosition, Entity), With<ChunkNeedsLightUpload>>,
@@ -323,7 +354,8 @@ fn upload_chunk_lights(
         light_q.iter().map(|(pos, light)| (pos.0, light)).collect();
 
     for (chunk_pos, chunk_entity) in &dirty_chunks_q {
-        let light_data = ChunkLight::build_padded_light_data(chunk_pos.0, &lights_by_pos);
+        let light_data: Arc<[u32]> =
+            ChunkLight::build_padded_light_data(chunk_pos.0, &lights_by_pos).into();
         if let Ok(children) = children_q.get(chunk_entity) {
             for child in children {
                 if let Ok(mut light) = vp_light_q.get_mut(*child) {

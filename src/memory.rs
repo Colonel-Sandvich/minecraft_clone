@@ -1,4 +1,4 @@
-use std::{fmt::Write, mem::size_of};
+use std::{collections::HashSet, fmt::Write, mem::size_of};
 
 use avian3d::prelude::Collider;
 use bevy::prelude::*;
@@ -59,7 +59,7 @@ pub struct GameMemorySnapshot {
     pub mesh_entities: usize,
     pub face_descriptors: usize,
     pub face_descriptor_capacity: usize,
-    pub padded_light_copies: usize,
+    pub padded_light_components: usize,
     pub collider_entities: usize,
     pub collider_solid_blocks: usize,
     pub load_tasks: usize,
@@ -78,10 +78,10 @@ pub struct GameMemoryBytes {
     pub dimension_maps: usize,
     pub main_mesh_descriptor_used: usize,
     pub main_mesh_descriptor_capacity: usize,
-    pub main_mesh_lights: usize,
+    pub main_mesh_light_data: usize,
     pub main_mesh_components: usize,
     pub render_world_mesh_mirror: usize,
-    pub gpu_mesh_buffers: usize,
+    pub gpu_mesh_buffers_estimate: usize,
     pub collider_shapes: usize,
     pub task_payloads: usize,
     pub tracked_cpu_total: usize,
@@ -121,19 +121,19 @@ impl GameMemorySnapshot {
         );
         let _ = writeln!(
             out,
-            "Mesh CPU: {} ents  {} faces  desc {}/{}  lights {}",
+            "Mesh CPU: {} ents  {} faces  desc {}/{}  unique lights {}",
             self.mesh_entities,
             self.face_descriptors,
             format_bytes(self.bytes.main_mesh_descriptor_used),
             format_bytes(self.bytes.main_mesh_descriptor_capacity),
-            format_bytes(self.bytes.main_mesh_lights),
+            format_bytes(self.bytes.main_mesh_light_data),
         );
         let _ = writeln!(
             out,
-            "Render mirror est: CPU {}  GPU {}  padded light copies {}",
+            "Render mirror est: CPU {}  GPU {}  padded light components {}",
             format_bytes(self.bytes.render_world_mesh_mirror),
-            format_bytes(self.bytes.gpu_mesh_buffers),
-            self.padded_light_copies,
+            format_bytes(self.bytes.gpu_mesh_buffers_estimate),
+            self.padded_light_components,
         );
         let _ = writeln!(
             out,
@@ -157,7 +157,7 @@ impl GameMemorySnapshot {
 
     fn format_for_log(&self) -> String {
         format!(
-            "MEMORY rss_bytes={} vm_bytes={} tracked_cpu_bytes={} untracked_rss_bytes={} chunks={} target_chunks={} rendered_blocks={} solid_blocks={} translucent_blocks={} chunk_blocks_bytes={} chunk_lights_bytes={} chunk_heightmaps_bytes={} chunk_meta_bytes={} dimension_maps_bytes={} mesh_entities={} face_descriptors={} face_descriptor_capacity={} mesh_desc_used_bytes={} mesh_desc_capacity_bytes={} main_mesh_lights_bytes={} render_mirror_bytes={} gpu_mesh_buffers_bytes={} padded_light_copies={} collider_entities={} collider_solid_blocks={} collider_shapes_bytes={} load_tasks={} load_failures={} save_tasks={} save_failures={} task_payloads_bytes={}",
+            "MEMORY rss_bytes={} vm_bytes={} tracked_cpu_bytes={} untracked_rss_bytes={} chunks={} target_chunks={} rendered_blocks={} solid_blocks={} translucent_blocks={} chunk_blocks_bytes={} chunk_lights_bytes={} chunk_heightmaps_bytes={} chunk_meta_bytes={} dimension_maps_bytes={} mesh_entities={} face_descriptors={} face_descriptor_capacity={} mesh_desc_used_bytes={} mesh_desc_capacity_bytes={} main_mesh_light_data_bytes={} render_mirror_bytes={} gpu_mesh_buffers_estimate_bytes={} padded_light_components={} collider_entities={} collider_solid_blocks={} collider_shapes_bytes={} load_tasks={} load_failures={} save_tasks={} save_failures={} task_payloads_bytes={}",
             self.rss_bytes.unwrap_or(0),
             self.virtual_bytes.unwrap_or(0),
             self.bytes.tracked_cpu_total,
@@ -179,10 +179,10 @@ impl GameMemorySnapshot {
             self.face_descriptor_capacity,
             self.bytes.main_mesh_descriptor_used,
             self.bytes.main_mesh_descriptor_capacity,
-            self.bytes.main_mesh_lights,
+            self.bytes.main_mesh_light_data,
             self.bytes.render_world_mesh_mirror,
-            self.bytes.gpu_mesh_buffers,
-            self.padded_light_copies,
+            self.bytes.gpu_mesh_buffers_estimate,
+            self.padded_light_components,
             self.collider_entities,
             self.collider_solid_blocks,
             self.bytes.collider_shapes,
@@ -259,11 +259,16 @@ fn update_memory_snapshot(
         face_descriptor_capacity += mesh.descriptors.capacity();
     }
 
-    let mut padded_light_copies = 0usize;
-    let mut padded_light_words = 0usize;
+    let mut padded_light_components = 0usize;
+    let mut unique_padded_light_words = 0usize;
+    let mut gpu_padded_light_words_estimate = 0usize;
+    let mut unique_padded_lights = HashSet::new();
     for light in &light_q {
-        padded_light_copies += 1;
-        padded_light_words += light.light_data.len();
+        padded_light_components += 1;
+        gpu_padded_light_words_estimate += light.light_data.len();
+        if unique_padded_lights.insert(light.data_key()) {
+            unique_padded_light_words += light.light_data.len();
+        }
     }
 
     let target_chunks =
@@ -288,8 +293,9 @@ fn update_memory_snapshot(
         mesh_entities,
         face_descriptors,
         face_descriptor_capacity,
-        padded_light_copies,
-        padded_light_words,
+        padded_light_components,
+        unique_padded_light_words,
+        gpu_padded_light_words_estimate,
         collider_entities,
         dimension_maps,
         collider_shape_bytes,
@@ -309,7 +315,7 @@ fn update_memory_snapshot(
         mesh_entities,
         face_descriptors,
         face_descriptor_capacity,
-        padded_light_copies,
+        padded_light_components,
         collider_entities,
         collider_solid_blocks,
         load_tasks: load_stats.tasks,
@@ -326,8 +332,9 @@ struct MemoryByteInputs {
     mesh_entities: usize,
     face_descriptors: usize,
     face_descriptor_capacity: usize,
-    padded_light_copies: usize,
-    padded_light_words: usize,
+    padded_light_components: usize,
+    unique_padded_light_words: usize,
+    gpu_padded_light_words_estimate: usize,
     collider_entities: usize,
     dimension_maps: usize,
     collider_shape_bytes: usize,
@@ -344,20 +351,26 @@ fn compute_memory_bytes(input: MemoryByteInputs) -> GameMemoryBytes {
         .saturating_add(bytes_for::<Visibility>(input.chunk_count));
     let main_mesh_descriptor_used = bytes_for::<FaceDescriptor>(input.face_descriptors);
     let main_mesh_descriptor_capacity = bytes_for::<FaceDescriptor>(input.face_descriptor_capacity);
-    let main_mesh_lights = input.padded_light_words.saturating_mul(size_of::<u32>());
-    let main_mesh_components = bytes_for::<VertexPullingMesh>(input.mesh_entities)
-        .saturating_add(bytes_for::<VertexPullingLight>(input.padded_light_copies));
+    let main_mesh_light_data = input
+        .unique_padded_light_words
+        .saturating_mul(size_of::<u32>());
+    let light_component_bytes = bytes_for::<VertexPullingLight>(input.padded_light_components);
+    let main_mesh_components =
+        bytes_for::<VertexPullingMesh>(input.mesh_entities).saturating_add(light_component_bytes);
     let render_world_mesh_mirror = bytes_for::<VertexPullingMesh>(input.mesh_entities)
         .saturating_add(main_mesh_descriptor_used)
-        .saturating_add(bytes_for::<VertexPullingLight>(input.padded_light_copies))
-        .saturating_add(main_mesh_lights);
-    let gpu_mesh_buffers = main_mesh_descriptor_used
+        .saturating_add(light_component_bytes);
+    let gpu_mesh_buffers_estimate = main_mesh_descriptor_used
         .saturating_add(
             input
                 .mesh_entities
                 .saturating_mul(CHUNK_ORIGIN_UNIFORM_BYTES),
         )
-        .saturating_add(main_mesh_lights);
+        .saturating_add(
+            input
+                .gpu_padded_light_words_estimate
+                .saturating_mul(size_of::<u32>()),
+        );
     let collider_shapes = input
         .collider_shape_bytes
         .saturating_add(bytes_for::<Collider>(input.collider_entities));
@@ -368,7 +381,7 @@ fn compute_memory_bytes(input: MemoryByteInputs) -> GameMemoryBytes {
         .saturating_add(chunk_metadata)
         .saturating_add(input.dimension_maps)
         .saturating_add(main_mesh_descriptor_capacity)
-        .saturating_add(main_mesh_lights)
+        .saturating_add(main_mesh_light_data)
         .saturating_add(main_mesh_components)
         .saturating_add(render_world_mesh_mirror)
         .saturating_add(collider_shapes)
@@ -382,10 +395,10 @@ fn compute_memory_bytes(input: MemoryByteInputs) -> GameMemoryBytes {
         dimension_maps: input.dimension_maps,
         main_mesh_descriptor_used,
         main_mesh_descriptor_capacity,
-        main_mesh_lights,
+        main_mesh_light_data,
         main_mesh_components,
         render_world_mesh_mirror,
-        gpu_mesh_buffers,
+        gpu_mesh_buffers_estimate,
         collider_shapes,
         task_payloads: input.task_payloads,
         tracked_cpu_total,

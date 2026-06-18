@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
 
@@ -302,13 +304,7 @@ fn indexed_face_ao_matches_reference_corner_order_for_all_directions() {
 
 #[test]
 fn mesh_rebuild_marker_is_removed_after_rebuild() {
-    let mut app = App::new();
-    app.add_plugins(MinimalPlugins)
-        .init_resource::<Assets<Mesh>>()
-        .init_resource::<crate::world::chunk::ambient_occlusion::AmbientOcclusionSettings>()
-        .insert_resource(test_texture_map())
-        .insert_resource(crate::textures::BlockStandardMaterials::test_handles())
-        .add_systems(Update, super::rebuild_chunk_meshes);
+    let mut app = mesh_rebuild_app();
 
     let mut chunk = Chunk::default();
     chunk.blocks[0][0][0] = BlockType::Stone;
@@ -331,9 +327,7 @@ fn mesh_rebuild_marker_is_removed_after_rebuild() {
 
 #[test]
 fn light_upload_marker_updates_existing_vertex_pulling_light() {
-    let mut app = App::new();
-    app.add_plugins(MinimalPlugins)
-        .add_systems(Update, super::upload_chunk_lights);
+    let mut app = light_upload_app();
 
     let mut chunk_light = ChunkLight::default();
     chunk_light.set_packed_light(uvec3(0, 0, 0), 0xAF);
@@ -351,28 +345,118 @@ fn light_upload_marker_updates_existing_vertex_pulling_light() {
             ChunkNeedsLightUpload,
         ))
         .id();
-    let child_entity = app
-        .world_mut()
-        .spawn((
-            ChildOf(chunk_entity),
-            VertexPullingLight {
-                light_data: ChunkLight::build_padded_light_data(IVec3::ZERO, &HashMap::default()),
-            },
-        ))
-        .id();
+    let child_entity = spawn_light_child(app.world_mut(), chunk_entity, empty_light_data());
+    let sibling_child_entity = spawn_light_child(app.world_mut(), chunk_entity, empty_light_data());
 
     app.update();
 
     let world = app.world();
     assert!(world.get::<ChunkNeedsLightUpload>(chunk_entity).is_none());
     assert!(world.get::<ChunkNeedsMeshRebuild>(chunk_entity).is_none());
+    let child_light = world.get::<VertexPullingLight>(child_entity).unwrap();
+    let sibling_child_light = world
+        .get::<VertexPullingLight>(sibling_child_entity)
+        .unwrap();
     assert_eq!(
-        world
-            .get::<VertexPullingLight>(child_entity)
-            .unwrap()
-            .light_data,
-        expected_light_data
+        child_light.light_data.as_ref(),
+        expected_light_data.as_ref()
     );
+    assert_eq!(
+        sibling_child_light.light_data.as_ref(),
+        expected_light_data.as_ref()
+    );
+    assert!(Arc::ptr_eq(
+        &child_light.light_data,
+        &sibling_child_light.light_data
+    ));
+}
+
+#[test]
+fn mesh_rebuild_new_layer_child_reuses_existing_light_data() {
+    let mut app = mesh_rebuild_app();
+
+    let mut chunk = Chunk::default();
+    chunk.blocks[0][0][0] = BlockType::Stone;
+    chunk.blocks[1][0][0] = BlockType::Glass;
+    let existing_light_data = empty_light_data();
+
+    let chunk_entity = app
+        .world_mut()
+        .spawn((ChunkPosition(IVec3::ZERO), chunk, ChunkNeedsMeshRebuild))
+        .id();
+    spawn_vp_layer_child(
+        app.world_mut(),
+        chunk_entity,
+        BlockMaterialLayer::Opaque,
+        existing_light_data.clone(),
+    );
+
+    app.update();
+
+    let world = app.world();
+    assert!(world.get::<ChunkNeedsMeshRebuild>(chunk_entity).is_none());
+    let children = world.get::<Children>(chunk_entity).unwrap();
+    let child_light_data = children
+        .iter()
+        .filter_map(|child| world.get::<VertexPullingLight>(child))
+        .map(|light| light.light_data.clone())
+        .collect::<Vec<_>>();
+
+    assert_eq!(child_light_data.len(), 2);
+    assert!(
+        child_light_data
+            .iter()
+            .all(|light_data| Arc::ptr_eq(light_data, &existing_light_data))
+    );
+}
+
+fn mesh_rebuild_app() -> App {
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins)
+        .init_resource::<Assets<Mesh>>()
+        .init_resource::<crate::world::chunk::ambient_occlusion::AmbientOcclusionSettings>()
+        .insert_resource(test_texture_map())
+        .insert_resource(crate::textures::BlockStandardMaterials::test_handles())
+        .add_systems(Update, super::rebuild_chunk_meshes);
+    app
+}
+
+fn light_upload_app() -> App {
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins)
+        .add_systems(Update, super::upload_chunk_lights);
+    app
+}
+
+fn empty_light_data() -> Arc<[u32]> {
+    ChunkLight::build_padded_light_data(IVec3::ZERO, &HashMap::default()).into()
+}
+
+fn spawn_light_child(world: &mut World, chunk_entity: Entity, light_data: Arc<[u32]>) -> Entity {
+    world
+        .spawn((ChildOf(chunk_entity), VertexPullingLight { light_data }))
+        .id()
+}
+
+fn spawn_vp_layer_child(
+    world: &mut World,
+    chunk_entity: Entity,
+    layer: BlockMaterialLayer,
+    light_data: Arc<[u32]>,
+) -> Entity {
+    world
+        .spawn((
+            ChildOf(chunk_entity),
+            super::ChunkMaterialLayerMarker(layer),
+            super::VertexPullingMesh {
+                descriptors: Vec::new(),
+                face_count: 0,
+                material_layer: layer,
+                chunk_origin: Vec3::ZERO,
+            },
+            VertexPullingLight { light_data },
+        ))
+        .id()
 }
 
 #[test]
