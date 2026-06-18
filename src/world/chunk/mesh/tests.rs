@@ -449,7 +449,6 @@ fn spawn_vp_layer_child(
             ChildOf(chunk_entity),
             super::ChunkMaterialLayerMarker(layer),
             super::VertexPullingMesh {
-                descriptors: Vec::new(),
                 face_count: 0,
                 material_layer: layer,
                 chunk_origin: Vec3::ZERO,

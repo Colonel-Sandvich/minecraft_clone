@@ -120,7 +120,7 @@ pub struct ChunkLoadBudget(pub usize);
 
 impl Default for ChunkLoadBudget {
     fn default() -> Self {
-        Self(16)
+        Self(24)
     }
 }
 
@@ -129,7 +129,7 @@ pub struct ChunkSpawnBudget(pub usize);
 
 impl Default for ChunkSpawnBudget {
     fn default() -> Self {
-        Self(16)
+        Self(24)
     }
 }
 

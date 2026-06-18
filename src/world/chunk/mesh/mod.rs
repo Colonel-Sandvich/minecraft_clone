@@ -2,7 +2,7 @@ mod blocks;
 pub mod vertex_pulling;
 
 pub use blocks::ChunkMeshBlocks;
-pub use vertex_pulling::{VertexPullingLight, VertexPullingMesh, VpAtlasState};
+pub use vertex_pulling::{ChunkMeshDescriptors, VertexPullingLight, VertexPullingMesh, VpAtlasState};
 
 use std::sync::Arc;
 
@@ -99,6 +99,17 @@ macro_rules! ao_key_ba {
     }};
 }
 
+fn drop_uploaded_descriptors(
+    mut commands: Commands,
+    descriptors: Query<(Entity, Ref<ChunkMeshDescriptors>)>,
+) {
+    for (entity, desc_ref) in &descriptors {
+        if !desc_ref.is_added() {
+            commands.entity(entity).remove::<ChunkMeshDescriptors>();
+        }
+    }
+}
+
 pub struct ChunkMeshPlugin;
 
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
@@ -138,7 +149,8 @@ impl Plugin for ChunkMeshPlugin {
             (rebuild_chunk_meshes, upload_chunk_lights)
                 .chain()
                 .run_if(in_state(TextureState::Finished)),
-        );
+        )
+        .add_systems(PostUpdate, drop_uploaded_descriptors);
     }
 }
 
@@ -273,12 +285,14 @@ fn update_chunk_vp_children(
 
         if let Some(entity) = existing.get(&layer) {
             if let Ok(mut mesh) = vp_mesh_q.get_mut(*entity) {
-                mesh.descriptors = descriptors;
                 mesh.face_count = face_count;
                 mesh.material_layer = layer;
                 mesh.chunk_origin = chunk_origin;
             }
-            commands.entity(*entity).insert(chunk_render_aabb());
+            commands.entity(*entity).insert((
+                ChunkMeshDescriptors(descriptors),
+                chunk_render_aabb(),
+            ));
             continue;
         }
 
@@ -292,11 +306,11 @@ fn update_chunk_vp_children(
             Visibility::default(),
             chunk_render_aabb(),
             VertexPullingMesh {
-                descriptors,
                 face_count,
                 material_layer: layer,
                 chunk_origin,
             },
+            ChunkMeshDescriptors(descriptors),
             VertexPullingLight {
                 light_data: light_data.clone(),
             },

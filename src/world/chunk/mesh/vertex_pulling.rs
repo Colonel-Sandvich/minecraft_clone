@@ -130,7 +130,8 @@ pub fn build_descriptors(
     BlockMaterialLayer::ALL
         .into_iter()
         .filter_map(|layer| {
-            let layer_descriptors = std::mem::take(&mut descriptors[layer.index()]);
+            let mut layer_descriptors = std::mem::take(&mut descriptors[layer.index()]);
+            layer_descriptors.shrink_to_fit();
             (!layer_descriptors.is_empty()).then_some((layer, layer_descriptors))
         })
         .collect()
@@ -141,8 +142,10 @@ pub fn build_descriptors(
 // ---------------------------------------------------------------------------
 
 #[derive(Component, Clone)]
+pub struct ChunkMeshDescriptors(pub Vec<FaceDescriptor>);
+
+#[derive(Component, Clone)]
 pub struct VertexPullingMesh {
-    pub descriptors: Vec<FaceDescriptor>,
     pub face_count: u32,
     pub material_layer: BlockMaterialLayer,
     pub chunk_origin: Vec3,
@@ -291,7 +294,7 @@ impl Plugin for VertexPullingPlugin {
         render_app
             .add_systems(
                 ExtractSchedule,
-                (extract_changed_vp_meshes, extract_changed_vp_lights),
+                (extract_changed_vp_data, extract_changed_vp_lights),
             )
             .init_resource::<VpStaticResources>()
             .add_systems(
@@ -619,9 +622,12 @@ impl Plugin for VertexPullingPlugin {
 // Systems (module-level functions so `in_set` works)
 // ---------------------------------------------------------------------------
 
-fn extract_changed_vp_meshes(
+fn extract_changed_vp_data(
     mut commands: Commands,
     meshes: Extract<Query<(RenderEntity, &VertexPullingMesh), Changed<VertexPullingMesh>>>,
+    descriptors: Extract<
+        Query<(RenderEntity, &ChunkMeshDescriptors), Changed<ChunkMeshDescriptors>>,
+    >,
 ) {
     commands.try_insert_batch(
         meshes
@@ -629,6 +635,9 @@ fn extract_changed_vp_meshes(
             .map(|(entity, mesh)| (entity, mesh.clone()))
             .collect::<Vec<_>>(),
     );
+    for (entity, desc) in &descriptors {
+        commands.entity(entity).insert(desc.clone());
+    }
 }
 
 fn extract_changed_vp_lights(
@@ -654,6 +663,7 @@ fn prepare_gpu_data(
         (Entity, &VertexPullingMesh, Option<Ref<VertexPullingLight>>),
         Changed<VertexPullingMesh>,
     >,
+    descriptors_q: Query<&ChunkMeshDescriptors>,
     lights_q: Query<(Entity, Ref<VertexPullingLight>), Changed<VertexPullingLight>>,
     all_meshes_q: Query<&VertexPullingMesh>,
     prepared_q: Query<&PreparedChunkVp>,
@@ -818,10 +828,15 @@ fn prepare_gpu_data(
             continue;
         }
 
-        let existing = prepared_q.get(entity).ok();
-        let desc_buf = create_descriptor_buffer(&render_device, mesh);
+        let desc_buf = if let Ok(desc) = descriptors_q.get(entity) {
+            create_descriptor_buffer_from_slice(&render_device, &desc.0)
+        } else if let Ok(prepared) = prepared_q.get(entity) {
+            prepared.desc_buf.clone()
+        } else {
+            continue;
+        };
         let origin_buf = create_origin_buffer(&render_device, mesh);
-        let light_buf = match (light.as_ref(), existing) {
+        let light_buf = match (light.as_ref(), prepared_q.get(entity).ok()) {
             (Some(light), _) if light.is_changed() => {
                 light_buffer_for(&render_device, &mut prepared_light_buffers, light, None)
             }
@@ -845,6 +860,7 @@ fn prepare_gpu_data(
             &light_buf,
         );
 
+        commands.entity(entity).remove::<ChunkMeshDescriptors>();
         commands.entity(entity).insert(PreparedChunkVp {
             bind_group,
             face_count: mesh.face_count,
@@ -871,7 +887,7 @@ fn prepare_gpu_data(
                     prepared.face_count,
                     prepared.material_layer,
                 )
-            } else {
+            } else if let Ok(desc) = descriptors_q.get(entity) {
                 let Ok(mesh) = all_meshes_q.get(entity) else {
                     continue;
                 };
@@ -880,11 +896,13 @@ fn prepare_gpu_data(
                     continue;
                 }
                 (
-                    create_descriptor_buffer(&render_device, mesh),
+                    create_descriptor_buffer_from_slice(&render_device, &desc.0),
                     create_origin_buffer(&render_device, mesh),
                     mesh.face_count,
                     mesh.material_layer,
                 )
+            } else {
+                continue;
             };
         let bind_group = create_chunk_bind_group(
             &render_device,
@@ -905,10 +923,10 @@ fn prepare_gpu_data(
     }
 }
 
-fn create_descriptor_buffer(render_device: &RenderDevice, mesh: &VertexPullingMesh) -> Buffer {
+fn create_descriptor_buffer_from_slice(render_device: &RenderDevice, descriptors: &[FaceDescriptor]) -> Buffer {
     render_device.create_buffer_with_data(&BufferInitDescriptor {
         label: Some("vp_desc"),
-        contents: bytemuck::cast_slice(&mesh.descriptors),
+        contents: bytemuck::cast_slice(descriptors),
         usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
     })
 }

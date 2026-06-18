@@ -4,7 +4,9 @@ use avian3d::prelude::Collider;
 use bevy::prelude::*;
 
 use crate::{
-    world::chunk::mesh::vertex_pulling::{FaceDescriptor, VertexPullingLight, VertexPullingMesh},
+    world::chunk::mesh::vertex_pulling::{
+        ChunkMeshDescriptors, FaceDescriptor, VertexPullingLight, VertexPullingMesh,
+    },
     world::{
         chunk::{Chunk, ChunkBlockCounts, ChunkHeightmap, ChunkLight, ChunkPosition},
         dimension::{
@@ -202,6 +204,7 @@ fn update_memory_snapshot(
     chunk_q: Query<(&ChunkBlockCounts, Option<&Children>), With<Chunk>>,
     collider_q: Query<&Collider>,
     mesh_q: Query<&VertexPullingMesh>,
+    mesh_desc_q: Query<&ChunkMeshDescriptors>,
     light_q: Query<&VertexPullingLight>,
     dimensions_q: Query<&Dimension>,
     metadata: Res<WorldMetadata>,
@@ -251,12 +254,15 @@ fn update_memory_snapshot(
     }
 
     let mut mesh_entities = 0usize;
+    for _ in &mesh_q {
+        mesh_entities += 1;
+    }
+
     let mut face_descriptors = 0usize;
     let mut face_descriptor_capacity = 0usize;
-    for mesh in &mesh_q {
-        mesh_entities += 1;
-        face_descriptors += mesh.descriptors.len();
-        face_descriptor_capacity += mesh.descriptors.capacity();
+    for desc in &mesh_desc_q {
+        face_descriptors += desc.0.len();
+        face_descriptor_capacity += desc.0.capacity();
     }
 
     let mut padded_light_components = 0usize;
