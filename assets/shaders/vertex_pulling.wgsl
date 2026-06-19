@@ -223,7 +223,14 @@ fn fragment(@location(0) world_pos: vec3<f32>,
 
     let lookup = block_type * 6u + face_dir;
     let layer = i32(texture_layers[lookup]);
-    let tex_color = textureSample(terrain_texture, terrain_sampler, block_uv, layer);
+    let tex_color = textureSampleGrad(
+        terrain_texture,
+        terrain_sampler,
+        block_uv,
+        layer,
+        dpdx(face_uv),
+        dpdy(face_uv),
+    );
     let tint = tint_colors[lookup];
 
     let emissive = clamp(emission_factors[lookup], 0.0, 1.0);
