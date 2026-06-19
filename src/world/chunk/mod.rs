@@ -3,7 +3,6 @@ pub mod collider;
 pub mod light;
 pub mod mesh;
 
-use ambient_occlusion::AmbientOcclusionPlugin;
 use bevy::prelude::*;
 use collider::ChunkColliderPlugin;
 use mesh::ChunkMeshPlugin;
@@ -18,7 +17,6 @@ pub struct ChunkPlugin;
 
 impl Plugin for ChunkPlugin {
     fn build(&self, app: &mut App) {
-        app.add_plugins(AmbientOcclusionPlugin);
         app.add_plugins(ChunkMeshPlugin);
         if std::env::var_os("MINECRAFT_CLONE_DISABLE_CHUNK_COLLIDERS").is_none() {
             app.add_plugins(ChunkColliderPlugin);

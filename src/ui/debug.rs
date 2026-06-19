@@ -9,7 +9,6 @@ use crate::{
     memory::GameMemorySnapshot,
     player::Player,
     player::cam::MouseCam,
-    world::chunk::ambient_occlusion::AmbientOcclusionSettings,
     world::chunk::{CHUNK_ISIZE, ChunkLight, ChunkPosition, light::world_to_chunk_local},
     world::dimension::ViewDistance,
 };
@@ -99,7 +98,6 @@ fn update_debug_text(
     player_q: Single<&Transform, With<Player>>,
     cam_q: Single<(&Transform, &GlobalTransform), (With<MouseCam>, Without<Player>)>,
     view_distance: Res<ViewDistance>,
-    ao: Res<AmbientOcclusionSettings>,
     memory: Option<Res<GameMemorySnapshot>>,
     chunk_count: Query<(), With<crate::world::chunk::Chunk>>,
     chunk_lights: Query<(&ChunkPosition, &ChunkLight)>,
@@ -153,8 +151,7 @@ fn update_debug_text(
          \n\
          Facing: {facing}\n\
          Chunks loaded: {loaded}\n\
-         View dist: {vd}\n\
-         AO: {ao:?}{memory}",
+         View dist: {vd}{memory}",
         x = pos.x,
         y = pos.y,
         z = pos.z,
@@ -163,7 +160,6 @@ fn update_debug_text(
         facing = facing,
         loaded = loaded,
         vd = view_distance.chunks(),
-        ao = ao.mode,
         memory = memory,
     );
 }

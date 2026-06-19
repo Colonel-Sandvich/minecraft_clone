@@ -19,7 +19,7 @@ use crate::textures::{BlockTextures, TextureState};
 
 use super::{
     CHUNK_ISIZE, CHUNK_SIZE, CHUNK_VOLUME, Chunk, ChunkLight, ChunkNeedsLightUpload,
-    ChunkNeedsMeshRebuild, ChunkPosition, ambient_occlusion::AmbientOcclusionSettings,
+    ChunkNeedsMeshRebuild, ChunkPosition, ambient_occlusion::AO_BRIGHTNESS,
 };
 
 pub(crate) const PADDED_CHUNK_SIZE: usize = CHUNK_SIZE + 2;
@@ -167,7 +167,6 @@ fn rebuild_chunk_meshes(
     mut commands: Commands,
     block_textures: Res<BlockTextures>,
     block_texture_map: Res<BlockTextureMap>,
-    ao_settings: Res<AmbientOcclusionSettings>,
     dirty_chunks_q: Query<(&ChunkPosition, Entity), (With<Chunk>, With<ChunkNeedsMeshRebuild>)>,
     all_chunks_q: Query<(&ChunkPosition, &Chunk)>,
     light_q: Query<(&ChunkPosition, &ChunkLight)>,
@@ -181,7 +180,6 @@ fn rebuild_chunk_meshes(
         return;
     }
 
-    let ao_brightness = ao_settings.brightness_curve();
     let chunks_by_pos = all_chunks_q
         .iter()
         .map(|(pos, chunk)| (pos.0, chunk))
@@ -211,7 +209,7 @@ fn rebuild_chunk_meshes(
         texture_layers,
         tint_colors,
         emission_factors,
-        ao_brightness,
+        ao_brightness: AO_BRIGHTNESS,
     };
     commands.insert_resource(texture_state);
 

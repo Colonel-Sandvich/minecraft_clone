@@ -414,7 +414,6 @@ fn mesh_rebuild_app() -> App {
     let mut app = App::new();
     app.add_plugins(MinimalPlugins)
         .init_resource::<Assets<Mesh>>()
-        .init_resource::<crate::world::chunk::ambient_occlusion::AmbientOcclusionSettings>()
         .insert_resource(test_texture_map())
         .insert_resource(crate::textures::BlockTextures::test_handles())
         .add_systems(Update, super::rebuild_chunk_meshes);
