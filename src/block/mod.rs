@@ -191,8 +191,22 @@ impl BlockType {
     }
 }
 
+#[repr(transparent)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct BlockTextureLayer(u32);
+
+impl BlockTextureLayer {
+    pub const fn new(index: u32) -> Self {
+        Self(index)
+    }
+
+    pub const fn index(self) -> u32 {
+        self.0
+    }
+}
+
 #[derive(Resource)]
-pub struct BlockTextureMap(pub HashMap<String, Rect>);
+pub struct BlockTextureMap(pub HashMap<String, BlockTextureLayer>);
 
 pub fn block_and_side_to_texture_path(block: BlockType, side: Direction) -> &'static str {
     use BlockType::*;
@@ -218,7 +232,7 @@ pub fn block_and_side_to_texture_path(block: BlockType, side: Direction) -> &'st
 }
 
 impl BlockTextureMap {
-    pub fn block_to_mesh(&self, block: BlockType, side: Direction) -> Rect {
+    pub fn block_to_texture_layer(&self, block: BlockType, side: Direction) -> BlockTextureLayer {
         let path = block_and_side_to_texture_path(block, side);
         self.0
             .get(path)

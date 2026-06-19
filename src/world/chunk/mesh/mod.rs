@@ -3,7 +3,7 @@ pub mod vertex_pulling;
 
 pub use blocks::ChunkMeshBlocks;
 pub use vertex_pulling::{
-    ChunkMeshDescriptors, VertexPullingLight, VertexPullingMesh, VpAtlasState,
+    ChunkMeshDescriptors, VertexPullingLight, VertexPullingMesh, VpTextureState,
 };
 
 use std::sync::Arc;
@@ -11,9 +11,11 @@ use std::sync::Arc;
 use bevy::{camera::primitives::Aabb, platform::collections::HashMap, prelude::*, utils::Parallel};
 use strum::{EnumCount, IntoEnumIterator};
 
-use crate::block::{BlockMaterialLayer, BlockTextureMap, BlockType, block_to_colour};
+use crate::block::{
+    BlockMaterialLayer, BlockTextureLayer, BlockTextureMap, BlockType, block_to_colour,
+};
 use crate::quad::Direction;
-use crate::textures::{BlockStandardMaterials, TextureState};
+use crate::textures::{BlockTextures, TextureState};
 
 use super::{
     CHUNK_ISIZE, CHUNK_SIZE, CHUNK_VOLUME, Chunk, ChunkLight, ChunkNeedsLightUpload,
@@ -119,13 +121,14 @@ struct ChunkMaterialLayerMarker(BlockMaterialLayer);
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct BlockMeshTables {
-    pub(crate) uvs: [[Rect; DIRECTION_COUNT]; BLOCK_TYPE_COUNT],
+    pub(crate) texture_layers: [[BlockTextureLayer; DIRECTION_COUNT]; BLOCK_TYPE_COUNT],
     pub(crate) colors: [[Vec4; DIRECTION_COUNT]; BLOCK_TYPE_COUNT],
 }
 
 impl BlockMeshTables {
     pub(crate) fn from_texture_map(block_texture_map: &BlockTextureMap) -> Self {
-        let mut uvs = [[Rect::new(0.0, 0.0, 0.0, 0.0); DIRECTION_COUNT]; BLOCK_TYPE_COUNT];
+        let mut texture_layers =
+            [[BlockTextureLayer::default(); DIRECTION_COUNT]; BLOCK_TYPE_COUNT];
         let mut colors = [[Vec4::ZERO; DIRECTION_COUNT]; BLOCK_TYPE_COUNT];
 
         for block in BlockType::iter() {
@@ -135,12 +138,16 @@ impl BlockMeshTables {
             };
 
             for (side_index, side) in Direction::iter().enumerate() {
-                uvs[block_index][side_index] = block_texture_map.block_to_mesh(block, side);
+                texture_layers[block_index][side_index] =
+                    block_texture_map.block_to_texture_layer(block, side);
                 colors[block_index][side_index] = block_to_colour(block, side);
             }
         }
 
-        Self { uvs, colors }
+        Self {
+            texture_layers,
+            colors,
+        }
     }
 }
 
@@ -158,7 +165,7 @@ impl Plugin for ChunkMeshPlugin {
 
 fn rebuild_chunk_meshes(
     mut commands: Commands,
-    block_materials: Res<BlockStandardMaterials>,
+    block_textures: Res<BlockTextures>,
     block_texture_map: Res<BlockTextureMap>,
     ao_settings: Res<AmbientOcclusionSettings>,
     dirty_chunks_q: Query<(&ChunkPosition, Entity), (With<Chunk>, With<ChunkNeedsMeshRebuild>)>,
@@ -181,13 +188,8 @@ fn rebuild_chunk_meshes(
         .collect::<HashMap<_, _>>();
 
     let tables = BlockMeshTables::from_texture_map(&block_texture_map);
-    let tile_offsets: Vec<[f32; 2]> = (0..BLOCK_TYPE_COUNT)
-        .flat_map(|bt| {
-            (0..DIRECTION_COUNT).map(move |dir| {
-                let r = tables.uvs[bt][dir];
-                [r.min.x, r.min.y]
-            })
-        })
+    let texture_layers: Vec<u32> = (0..BLOCK_TYPE_COUNT)
+        .flat_map(|bt| (0..DIRECTION_COUNT).map(move |dir| tables.texture_layers[bt][dir].index()))
         .collect();
     let tint_colors: Vec<[f32; 4]> = (0..BLOCK_TYPE_COUNT)
         .flat_map(|bt| {
@@ -204,20 +206,14 @@ fn rebuild_chunk_meshes(
             (0..DIRECTION_COUNT).map(move |_| emission)
         })
         .collect();
-    let tile_size = {
-        let stone = tables.uvs[BlockType::Stone as usize][0];
-        Vec2::new(stone.width(), stone.height())
-    };
-
-    let atlas_state = VpAtlasState {
-        atlas_handle: block_materials.atlas.clone(),
-        tile_size,
-        tile_offsets,
+    let texture_state = VpTextureState {
+        terrain_texture_handle: block_textures.terrain.clone(),
+        texture_layers,
         tint_colors,
         emission_factors,
         ao_brightness,
     };
-    commands.insert_resource(atlas_state);
+    commands.insert_resource(texture_state);
 
     let lights_by_pos: HashMap<IVec3, &ChunkLight> =
         light_q.iter().map(|(pos, light)| (pos.0, light)).collect();

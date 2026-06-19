@@ -416,7 +416,7 @@ fn mesh_rebuild_app() -> App {
         .init_resource::<Assets<Mesh>>()
         .init_resource::<crate::world::chunk::ambient_occlusion::AmbientOcclusionSettings>()
         .insert_resource(test_texture_map())
-        .insert_resource(crate::textures::BlockStandardMaterials::test_handles())
+        .insert_resource(crate::textures::BlockTextures::test_handles())
         .add_systems(Update, super::rebuild_chunk_meshes);
     app
 }
@@ -535,10 +535,11 @@ fn test_texture_map() -> crate::block::BlockTextureMap {
             continue;
         }
         for side in Direction::iter() {
-            paths.insert(
-                crate::block::block_and_side_to_texture_path(block, side).to_owned(),
-                Rect::new(0.0, 0.0, 1.0, 1.0),
-            );
+            let path = crate::block::block_and_side_to_texture_path(block, side).to_owned();
+            let next_layer = paths.len() as u32;
+            paths
+                .entry(path)
+                .or_insert(crate::block::BlockTextureLayer::new(next_layer));
         }
     }
     crate::block::BlockTextureMap(paths)

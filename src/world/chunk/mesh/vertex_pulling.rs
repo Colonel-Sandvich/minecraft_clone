@@ -1,10 +1,10 @@
 //! Vertex-pulling mesh generation and rendering — Phase 2.
 //!
-//! Non-greedy, atlas-textured, per-vertex smooth lighting.
+//! Non-greedy, texture-array terrain, per-vertex smooth lighting.
 //! CPU emits an 8-byte `FaceDescriptor` per visible face. The vertex shader decodes
 //! descriptors via `@builtin(vertex_index)` and samples the per-chunk light buffer.
 //!
-//! Bind group 0 (per frame): view_proj + atlas texture + tile_offsets
+//! Bind group 0 (per frame): view_proj + terrain texture array + texture_layers
 //! Bind group 1 (per chunk): face descriptor SSBO + chunk_origin + light_data
 
 use std::{
@@ -192,8 +192,7 @@ pub struct VpGlobals {
 
 #[derive(Resource, Default)]
 pub struct VpStaticResources {
-    pub tile_size_buf: Option<Buffer>,
-    pub tile_offsets_buf: Option<Buffer>,
+    pub texture_layers_buf: Option<Buffer>,
     pub tint_colors_buf: Option<Buffer>,
     pub emission_factors_buf: Option<Buffer>,
     pub ao_brightness_buf: Option<Buffer>,
@@ -210,17 +209,16 @@ pub struct VpPipeline {
 }
 
 #[derive(Resource, Clone)]
-pub struct VpAtlasState {
-    pub atlas_handle: Handle<Image>,
-    pub tile_size: Vec2,
-    pub tile_offsets: Vec<[f32; 2]>,
+pub struct VpTextureState {
+    pub terrain_texture_handle: Handle<Image>,
+    pub texture_layers: Vec<u32>,
     pub tint_colors: Vec<[f32; 4]>,
     pub emission_factors: Vec<f32>,
     pub ao_brightness: [f32; 4],
 }
 
-impl ExtractResource for VpAtlasState {
-    type Source = VpAtlasState;
+impl ExtractResource for VpTextureState {
+    type Source = VpTextureState;
 
     fn extract_resource(source: &Self::Source) -> Self {
         source.clone()
@@ -363,7 +361,7 @@ impl Plugin for VertexPullingPlugin {
 
         app.add_plugins((
             SyncComponentPlugin::<VertexPullingMesh>::default(),
-            ExtractResourcePlugin::<VpAtlasState>::default(),
+            ExtractResourcePlugin::<VpTextureState>::default(),
             ExtractResourcePlugin::<TerrainVisualSettings>::default(),
         ));
 
@@ -400,7 +398,7 @@ impl Plugin for VertexPullingPlugin {
             .resource_mut::<AssetServer>()
             .load(SHADER_PATH);
 
-        // Group 0: view_proj + atlas texture + sampler + tile_size + tile_offsets + tint_colors + AO curve + emission factors + visual settings
+        // Group 0: view_proj + terrain texture array + sampler + texture layers + tint colors + AO curve + emission factors + visual settings
         let group0_entries = vec![
             BindGroupLayoutEntry {
                 binding: 0,
@@ -417,7 +415,7 @@ impl Plugin for VertexPullingPlugin {
                 visibility: ShaderStages::FRAGMENT,
                 ty: BindingType::Texture {
                     sample_type: TextureSampleType::Float { filterable: true },
-                    view_dimension: TextureViewDimension::D2,
+                    view_dimension: TextureViewDimension::D2Array,
                     multisampled: false,
                 },
                 count: None,
@@ -426,16 +424,6 @@ impl Plugin for VertexPullingPlugin {
                 binding: 2,
                 visibility: ShaderStages::FRAGMENT,
                 ty: BindingType::Sampler(SamplerBindingType::Filtering),
-                count: None,
-            },
-            BindGroupLayoutEntry {
-                binding: 3,
-                visibility: ShaderStages::FRAGMENT,
-                ty: BindingType::Buffer {
-                    ty: BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: BufferSize::new(8),
-                },
                 count: None,
             },
             BindGroupLayoutEntry {
@@ -658,16 +646,15 @@ impl Plugin for VertexPullingPlugin {
             usage: TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
         });
-        let dummy_tex_view = dummy_tex.create_view(&TextureViewDescriptor::default());
-        let dummy_sampler = render_device.create_sampler(&SamplerDescriptor::default());
-        let dummy_tile_size = render_device.create_buffer_with_data(&BufferInitDescriptor {
-            label: Some("vp_g0_dummy_tile"),
-            contents: &[0u8; 8],
-            usage: BufferUsages::UNIFORM,
+        let dummy_tex_view = dummy_tex.create_view(&TextureViewDescriptor {
+            dimension: Some(TextureViewDimension::D2Array),
+            array_layer_count: Some(1),
+            ..Default::default()
         });
-        let dummy_offsets = render_device.create_buffer_with_data(&BufferInitDescriptor {
-            label: Some("vp_g0_dummy_offsets"),
-            contents: bytemuck::cast_slice(&vec![0.0f32; 108]), // 54 vec2s
+        let dummy_sampler = render_device.create_sampler(&SamplerDescriptor::default());
+        let dummy_texture_layers = render_device.create_buffer_with_data(&BufferInitDescriptor {
+            label: Some("vp_g0_dummy_texture_layers"),
+            contents: bytemuck::cast_slice(&vec![0u32; 54]),
             usage: BufferUsages::STORAGE,
         });
         let dummy_tints = render_device.create_buffer_with_data(&BufferInitDescriptor {
@@ -710,12 +697,8 @@ impl Plugin for VertexPullingPlugin {
                     resource: BindingResource::Sampler(&dummy_sampler),
                 },
                 BindGroupEntry {
-                    binding: 3,
-                    resource: dummy_tile_size.as_entire_binding(),
-                },
-                BindGroupEntry {
                     binding: 4,
-                    resource: dummy_offsets.as_entire_binding(),
+                    resource: dummy_texture_layers.as_entire_binding(),
                 },
                 BindGroupEntry {
                     binding: 5,
@@ -780,7 +763,7 @@ fn prepare_gpu_data(
     render_device: Res<RenderDevice>,
     render_queue: Res<RenderQueue>,
     pipeline: Option<Res<VpPipeline>>,
-    atlas_state: Option<Res<VpAtlasState>>,
+    texture_state: Option<Res<VpTextureState>>,
     gpu_images: Res<RenderAssets<GpuImage>>,
     chunks_q: Query<
         (Entity, &VertexPullingMesh, Option<Ref<VertexPullingLight>>),
@@ -818,37 +801,24 @@ fn prepare_gpu_data(
     let visual_settings_uniform =
         TerrainVisualSettingsUniform::new(visual_settings, camera_position);
 
-    let Some(atlas) = atlas_state.as_deref() else {
+    let Some(texture_state) = texture_state.as_deref() else {
         return;
     };
-    let Some(gpu_image) = gpu_images.get(&atlas.atlas_handle) else {
+    let Some(gpu_image) = gpu_images.get(&texture_state.terrain_texture_handle) else {
         return;
     };
 
     // Create static buffers once and keep them forever
     if static_res.view_proj_buf.is_none() {
-        static_res.tile_size_buf = Some(render_device.create_buffer_with_data(
+        static_res.texture_layers_buf = Some(render_device.create_buffer_with_data(
             &BufferInitDescriptor {
-                label: Some("vp_tile_size"),
-                contents: bytemuck::cast_slice(&[atlas.tile_size.x, atlas.tile_size.y]),
-                usage: BufferUsages::UNIFORM,
-            },
-        ));
-
-        let offsets_flat: Vec<f32> = atlas
-            .tile_offsets
-            .iter()
-            .flat_map(|o| [o[0], o[1]])
-            .collect();
-        static_res.tile_offsets_buf = Some(render_device.create_buffer_with_data(
-            &BufferInitDescriptor {
-                label: Some("vp_tile_offsets"),
-                contents: bytemuck::cast_slice(&offsets_flat),
+                label: Some("vp_texture_layers"),
+                contents: bytemuck::cast_slice(&texture_state.texture_layers),
                 usage: BufferUsages::STORAGE,
             },
         ));
 
-        let tints_flat: Vec<f32> = atlas
+        let tints_flat: Vec<f32> = texture_state
             .tint_colors
             .iter()
             .flat_map(|c| [c[0], c[1], c[2], c[3]])
@@ -864,7 +834,7 @@ fn prepare_gpu_data(
         static_res.emission_factors_buf = Some(render_device.create_buffer_with_data(
             &BufferInitDescriptor {
                 label: Some("vp_emission_factors"),
-                contents: bytemuck::cast_slice(&atlas.emission_factors),
+                contents: bytemuck::cast_slice(&texture_state.emission_factors),
                 usage: BufferUsages::STORAGE,
             },
         ));
@@ -880,7 +850,7 @@ fn prepare_gpu_data(
         static_res.ao_brightness_buf = Some(render_device.create_buffer_with_data(
             &BufferInitDescriptor {
                 label: Some("vp_ao_brightness"),
-                contents: bytemuck::cast_slice(&atlas.ao_brightness),
+                contents: bytemuck::cast_slice(&texture_state.ao_brightness),
                 usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
             },
         ));
@@ -893,7 +863,7 @@ fn prepare_gpu_data(
             },
         ));
 
-        let group0_entries: [BindGroupEntry; 9] = [
+        let group0_entries: [BindGroupEntry; 8] = [
             BindGroupEntry {
                 binding: 0,
                 resource: static_res
@@ -911,17 +881,9 @@ fn prepare_gpu_data(
                 resource: BindingResource::Sampler(&gpu_image.sampler),
             },
             BindGroupEntry {
-                binding: 3,
-                resource: static_res
-                    .tile_size_buf
-                    .as_ref()
-                    .unwrap()
-                    .as_entire_binding(),
-            },
-            BindGroupEntry {
                 binding: 4,
                 resource: static_res
-                    .tile_offsets_buf
+                    .texture_layers_buf
                     .as_ref()
                     .unwrap()
                     .as_entire_binding(),
@@ -977,7 +939,7 @@ fn prepare_gpu_data(
     render_queue.0.write_buffer(
         static_res.ao_brightness_buf.as_ref().unwrap(),
         0,
-        bytemuck::cast_slice(&atlas.ao_brightness),
+        bytemuck::cast_slice(&texture_state.ao_brightness),
     );
     render_queue.0.write_buffer(
         static_res.visual_settings_buf.as_ref().unwrap(),

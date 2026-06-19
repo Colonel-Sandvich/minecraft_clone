@@ -3,12 +3,11 @@ use std::collections::HashMap;
 use bevy::{
     asset::RenderAssetUsages, input::mouse::MouseWheel, prelude::*, render::render_resource::*,
 };
-use image::{GenericImageView, Rgba, RgbaImage, imageops::FilterType};
+use image::{Rgba, RgbaImage, imageops::FilterType};
 use strum::IntoEnumIterator;
 
-use crate::block::{BlockTextureMap, BlockType, block_and_side_to_texture_path, block_to_colour};
+use crate::block::{BlockType, block_and_side_to_texture_path, block_to_colour};
 use crate::quad::Direction;
-use crate::textures::BlockStandardMaterials;
 
 pub struct HotbarPlugin;
 
@@ -210,46 +209,26 @@ fn spawn_hotbar_ui(commands: &mut Commands, bg_handle: &Handle<Image>, sel_handl
 fn generate_block_icons(
     mut commands: Commands,
     block_icons: Res<BlockIcons>,
-    materials: Res<BlockStandardMaterials>,
-    block_texture_map: Res<BlockTextureMap>,
     mut images: ResMut<Assets<Image>>,
 ) {
     if !block_icons.icons.is_empty() {
         return;
     }
-    let atlas_handle = materials.atlas.clone();
-    let atlas = match images.get(&atlas_handle) {
-        Some(a) => a,
-        None => {
-            warn!("Block atlas not available for icon generation");
-            return;
-        }
-    };
-
-    let Some(atlas_data) = atlas.data.as_ref() else {
-        warn!("Block atlas has no CPU data");
-        return;
-    };
-
-    let atlas_w = atlas.texture_descriptor.size.width;
-    let atlas_h = atlas.texture_descriptor.size.height;
-    let atlas_img = RgbaImage::from_raw(atlas_w, atlas_h, atlas_data.clone())
-        .expect("atlas data should match RGBA8 dimensions");
 
     let mut icons = HashMap::new();
     for block in BlockType::iter().filter(|b| b.is_rendered()) {
         let top_path = block_and_side_to_texture_path(block, Direction::Up);
         let side_path = block_and_side_to_texture_path(block, Direction::Right);
-        let Some(top_rect) = block_texture_map.0.get(top_path).copied() else {
+        let Some(top_tex) = load_block_texture(top_path) else {
             continue;
         };
-        let Some(side_rect) = block_texture_map.0.get(side_path).copied() else {
+        let Some(side_tex) = load_block_texture(side_path) else {
             continue;
         };
 
         let top_tint = block_to_colour(block, Direction::Up);
         let side_tint = block_to_colour(block, Direction::Right);
-        let icon = render_isometric_block(&atlas_img, top_rect, side_rect, top_tint, side_tint);
+        let icon = render_isometric_block(&top_tex, &side_tex, top_tint, side_tint);
         let handle = images.add(icon);
         icons.insert(block, handle);
     }
@@ -268,38 +247,27 @@ static RIGHT_FACE: [(f32, f32); 4] = [(24.0, 22.5), (42.0, 13.5), (42.0, 34.5), 
 static TOP_UV: [(f32, f32); 4] = [(1.0, 1.0), (1.0, 0.0), (0.0, 0.0), (0.0, 1.0)];
 static SIDE_UV: [(f32, f32); 4] = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)];
 
-fn extract_face_rect(atlas: &RgbaImage, rect: &Rect) -> RgbaImage {
-    let aw = atlas.width();
-    let ah = atlas.height();
-    let x = (rect.min.x * aw as f32) as u32;
-    let y = (rect.min.y * ah as f32) as u32;
-    let w = ((rect.max.x - rect.min.x) * aw as f32) as u32;
-    let h = ((rect.max.y - rect.min.y) * ah as f32) as u32;
-    atlas.view(x, y, w.max(1), h.max(1)).to_image()
+fn load_block_texture(path: &str) -> Option<RgbaImage> {
+    match image::open(format!("assets/{path}")) {
+        Ok(image) => Some(image.to_rgba8()),
+        Err(error) => {
+            warn!("failed to load block icon texture {path}: {error}");
+            None
+        }
+    }
 }
 
 fn render_isometric_block(
-    atlas: &RgbaImage,
-    top_rect: Rect,
-    side_rect: Rect,
+    top_tex: &RgbaImage,
+    side_tex: &RgbaImage,
     top_tint: Vec4,
     side_tint: Vec4,
 ) -> Image {
-    let top_tex = extract_face_rect(atlas, &top_rect);
-    let side_tex = extract_face_rect(atlas, &side_rect);
-
     let mut canvas = RgbaImage::new(ICON_W, ICON_H);
 
-    warp_face(&mut canvas, &side_tex, &LEFT_FACE, &SIDE_UV, side_tint, 0.8);
-    warp_face(
-        &mut canvas,
-        &side_tex,
-        &RIGHT_FACE,
-        &SIDE_UV,
-        side_tint,
-        0.6,
-    );
-    warp_face(&mut canvas, &top_tex, &TOP_FACE, &TOP_UV, top_tint, 1.0);
+    warp_face(&mut canvas, side_tex, &LEFT_FACE, &SIDE_UV, side_tint, 0.8);
+    warp_face(&mut canvas, side_tex, &RIGHT_FACE, &SIDE_UV, side_tint, 0.6);
+    warp_face(&mut canvas, top_tex, &TOP_FACE, &TOP_UV, top_tint, 1.0);
 
     Image::new(
         Extent3d {

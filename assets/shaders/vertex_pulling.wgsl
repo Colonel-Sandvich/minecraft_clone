@@ -1,11 +1,10 @@
-// Vertex-pulling shader — atlas texturing, AO, smooth lighting.
+// Vertex-pulling shader — texture-array terrain, AO, smooth lighting.
 //
 // Bind group 0 (per frame, global):
 //   binding 0: view_proj uniform (mat4x4<f32>)
-//   binding 1: atlas_texture (texture_2d<f32>)
-//   binding 2: atlas_sampler (sampler)
-//   binding 3: tile_size uniform (vec2<f32>)
-//   binding 4: tile_offsets storage (array<vec2<f32>>)  // (block_type * 6 + face_dir)
+//   binding 1: terrain_texture (texture_2d_array<f32>)
+//   binding 2: terrain_sampler (sampler)
+//   binding 4: texture_layers storage (array<u32>)       // (block_type * 6 + face_dir)
 //   binding 5: tint_colors storage (array<vec4<f32>>)    // (block_type * 6 + face_dir)
 //   binding 6: ao_brightness uniform (vec4<f32>)
 //   binding 7: emission_factors storage (array<f32>)      // (block_type * 6 + face_dir)
@@ -29,10 +28,9 @@ struct TerrainVisualSettings {
 }
 
 @group(0) @binding(0) var<uniform> view_proj: mat4x4<f32>;
-@group(0) @binding(1) var atlas_texture: texture_2d<f32>;
-@group(0) @binding(2) var atlas_sampler: sampler;
-@group(0) @binding(3) var<uniform> tile_size: vec2<f32>;
-@group(0) @binding(4) var<storage, read> tile_offsets: array<vec2<f32>>;
+@group(0) @binding(1) var terrain_texture: texture_2d_array<f32>;
+@group(0) @binding(2) var terrain_sampler: sampler;
+@group(0) @binding(4) var<storage, read> texture_layers: array<u32>;
 @group(0) @binding(5) var<storage, read> tint_colors: array<vec4<f32>>;
 @group(0) @binding(6) var<uniform> ao_brightness: vec4<f32>;
 @group(0) @binding(7) var<storage, read> emission_factors: array<f32>;
@@ -224,10 +222,8 @@ fn fragment(@location(0) world_pos: vec3<f32>,
     let block_uv = fract(face_uv);
 
     let lookup = block_type * 6u + face_dir;
-    let tile_offset = tile_offsets[lookup];
-    let atlas_uv = tile_offset + block_uv * tile_size;
-
-    let tex_color = textureSample(atlas_texture, atlas_sampler, atlas_uv);
+    let layer = i32(texture_layers[lookup]);
+    let tex_color = textureSample(terrain_texture, terrain_sampler, block_uv, layer);
     let tint = tint_colors[lookup];
 
     let emissive = clamp(emission_factors[lookup], 0.0, 1.0);

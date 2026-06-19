@@ -8,17 +8,14 @@ use bevy::{
 use bevy_framepace::FramepacePlugin;
 use bevy_inspector_egui::{bevy_egui::EguiPlugin, quick::WorldInspectorPlugin};
 
-use bevy::pbr::MaterialPlugin;
-
 use crate::{
     block::BlockPlugin,
-    block_material::BlockMaterial,
     game_state::GameStatePlugin,
     light::LightPlugin,
     memory::{MemoryTrackingPlugin, memory_profiler_enabled},
     mob::MobControllerPlugin,
     player::PlayerPlugin,
-    textures::BlockTextureAtlasPlugin,
+    textures::BlockTexturePlugin,
     ui::UIPlugin,
     world::chunk::mesh::vertex_pulling::VertexPullingPlugin,
     world::{WorldConfig, WorldMetadata, WorldPlugin},
@@ -44,8 +41,7 @@ impl Plugin for AppPlugin {
         .add_plugins(MobControllerPlugin)
         .add_plugins(PlayerPlugin)
         .add_plugins(BlockPlugin)
-        .add_plugins(BlockTextureAtlasPlugin)
-        .add_plugins(MaterialPlugin::<BlockMaterial>::default())
+        .add_plugins(BlockTexturePlugin)
         .insert_resource({
             let metadata = WorldMetadata::default();
             #[cfg(feature = "turso-store")]

@@ -1,6 +1,5 @@
 pub mod app;
 pub mod block;
-pub mod block_material;
 pub mod game_state;
 pub mod input;
 pub mod light;
