@@ -8,10 +8,11 @@ use minecraft_clone::{
     world::{
         WorldMetadata,
         chunk::{
-            CHUNK_SIZE, CHUNK_VOLUME, Chunk,
+            CHUNK_SIZE, Chunk,
             light::{
-                ChunkHeightmap, ChunkLight, compute_light, compute_light_region,
-                light_on_place_block, light_on_place_sky,
+                ChunkHeightmap, ChunkLight, clear_stale_neighbor_block_light, compute_block_light,
+                compute_light_region, compute_sky_light, light_on_place_block, light_on_place_sky,
+                pull_neighbor_block_light,
             },
         },
         generation::generate_chunk,
@@ -159,7 +160,6 @@ fn full_neighborhood() -> HashMap<IVec3, (Chunk, ChunkLight)> {
 struct FullScenario {
     name: &'static str,
     center_chunk: Chunk,
-    rendered: u16,
     neighbors: HashMap<IVec3, (Chunk, ChunkLight)>,
 }
 
@@ -168,72 +168,72 @@ fn full_scenarios() -> Vec<FullScenario> {
         FullScenario {
             name: "empty",
             center_chunk: empty_chunk(),
-            rendered: 0,
             neighbors: HashMap::new(),
         },
         FullScenario {
             name: "solid_stone",
             center_chunk: solid_chunk(BlockType::Stone),
-            rendered: CHUNK_VOLUME as u16,
             neighbors: HashMap::new(),
         },
         FullScenario {
             name: "surface_terrain",
             center_chunk: surface_terrain_chunk(),
-            rendered: count_rendered_blocks(&surface_terrain_chunk()),
             neighbors: HashMap::new(),
         },
         FullScenario {
             name: "checkerboard_leaves",
             center_chunk: checkerboard_leaves_chunk(),
-            rendered: count_rendered_blocks(&checkerboard_leaves_chunk()),
             neighbors: HashMap::new(),
         },
         FullScenario {
             name: "hollow_chamber",
             center_chunk: hollow_chamber_chunk(),
-            rendered: count_rendered_blocks(&hollow_chamber_chunk()),
             neighbors: HashMap::new(),
         },
         FullScenario {
             name: "cave",
             center_chunk: cave_chunk(),
-            rendered: count_rendered_blocks(&cave_chunk()),
             neighbors: HashMap::new(),
         },
         FullScenario {
             name: "glass_column",
             center_chunk: glass_column_chunk(),
-            rendered: count_rendered_blocks(&glass_column_chunk()),
             neighbors: HashMap::new(),
         },
         FullScenario {
             name: "glowstone_lattice",
             center_chunk: glowstone_lattice_chunk(),
-            rendered: count_rendered_blocks(&glowstone_lattice_chunk()),
             neighbors: HashMap::new(),
         },
         FullScenario {
             name: "surface_terrain_cross",
             center_chunk: surface_terrain_chunk(),
-            rendered: count_rendered_blocks(&surface_terrain_chunk()),
             neighbors: full_neighborhood(),
         },
     ]
 }
 
-fn count_rendered_blocks(chunk: &Chunk) -> u16 {
-    let mut count = 0u16;
-    for x in 0..CHUNK_SIZE {
-        for z in 0..CHUNK_SIZE {
-            for y in 0..CHUNK_SIZE {
-                if chunk.blocks[x][z][y].is_rendered() {
-                    count += 1;
-                }
-            }
-        }
-    }
-    count
+fn rebuild_chunk_light(
+    center_chunk: &Chunk,
+    center_light: &mut ChunkLight,
+    heightmap: &mut ChunkHeightmap,
+    blocks: &HashMap<IVec3, &Chunk>,
+    lights: &mut HashMap<IVec3, ChunkLight>,
+    dirty_neighbors: &mut u32,
+) {
+    compute_sky_light(
+        center_chunk,
+        center_light,
+        heightmap,
+        blocks,
+        lights,
+        dirty_neighbors,
+        0,
+        false,
+    );
+    compute_block_light(center_chunk, center_light, blocks, lights, dirty_neighbors);
+    pull_neighbor_block_light(center_chunk, center_light, blocks, lights, dirty_neighbors);
+    clear_stale_neighbor_block_light(center_chunk, center_light, blocks, lights, dirty_neighbors);
 }
 
 fn bench_full_light_compute(c: &mut Criterion) {
@@ -264,16 +264,13 @@ fn bench_full_light_compute(c: &mut Criterion) {
                 let mut lights_map: HashMap<IVec3, ChunkLight> =
                     neighbor_lights.into_iter().collect();
                 let mut dirty = 0;
-                compute_light(
+                rebuild_chunk_light(
                     black_box(&scenario.center_chunk),
                     black_box(&mut center_light),
                     black_box(&mut heightmap),
                     black_box(&blocks),
                     black_box(&mut lights_map),
                     &mut dirty,
-                    scenario.rendered,
-                    0,
-                    false,
                 );
             });
         });
@@ -283,7 +280,6 @@ fn bench_full_light_compute(c: &mut Criterion) {
 struct IncrementalScenario {
     name: &'static str,
     center_chunk: Chunk,
-    rendered: u16,
     neighbors: HashMap<IVec3, (Chunk, ChunkLight)>,
     /// World-space position in the center chunk to place/break
     place_pos: IVec3,
@@ -295,7 +291,6 @@ fn incremental_scenarios() -> Vec<IncrementalScenario> {
         IncrementalScenario {
             name: "place_stone_empty",
             center_chunk: empty_chunk(),
-            rendered: 0,
             neighbors: HashMap::new(),
             place_pos: IVec3::new(8, 8, 8),
         },
@@ -303,7 +298,6 @@ fn incremental_scenarios() -> Vec<IncrementalScenario> {
         IncrementalScenario {
             name: "place_glass_solid",
             center_chunk: solid_chunk(BlockType::Stone),
-            rendered: CHUNK_VOLUME as u16,
             neighbors: HashMap::new(),
             place_pos: IVec3::new(8, 8, 8),
         },
@@ -311,7 +305,6 @@ fn incremental_scenarios() -> Vec<IncrementalScenario> {
         IncrementalScenario {
             name: "place_glowstone",
             center_chunk: empty_chunk(),
-            rendered: 0,
             neighbors: HashMap::new(),
             place_pos: IVec3::new(8, 8, 8),
         },
@@ -345,16 +338,13 @@ fn bench_incremental_light(c: &mut Criterion) {
                 let mut lights_map: HashMap<IVec3, ChunkLight> =
                     neighbor_lights.into_iter().collect();
                 let mut dirty = 0;
-                compute_light(
+                rebuild_chunk_light(
                     black_box(&scenario.center_chunk),
                     black_box(&mut center_light),
                     black_box(&mut heightmap),
                     black_box(&blocks),
                     black_box(&mut lights_map),
                     &mut dirty,
-                    scenario.rendered,
-                    0,
-                    false,
                 );
                 // Now place and run incremental
                 light_on_place_sky(
@@ -394,16 +384,13 @@ fn bench_incremental_light(c: &mut Criterion) {
                 let mut lights_map: HashMap<IVec3, ChunkLight> =
                     neighbor_lights.into_iter().collect();
                 let mut dirty = 0;
-                compute_light(
+                rebuild_chunk_light(
                     black_box(&scenario.center_chunk),
                     black_box(&mut center_light),
                     black_box(&mut heightmap),
                     black_box(&blocks),
                     black_box(&mut lights_map),
                     &mut dirty,
-                    scenario.rendered,
-                    0,
-                    false,
                 );
                 light_on_place_block(
                     black_box(&scenario.center_chunk),

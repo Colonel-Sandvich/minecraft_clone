@@ -7,9 +7,7 @@ use bevy::prelude::*;
 use collider::ChunkColliderPlugin;
 use mesh::ChunkMeshPlugin;
 
-pub use light::{
-    ChunkHeightmap, ChunkLight, compute_light, light_on_place_block, light_on_place_sky,
-};
+pub use light::{ChunkHeightmap, ChunkLight, light_on_place_block, light_on_place_sky};
 
 use crate::block::BlockType;
 
