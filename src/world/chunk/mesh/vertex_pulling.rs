@@ -225,6 +225,146 @@ impl ExtractResource for VpTextureState {
     }
 }
 
+fn uniform_entry(
+    binding: u32,
+    visibility: ShaderStages,
+    min_binding_size: u64,
+) -> BindGroupLayoutEntry {
+    buffer_entry(
+        binding,
+        visibility,
+        BufferBindingType::Uniform,
+        BufferSize::new(min_binding_size),
+    )
+}
+
+fn read_only_storage_entry(binding: u32, visibility: ShaderStages) -> BindGroupLayoutEntry {
+    buffer_entry(
+        binding,
+        visibility,
+        BufferBindingType::Storage { read_only: true },
+        None,
+    )
+}
+
+fn buffer_entry(
+    binding: u32,
+    visibility: ShaderStages,
+    ty: BufferBindingType,
+    min_binding_size: Option<BufferSize>,
+) -> BindGroupLayoutEntry {
+    BindGroupLayoutEntry {
+        binding,
+        visibility,
+        ty: BindingType::Buffer {
+            ty,
+            has_dynamic_offset: false,
+            min_binding_size,
+        },
+        count: None,
+    }
+}
+
+fn texture_2d_array_entry(binding: u32, visibility: ShaderStages) -> BindGroupLayoutEntry {
+    BindGroupLayoutEntry {
+        binding,
+        visibility,
+        ty: BindingType::Texture {
+            sample_type: TextureSampleType::Float { filterable: true },
+            view_dimension: TextureViewDimension::D2Array,
+            multisampled: false,
+        },
+        count: None,
+    }
+}
+
+fn filtering_sampler_entry(binding: u32, visibility: ShaderStages) -> BindGroupLayoutEntry {
+    BindGroupLayoutEntry {
+        binding,
+        visibility,
+        ty: BindingType::Sampler(SamplerBindingType::Filtering),
+        count: None,
+    }
+}
+
+fn vp_group0_entries() -> Vec<BindGroupLayoutEntry> {
+    vec![
+        uniform_entry(0, ShaderStages::VERTEX, 64),
+        texture_2d_array_entry(1, ShaderStages::FRAGMENT),
+        filtering_sampler_entry(2, ShaderStages::FRAGMENT),
+        read_only_storage_entry(4, ShaderStages::FRAGMENT),
+        read_only_storage_entry(5, ShaderStages::FRAGMENT),
+        uniform_entry(6, ShaderStages::FRAGMENT, 16),
+        read_only_storage_entry(7, ShaderStages::FRAGMENT),
+        uniform_entry(
+            8,
+            ShaderStages::FRAGMENT,
+            std::mem::size_of::<TerrainVisualSettingsUniform>() as u64,
+        ),
+    ]
+}
+
+fn vp_group1_entries() -> Vec<BindGroupLayoutEntry> {
+    vec![
+        read_only_storage_entry(0, ShaderStages::VERTEX),
+        uniform_entry(1, ShaderStages::VERTEX, 16),
+        read_only_storage_entry(2, ShaderStages::VERTEX),
+    ]
+}
+
+fn vp_pipeline_descriptor(
+    label: &'static str,
+    shader: Handle<Shader>,
+    group0_desc: BindGroupLayoutDescriptor,
+    group1_desc: BindGroupLayoutDescriptor,
+    alpha_to_coverage_enabled: bool,
+    blend: Option<BlendState>,
+) -> RenderPipelineDescriptor {
+    RenderPipelineDescriptor {
+        label: Some(Cow::Borrowed(label)),
+        layout: vec![group0_desc, group1_desc],
+        push_constant_ranges: vec![],
+        vertex: VertexState {
+            shader: shader.clone(),
+            shader_defs: vec![],
+            entry_point: Some(Cow::Borrowed("vertex")),
+            buffers: vec![],
+        },
+        primitive: PrimitiveState {
+            topology: PrimitiveTopology::TriangleList,
+            strip_index_format: None,
+            front_face: FrontFace::Ccw,
+            cull_mode: Some(Face::Back),
+            unclipped_depth: false,
+            polygon_mode: PolygonMode::Fill,
+            conservative: false,
+        },
+        depth_stencil: Some(DepthStencilState {
+            format: TextureFormat::Depth32Float,
+            depth_write_enabled: true,
+            depth_compare: CompareFunction::GreaterEqual,
+            stencil: StencilState::default(),
+            bias: DepthBiasState::default(),
+        }),
+        multisample: MultisampleState {
+            count: 4,
+            mask: !0,
+            alpha_to_coverage_enabled,
+        },
+        fragment: Some(FragmentState {
+            shader,
+            shader_defs: vec![],
+            entry_point: Some(Cow::Borrowed("fragment")),
+            targets: vec![Some(ColorTargetState {
+                format: TextureFormat::bevy_default(),
+                blend,
+                write_mask: ColorWrites::ALL,
+            })],
+        }),
+        zero_initialize_workgroup_memory: false,
+    }
+}
+
 #[derive(Resource, Reflect, Debug, Clone, Copy)]
 #[reflect(Resource)]
 pub struct TerrainVisualSettings {
@@ -258,7 +398,7 @@ impl ExtractResource for TerrainVisualSettings {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+#[derive(Clone, Copy, ShaderType, bytemuck::Pod, bytemuck::Zeroable)]
 struct TerrainVisualSettingsUniform {
     sky_light_color: [f32; 4],
     block_light_color: [f32; 4],
@@ -399,226 +539,35 @@ impl Plugin for VertexPullingPlugin {
             .resource_mut::<AssetServer>()
             .load(SHADER_PATH);
 
-        // Group 0: view_proj + terrain texture array + sampler + texture layers + tint colors + AO curve + emission factors + visual settings
-        let group0_entries = vec![
-            BindGroupLayoutEntry {
-                binding: 0,
-                visibility: ShaderStages::VERTEX,
-                ty: BindingType::Buffer {
-                    ty: BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: BufferSize::new(64),
-                },
-                count: None,
-            },
-            BindGroupLayoutEntry {
-                binding: 1,
-                visibility: ShaderStages::FRAGMENT,
-                ty: BindingType::Texture {
-                    sample_type: TextureSampleType::Float { filterable: true },
-                    view_dimension: TextureViewDimension::D2Array,
-                    multisampled: false,
-                },
-                count: None,
-            },
-            BindGroupLayoutEntry {
-                binding: 2,
-                visibility: ShaderStages::FRAGMENT,
-                ty: BindingType::Sampler(SamplerBindingType::Filtering),
-                count: None,
-            },
-            BindGroupLayoutEntry {
-                binding: 4,
-                visibility: ShaderStages::FRAGMENT,
-                ty: BindingType::Buffer {
-                    ty: BufferBindingType::Storage { read_only: true },
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            },
-            BindGroupLayoutEntry {
-                binding: 5,
-                visibility: ShaderStages::FRAGMENT,
-                ty: BindingType::Buffer {
-                    ty: BufferBindingType::Storage { read_only: true },
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            },
-            BindGroupLayoutEntry {
-                binding: 6,
-                visibility: ShaderStages::FRAGMENT,
-                ty: BindingType::Buffer {
-                    ty: BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: BufferSize::new(16),
-                },
-                count: None,
-            },
-            BindGroupLayoutEntry {
-                binding: 7,
-                visibility: ShaderStages::FRAGMENT,
-                ty: BindingType::Buffer {
-                    ty: BufferBindingType::Storage { read_only: true },
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            },
-            BindGroupLayoutEntry {
-                binding: 8,
-                visibility: ShaderStages::FRAGMENT,
-                ty: BindingType::Buffer {
-                    ty: BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: BufferSize::new(std::mem::size_of::<
-                        TerrainVisualSettingsUniform,
-                    >() as u64),
-                },
-                count: None,
-            },
-        ];
+        let group0_entries = vp_group0_entries();
         let group0_layout =
             render_device.create_bind_group_layout("vp_g0_globals", &group0_entries);
 
-        // Group 1: faces SSBO + chunk_origin + light_data
-        let group1_entries = vec![
-            BindGroupLayoutEntry {
-                binding: 0,
-                visibility: ShaderStages::VERTEX,
-                ty: BindingType::Buffer {
-                    ty: BufferBindingType::Storage { read_only: true },
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            },
-            BindGroupLayoutEntry {
-                binding: 1,
-                visibility: ShaderStages::VERTEX,
-                ty: BindingType::Buffer {
-                    ty: BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: BufferSize::new(16),
-                },
-                count: None,
-            },
-            BindGroupLayoutEntry {
-                binding: 2,
-                visibility: ShaderStages::VERTEX,
-                ty: BindingType::Buffer {
-                    ty: BufferBindingType::Storage { read_only: true },
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            },
-        ];
+        let group1_entries = vp_group1_entries();
         let group1_layout = render_device.create_bind_group_layout("vp_g1_chunk", &group1_entries);
 
-        let group0_desc = BindGroupLayoutDescriptor {
-            label: Cow::Borrowed("vp_g0_globals"),
-            entries: group0_entries.clone(),
-        };
-        let group1_desc = BindGroupLayoutDescriptor {
-            label: Cow::Borrowed("vp_g1_chunk"),
-            entries: group1_entries.clone(),
-        };
+        let group0_desc = BindGroupLayoutDescriptor::new("vp_g0_globals", &group0_entries);
+        let group1_desc = BindGroupLayoutDescriptor::new("vp_g1_chunk", &group1_entries);
 
         let pipeline_cache = render_app.world().resource::<PipelineCache>();
 
-        let multisample = MultisampleState {
-            count: 4,
-            mask: !0,
-            alpha_to_coverage_enabled: false,
-        };
-        let multisample_alpha = MultisampleState {
-            count: 4,
-            mask: !0,
-            alpha_to_coverage_enabled: true,
-        };
+        let opaque_id = pipeline_cache.queue_render_pipeline(vp_pipeline_descriptor(
+            "vp_opaque",
+            shader.clone(),
+            group0_desc.clone(),
+            group1_desc.clone(),
+            false,
+            None,
+        ));
 
-        let opaque_id = pipeline_cache.queue_render_pipeline(RenderPipelineDescriptor {
-            label: Some(Cow::Borrowed("vp_opaque")),
-            layout: vec![group0_desc.clone(), group1_desc.clone()],
-            push_constant_ranges: vec![],
-            vertex: VertexState {
-                shader: shader.clone(),
-                shader_defs: vec![],
-                entry_point: Some(Cow::Borrowed("vertex")),
-                buffers: vec![],
-            },
-            primitive: PrimitiveState {
-                topology: PrimitiveTopology::TriangleList,
-                strip_index_format: None,
-                front_face: FrontFace::Ccw,
-                cull_mode: Some(Face::Back),
-                unclipped_depth: false,
-                polygon_mode: PolygonMode::Fill,
-                conservative: false,
-            },
-            depth_stencil: Some(DepthStencilState {
-                format: TextureFormat::Depth32Float,
-                depth_write_enabled: true,
-                depth_compare: CompareFunction::GreaterEqual,
-                stencil: StencilState::default(),
-                bias: DepthBiasState::default(),
-            }),
-            multisample,
-            fragment: Some(FragmentState {
-                shader: shader.clone(),
-                shader_defs: vec![],
-                entry_point: Some(Cow::Borrowed("fragment")),
-                targets: vec![Some(ColorTargetState {
-                    format: TextureFormat::bevy_default(),
-                    blend: None,
-                    write_mask: ColorWrites::ALL,
-                })],
-            }),
-            zero_initialize_workgroup_memory: false,
-        });
-
-        let cutout_id = pipeline_cache.queue_render_pipeline(RenderPipelineDescriptor {
-            label: Some(Cow::Borrowed("vp_cutout")),
-            layout: vec![group0_desc, group1_desc],
-            push_constant_ranges: vec![],
-            vertex: VertexState {
-                shader: shader.clone(),
-                shader_defs: vec![],
-                entry_point: Some(Cow::Borrowed("vertex")),
-                buffers: vec![],
-            },
-            primitive: PrimitiveState {
-                topology: PrimitiveTopology::TriangleList,
-                strip_index_format: None,
-                front_face: FrontFace::Ccw,
-                cull_mode: Some(Face::Back),
-                unclipped_depth: false,
-                polygon_mode: PolygonMode::Fill,
-                conservative: false,
-            },
-            depth_stencil: Some(DepthStencilState {
-                format: TextureFormat::Depth32Float,
-                depth_write_enabled: true,
-                depth_compare: CompareFunction::GreaterEqual,
-                stencil: StencilState::default(),
-                bias: DepthBiasState::default(),
-            }),
-            multisample: multisample_alpha,
-            fragment: Some(FragmentState {
-                shader: shader.clone(),
-                shader_defs: vec![],
-                entry_point: Some(Cow::Borrowed("fragment")),
-                targets: vec![Some(ColorTargetState {
-                    format: TextureFormat::bevy_default(),
-                    blend: Some(BlendState::ALPHA_BLENDING),
-                    write_mask: ColorWrites::ALL,
-                })],
-            }),
-            zero_initialize_workgroup_memory: false,
-        });
+        let cutout_id = pipeline_cache.queue_render_pipeline(vp_pipeline_descriptor(
+            "vp_cutout",
+            shader,
+            group0_desc,
+            group1_desc,
+            true,
+            Some(BlendState::ALPHA_BLENDING),
+        ));
 
         render_app.world_mut().insert_resource(VpPipeline {
             chunk_bind_group_layout: group1_layout,

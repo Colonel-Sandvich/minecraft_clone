@@ -2,8 +2,13 @@ use std::time::Duration;
 
 use avian3d::PhysicsPlugins;
 use bevy::{
-    diagnostic::FrameTimeDiagnosticsPlugin, input::common_conditions::input_toggle_active,
+    diagnostic::FrameTimeDiagnosticsPlugin,
+    input::common_conditions::input_toggle_active,
     prelude::*,
+    render::{
+        RenderPlugin,
+        settings::{InstanceFlags, RenderCreation, WgpuSettings},
+    },
 };
 use bevy_framepace::FramepacePlugin;
 use bevy_inspector_egui::{bevy_egui::EguiPlugin, quick::WorldInspectorPlugin};
@@ -27,13 +32,20 @@ pub struct AppPlugin;
 
 impl Plugin for AppPlugin {
     fn build(&self, app: &mut App) {
-        app.add_plugins(DefaultPlugins.set(WindowPlugin {
-            primary_window: Some(Window {
-                title: "Minecraft".to_string(),
-                ..default()
-            }),
-            ..default()
-        }))
+        app.add_plugins(
+            DefaultPlugins
+                .set(WindowPlugin {
+                    primary_window: Some(Window {
+                        title: "Minecraft".to_string(),
+                        ..default()
+                    }),
+                    ..default()
+                })
+                .set(RenderPlugin {
+                    render_creation: RenderCreation::Automatic(wgpu_settings()),
+                    ..default()
+                }),
+        )
         .add_plugins(EguiPlugin::default())
         .insert_resource(ClearColor(Srgba::hex("74b3ff").unwrap().into()))
         .add_plugins(GameStatePlugin)
@@ -76,4 +88,11 @@ impl Plugin for AppPlugin {
 
 pub fn run() {
     App::new().add_plugins(AppPlugin).run();
+}
+
+fn wgpu_settings() -> WgpuSettings {
+    let mut settings = WgpuSettings::default();
+    #[cfg(debug_assertions)]
+    settings.instance_flags.insert(InstanceFlags::debugging());
+    settings
 }
