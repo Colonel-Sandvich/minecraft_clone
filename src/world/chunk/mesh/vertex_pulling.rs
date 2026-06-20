@@ -345,6 +345,7 @@ pub type DrawVpCmds = (SetItemPipeline, DrawVertexPulled);
 // ---------------------------------------------------------------------------
 
 const SHADER_PATH: &str = "shaders/vertex_pulling.wgsl";
+pub const SHADER_SOURCE: &str = include_str!("../../../../assets/shaders/vertex_pulling.wgsl");
 
 pub struct VertexPullingPlugin;
 

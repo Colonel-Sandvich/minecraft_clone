@@ -4726,6 +4726,7 @@ dependencies = [
  "criterion 0.8.2",
  "image",
  "itertools 0.15.0",
+ "naga",
  "rusqlite",
  "serde",
  "strum 0.28.0",
