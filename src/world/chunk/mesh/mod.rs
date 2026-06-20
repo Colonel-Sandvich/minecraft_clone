@@ -32,6 +32,7 @@ pub(crate) const BLOCK_FLAG_RENDERED: u8 = 1 << 0;
 pub(crate) const BLOCK_FLAG_FULL_CUBE: u8 = 1 << 1;
 pub(crate) const BLOCK_FLAG_EMITS_INTERNAL_FACES: u8 = 1 << 2;
 pub(crate) const BLOCK_FLAG_CUTOUT: u8 = 1 << 3;
+pub(crate) const BLOCK_FLAG_TRANSLUCENT: u8 = 1 << 4;
 pub(crate) const DIRECTION_INDEX_OFFSETS: [isize; DIRECTION_COUNT] = [
     -1,
     1,
@@ -50,6 +51,8 @@ pub(crate) const BLOCK_MESH_FLAGS: [u8; BLOCK_TYPE_COUNT] = [
     BLOCK_FLAG_RENDERED | BLOCK_FLAG_FULL_CUBE,
     BLOCK_FLAG_RENDERED | BLOCK_FLAG_CUTOUT | BLOCK_FLAG_EMITS_INTERNAL_FACES,
     BLOCK_FLAG_RENDERED | BLOCK_FLAG_FULL_CUBE,
+    BLOCK_FLAG_RENDERED | BLOCK_FLAG_TRANSLUCENT,
+    BLOCK_FLAG_RENDERED | BLOCK_FLAG_TRANSLUCENT,
 ];
 pub(crate) const VERTEX_AO: [u32; 8] = [3, 2, 2, 0, 2, 1, 1, 0];
 
@@ -60,7 +63,13 @@ pub(crate) fn block_mesh_flags(block: BlockType) -> u8 {
 
 #[inline(always)]
 pub(crate) const fn material_layer_index_from_flags(flags: u8) -> usize {
-    ((flags & BLOCK_FLAG_CUTOUT) != 0) as usize
+    if flags & BLOCK_FLAG_TRANSLUCENT != 0 {
+        BlockMaterialLayer::Translucent.index()
+    } else if flags & BLOCK_FLAG_CUTOUT != 0 {
+        BlockMaterialLayer::Cutout.index()
+    } else {
+        BlockMaterialLayer::Opaque.index()
+    }
 }
 
 // Each face has 4 AO corners but only 8 unique sample cells. These macros encode
@@ -122,6 +131,7 @@ struct ChunkMaterialLayerMarker(BlockMaterialLayer);
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct BlockMeshTables {
     pub(crate) texture_layers: [[BlockTextureLayer; DIRECTION_COUNT]; BLOCK_TYPE_COUNT],
+    pub(crate) texture_frame_counts: [[u32; DIRECTION_COUNT]; BLOCK_TYPE_COUNT],
     pub(crate) colors: [[Vec4; DIRECTION_COUNT]; BLOCK_TYPE_COUNT],
 }
 
@@ -129,6 +139,7 @@ impl BlockMeshTables {
     pub(crate) fn from_texture_map(block_texture_map: &BlockTextureMap) -> Self {
         let mut texture_layers =
             [[BlockTextureLayer::default(); DIRECTION_COUNT]; BLOCK_TYPE_COUNT];
+        let mut texture_frame_counts = [[1u32; DIRECTION_COUNT]; BLOCK_TYPE_COUNT];
         let mut colors = [[Vec4::ZERO; DIRECTION_COUNT]; BLOCK_TYPE_COUNT];
 
         for block in BlockType::iter() {
@@ -138,14 +149,16 @@ impl BlockMeshTables {
             };
 
             for (side_index, side) in Direction::iter().enumerate() {
-                texture_layers[block_index][side_index] =
-                    block_texture_map.block_to_texture_layer(block, side);
+                let animation = block_texture_map.block_to_texture_animation(block, side);
+                texture_layers[block_index][side_index] = animation.base_layer();
+                texture_frame_counts[block_index][side_index] = animation.frame_count();
                 colors[block_index][side_index] = block_to_colour(block, side);
             }
         }
 
         Self {
             texture_layers,
+            texture_frame_counts,
             colors,
         }
     }
@@ -187,7 +200,14 @@ fn rebuild_chunk_meshes(
 
     let tables = BlockMeshTables::from_texture_map(&block_texture_map);
     let texture_layers: Vec<u32> = (0..BLOCK_TYPE_COUNT)
-        .flat_map(|bt| (0..DIRECTION_COUNT).map(move |dir| tables.texture_layers[bt][dir].index()))
+        .flat_map(|bt| {
+            (0..DIRECTION_COUNT).map(move |dir| {
+                pack_texture_layer(
+                    tables.texture_layers[bt][dir],
+                    tables.texture_frame_counts[bt][dir],
+                )
+            })
+        })
         .collect();
     let tint_colors: Vec<[f32; 4]> = (0..BLOCK_TYPE_COUNT)
         .flat_map(|bt| {
@@ -252,6 +272,10 @@ fn rebuild_chunk_meshes(
             .entity(build.entity)
             .remove::<ChunkNeedsMeshRebuild>();
     }
+}
+
+fn pack_texture_layer(layer: BlockTextureLayer, frame_count: u32) -> u32 {
+    layer.index() | (frame_count.min(255) << 24)
 }
 
 struct VpChunkBuild {
@@ -406,7 +430,7 @@ pub(crate) fn should_emit_face_from_flags(
         return true;
     }
 
-    if neighbor_flags & BLOCK_FLAG_FULL_CUBE != 0 {
+    if neighbor_flags & BLOCK_FLAG_FULL_CUBE != 0 && block_flags & BLOCK_FLAG_TRANSLUCENT == 0 {
         return false;
     }
 

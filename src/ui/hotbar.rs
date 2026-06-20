@@ -42,7 +42,6 @@ impl Default for Hotbar {
     fn default() -> Self {
         Self {
             slots: [
-                Some(BlockType::Grass),
                 Some(BlockType::Dirt),
                 Some(BlockType::Stone),
                 Some(BlockType::Sand),
@@ -50,7 +49,8 @@ impl Default for Hotbar {
                 Some(BlockType::OakLog),
                 Some(BlockType::OakLeaves),
                 Some(BlockType::Glowstone),
-                None,
+                Some(BlockType::Water),
+                Some(BlockType::Ice),
             ],
             selected: 0,
         }
@@ -249,11 +249,19 @@ static SIDE_UV: [(f32, f32); 4] = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0
 
 fn load_block_texture(path: &str) -> Option<RgbaImage> {
     match image::open(format!("assets/{path}")) {
-        Ok(image) => Some(image.to_rgba8()),
+        Ok(image) => Some(first_animation_frame(image.to_rgba8())),
         Err(error) => {
             warn!("failed to load block icon texture {path}: {error}");
             None
         }
+    }
+}
+
+fn first_animation_frame(image: RgbaImage) -> RgbaImage {
+    if image.height() > image.width() && image.height() % image.width() == 0 {
+        image::imageops::crop_imm(&image, 0, 0, image.width(), image.width()).to_image()
+    } else {
+        image
     }
 }
 

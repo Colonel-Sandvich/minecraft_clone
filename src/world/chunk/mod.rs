@@ -26,6 +26,58 @@ pub const CHUNK_SIZE: usize = 16;
 pub const CHUNK_ISIZE: i32 = 16;
 
 pub const CHUNK_VOLUME: usize = CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE;
+const FLUID_STORAGE_MAGIC: &[u8; 4] = b"FLD1";
+
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Reflect)]
+pub enum FluidType {
+    #[default]
+    None,
+    Water,
+}
+
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Reflect)]
+pub struct FluidCell {
+    pub ty: FluidType,
+    pub level: u8,
+}
+
+impl FluidCell {
+    pub const MAX_LEVEL: u8 = 8;
+
+    pub const fn water_source() -> Self {
+        Self {
+            ty: FluidType::Water,
+            level: Self::MAX_LEVEL,
+        }
+    }
+
+    pub const fn is_empty(self) -> bool {
+        matches!(self.ty, FluidType::None) || self.level == 0
+    }
+
+    fn storage_byte(self) -> u8 {
+        match self.ty {
+            FluidType::None => 0,
+            FluidType::Water => (1 << 4) | self.level.min(Self::MAX_LEVEL),
+        }
+    }
+
+    fn from_storage_byte(byte: u8) -> Result<Self, ChunkDecodeError> {
+        let ty = match byte >> 4 {
+            0 => FluidType::None,
+            1 => FluidType::Water,
+            _ => return Err(ChunkDecodeError::InvalidFluid),
+        };
+        let level = byte & 0x0f;
+        if matches!(ty, FluidType::None) {
+            return Ok(Self::default());
+        }
+        if level == 0 || level > Self::MAX_LEVEL {
+            return Err(ChunkDecodeError::InvalidFluid);
+        }
+        Ok(Self { ty, level })
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BlockDelta {
@@ -114,12 +166,14 @@ pub struct ChunkNeedsLightRebuild;
 #[derive(Component, Debug, Clone, PartialEq, Eq, Reflect)]
 pub struct Chunk {
     pub blocks: [[[BlockType; CHUNK_SIZE]; CHUNK_SIZE]; CHUNK_SIZE],
+    pub fluids: [[[FluidCell; CHUNK_SIZE]; CHUNK_SIZE]; CHUNK_SIZE],
 }
 
 impl Default for Chunk {
     fn default() -> Self {
         Self {
             blocks: [[[BlockType::Air; CHUNK_SIZE]; CHUNK_SIZE]; CHUNK_SIZE],
+            fluids: [[[FluidCell::default(); CHUNK_SIZE]; CHUNK_SIZE]; CHUNK_SIZE],
         }
     }
 }
@@ -129,9 +183,14 @@ impl Chunk {
         self.blocks[pos.x as usize][pos.z as usize][pos.y as usize]
     }
 
+    pub fn get_fluid(&self, pos: UVec3) -> FluidCell {
+        self.fluids[pos.x as usize][pos.z as usize][pos.y as usize]
+    }
+
     pub fn set_block(&mut self, pos: UVec3, block: BlockType) -> BlockDelta {
         let old = self.blocks[pos.x as usize][pos.z as usize][pos.y as usize];
         self.blocks[pos.x as usize][pos.z as usize][pos.y as usize] = block;
+        self.fluids[pos.x as usize][pos.z as usize][pos.y as usize] = fluid_cell_for_block(block);
         BlockDelta { old, new: block }
     }
 
@@ -158,18 +217,19 @@ impl Chunk {
     }
 
     pub fn place_block(&mut self, pos: UVec3, block: BlockType) -> Option<BlockDelta> {
-        if !block.is_solid() {
+        if !block.is_placeable() {
             return None;
         }
 
         let old_block = self.get_mut_uvec(pos);
 
-        if old_block.is_solid() {
+        if !old_block.can_be_replaced_by_placement() {
             return None;
         };
 
         let old = *old_block;
         *old_block = block;
+        self.fluids[pos.x as usize][pos.z as usize][pos.y as usize] = fluid_cell_for_block(block);
 
         Some(BlockDelta { old, new: block })
     }
@@ -183,6 +243,7 @@ impl Chunk {
 
         let old = *block;
         *block = BlockType::Air;
+        self.fluids[pos.x as usize][pos.z as usize][pos.y as usize] = FluidCell::default();
 
         Some(BlockDelta {
             old,
@@ -256,6 +317,19 @@ impl Chunk {
         bytes.resize(body_start + body_bytes, 0);
         pack(&mut bytes[body_start..], &indices, bits);
 
+        if self.has_stored_fluids() {
+            bytes.extend_from_slice(FLUID_STORAGE_MAGIC);
+            for y in 0..CHUNK_SIZE {
+                for z in 0..CHUNK_SIZE {
+                    for x in 0..CHUNK_SIZE {
+                        let fluid = self.fluids[x][z][y];
+                        let block = self.blocks[x][z][y];
+                        bytes.push(fluid.or_block_default(block).storage_byte());
+                    }
+                }
+            }
+        }
+
         bytes
     }
 
@@ -294,6 +368,7 @@ impl Chunk {
 
         let body = bytes.get(pos..).ok_or(ChunkDecodeError::Truncated)?;
         let mask = (1u8 << bits) - 1;
+        let body_bytes = (CHUNK_VOLUME * bits as usize).div_ceil(8);
 
         let mut chunk = Chunk::default();
         let mut bit_pos = 0usize;
@@ -312,7 +387,85 @@ impl Chunk {
             }
         }
 
+        pos += body_bytes;
+        if let Some(fluid_bytes) = bytes.get(pos..) {
+            if fluid_bytes.is_empty() {
+                chunk.seed_water_fluids_from_blocks();
+            } else {
+                chunk.decode_fluid_storage(fluid_bytes)?;
+            }
+        }
+
         Ok(chunk)
+    }
+
+    fn has_stored_fluids(&self) -> bool {
+        for y in 0..CHUNK_SIZE {
+            for z in 0..CHUNK_SIZE {
+                for x in 0..CHUNK_SIZE {
+                    if !self.fluids[x][z][y]
+                        .or_block_default(self.blocks[x][z][y])
+                        .is_empty()
+                    {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    fn seed_water_fluids_from_blocks(&mut self) {
+        for y in 0..CHUNK_SIZE {
+            for z in 0..CHUNK_SIZE {
+                for x in 0..CHUNK_SIZE {
+                    if self.blocks[x][z][y] == BlockType::Water {
+                        self.fluids[x][z][y] = FluidCell::water_source();
+                    }
+                }
+            }
+        }
+    }
+
+    fn decode_fluid_storage(&mut self, bytes: &[u8]) -> Result<(), ChunkDecodeError> {
+        if bytes.len() < FLUID_STORAGE_MAGIC.len()
+            || &bytes[..FLUID_STORAGE_MAGIC.len()] != FLUID_STORAGE_MAGIC
+        {
+            return Err(ChunkDecodeError::InvalidFluid);
+        }
+        let body = &bytes[FLUID_STORAGE_MAGIC.len()..];
+        if body.len() < CHUNK_VOLUME {
+            return Err(ChunkDecodeError::Truncated);
+        }
+
+        let mut pos = 0;
+        for y in 0..CHUNK_SIZE {
+            for z in 0..CHUNK_SIZE {
+                for x in 0..CHUNK_SIZE {
+                    self.fluids[x][z][y] = FluidCell::from_storage_byte(body[pos])?;
+                    pos += 1;
+                }
+            }
+        }
+
+        Ok(())
+    }
+}
+
+impl FluidCell {
+    fn or_block_default(self, block: BlockType) -> Self {
+        if self.is_empty() {
+            fluid_cell_for_block(block)
+        } else {
+            self
+        }
+    }
+}
+
+fn fluid_cell_for_block(block: BlockType) -> FluidCell {
+    match block {
+        BlockType::Water => FluidCell::water_source(),
+        _ => FluidCell::default(),
     }
 }
 
@@ -354,6 +507,7 @@ fn read_bits(buf: &[u8], bit_pos: &mut usize, bits: u8) -> Option<u8> {
 pub enum ChunkDecodeError {
     Truncated,
     InvalidHeader,
+    InvalidFluid,
     UnknownBlock(String),
 }
 
@@ -362,6 +516,7 @@ impl std::fmt::Display for ChunkDecodeError {
         match self {
             Self::Truncated => write!(f, "chunk data truncated"),
             Self::InvalidHeader => write!(f, "invalid chunk header"),
+            Self::InvalidFluid => write!(f, "invalid chunk fluid data"),
             Self::UnknownBlock(name) => write!(f, "unknown block: {name}"),
         }
     }
@@ -461,6 +616,73 @@ mod tests {
         let bytes = chunk.to_storage_bytes();
         let decoded = Chunk::try_from_storage_bytes(&bytes).unwrap();
         assert_eq!(decoded, chunk);
+    }
+
+    #[test]
+    fn chunk_storage_bytes_roundtrip_water_fluid() {
+        let mut chunk = Chunk::default();
+        let pos = uvec3(2, 3, 4);
+        chunk.set_block(pos, BlockType::Water);
+
+        let bytes = chunk.to_storage_bytes();
+        let decoded = Chunk::try_from_storage_bytes(&bytes).unwrap();
+
+        assert_eq!(decoded, chunk);
+        assert_eq!(decoded.get_fluid(pos), FluidCell::water_source());
+    }
+
+    #[test]
+    fn water_placement_seeds_fluid_cell_and_is_not_breakable() {
+        let mut chunk = Chunk::default();
+        let pos = uvec3(1, 2, 3);
+
+        assert_eq!(
+            chunk.place_block(pos, BlockType::Water),
+            Some(BlockDelta {
+                old: BlockType::Air,
+                new: BlockType::Water,
+            })
+        );
+        assert_eq!(chunk.get_fluid(pos), FluidCell::water_source());
+
+        assert_eq!(chunk.break_block(pos), None);
+        assert_eq!(chunk.get_block(pos), BlockType::Water);
+        assert_eq!(chunk.get_fluid(pos), FluidCell::water_source());
+    }
+
+    #[test]
+    fn solid_block_placement_replaces_water_and_clears_fluid_cell() {
+        let mut chunk = Chunk::default();
+        let pos = uvec3(1, 2, 3);
+        chunk.place_block(pos, BlockType::Water).unwrap();
+
+        assert_eq!(
+            chunk.place_block(pos, BlockType::Stone),
+            Some(BlockDelta {
+                old: BlockType::Water,
+                new: BlockType::Stone,
+            })
+        );
+        assert_eq!(chunk.get_block(pos), BlockType::Stone);
+        assert_eq!(chunk.get_fluid(pos), FluidCell::default());
+    }
+
+    #[test]
+    fn old_storage_water_blocks_seed_fluid_cells() {
+        let mut chunk = Chunk::default();
+        let pos = uvec3(2, 3, 4);
+        chunk.set_block(pos, BlockType::Water);
+        let mut bytes = chunk.to_storage_bytes();
+        let fluid_start = bytes
+            .windows(FLUID_STORAGE_MAGIC.len())
+            .position(|window| window == FLUID_STORAGE_MAGIC)
+            .unwrap();
+        bytes.truncate(fluid_start);
+
+        let decoded = Chunk::try_from_storage_bytes(&bytes).unwrap();
+
+        assert_eq!(decoded.get_block(pos), BlockType::Water);
+        assert_eq!(decoded.get_fluid(pos), FluidCell::water_source());
     }
 
     #[test]

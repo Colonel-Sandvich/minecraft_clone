@@ -63,6 +63,13 @@ fn placing_air_is_ignored() {
     assert_eq!(chunk.get_block(pos), BlockType::Air);
 }
 
+#[test]
+fn water_placement_does_not_require_actor_clearance() {
+    assert!(!placement_requires_actor_clearance(BlockType::Water));
+    assert!(placement_requires_actor_clearance(BlockType::Stone));
+    assert!(placement_requires_actor_clearance(BlockType::Ice));
+}
+
 fn app_with_request_emitter() -> App {
     let mut app = App::new();
     app.add_plugins(MinimalPlugins)

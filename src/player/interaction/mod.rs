@@ -5,7 +5,7 @@ use avian3d::{
 use bevy::{color::palettes::basic, input::InputSystems, prelude::*};
 
 use crate::{
-    block::{BlockPos, BlockUpdateKind, BlockUpdateMessage},
+    block::{BlockPos, BlockType, BlockUpdateKind, BlockUpdateMessage},
     ui::Hotbar,
     world::{
         ACTOR_LAYER, WORLD_LAYER,
@@ -131,12 +131,7 @@ fn draw_block_target_gizmos(gizmos: &mut Gizmos, target: BlockTarget) {
     gizmos.cube(
         Transform::from_translation(target.hit_block.to_global().as_vec3() + 0.5)
             .with_scale(Vec3::splat(1.01)),
-        basic::BLUE,
-    );
-    gizmos.cube(
-        Transform::from_translation(target.adjacent_block.to_global().as_vec3() + 0.5)
-            .with_scale(Vec3::splat(1.01)),
-        basic::RED,
+        basic::BLACK,
     );
 }
 
@@ -209,13 +204,15 @@ fn apply_block_interaction_requests(
                 mark_block_edit_light_columns_dirty(&mut commands, &dimension, pos.chunk);
             }
             BlockInteractionKind::Place => {
-                if block_place_would_intersect(pos, &spatial_query) {
-                    continue;
-                }
-
                 let Some(block) = hotbar.selected_block() else {
                     continue;
                 };
+                if placement_requires_actor_clearance(block)
+                    && block_place_would_intersect(pos, &spatial_query)
+                {
+                    continue;
+                }
+
                 let Some(delta) = chunk.place_block(pos.block, block) else {
                     continue;
                 };
@@ -267,6 +264,10 @@ fn mark_block_edit_light_columns_dirty(commands: &mut Commands, dimension: &Dime
 
 fn block_edit_light_reaches_column(edit_chunk: IVec3, chunk_pos: IVec3) -> bool {
     (chunk_pos.x - edit_chunk.x).abs() <= 1 && (chunk_pos.z - edit_chunk.z).abs() <= 1
+}
+
+fn placement_requires_actor_clearance(block: BlockType) -> bool {
+    block.is_solid()
 }
 
 fn block_place_would_intersect(pos: BlockPos, spatial_query: &SpatialQuery) -> bool {

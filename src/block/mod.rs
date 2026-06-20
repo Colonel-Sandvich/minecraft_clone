@@ -39,12 +39,15 @@ pub enum BlockType {
     OakLog,
     OakLeaves,
     Glowstone,
+    Water,
+    Ice,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BlockRenderLayer {
     Opaque,
     Cutout,
+    Translucent,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,16 +66,18 @@ pub struct BlockRenderProfile {
 pub enum BlockMaterialLayer {
     Opaque,
     Cutout,
+    Translucent,
 }
 
 impl BlockMaterialLayer {
-    pub const COUNT: usize = 2;
-    pub const ALL: [Self; Self::COUNT] = [Self::Opaque, Self::Cutout];
+    pub const COUNT: usize = 3;
+    pub const ALL: [Self; Self::COUNT] = [Self::Opaque, Self::Cutout, Self::Translucent];
 
     pub const fn index(self) -> usize {
         match self {
             Self::Opaque => 0,
             Self::Cutout => 1,
+            Self::Translucent => 2,
         }
     }
 }
@@ -82,6 +87,7 @@ impl BlockRenderProfile {
         match self.layer {
             BlockRenderLayer::Opaque => BlockMaterialLayer::Opaque,
             BlockRenderLayer::Cutout => BlockMaterialLayer::Cutout,
+            BlockRenderLayer::Translucent => BlockMaterialLayer::Translucent,
         }
     }
 }
@@ -112,6 +118,7 @@ impl BlockType {
     pub const fn light_opacity(self) -> u8 {
         match self {
             Self::Air => 0,
+            Self::Water | Self::Ice => 0,
             Self::Glass => 0,
             Self::OakLeaves => 1,
             _ => 15,
@@ -121,7 +128,7 @@ impl BlockType {
     #[inline(always)]
     pub const fn is_transparent_to_sky_light(self) -> bool {
         match self {
-            Self::Air | Self::Glass | Self::OakLeaves => true,
+            Self::Air | Self::Glass | Self::OakLeaves | Self::Water | Self::Ice => true,
             _ => false,
         }
     }
@@ -140,6 +147,7 @@ impl BlockType {
     pub const fn material_layer_index(self) -> usize {
         match self {
             Self::Glass | Self::OakLeaves => 1,
+            Self::Water | Self::Ice => 2,
             _ => 0,
         }
     }
@@ -156,6 +164,10 @@ impl BlockType {
                 layer: BlockRenderLayer::Cutout,
                 occlusion: FaceOcclusion::None,
             }),
+            Water | Ice => Some(BlockRenderProfile {
+                layer: BlockRenderLayer::Translucent,
+                occlusion: FaceOcclusion::None,
+            }),
             _ => Some(BlockRenderProfile {
                 layer: BlockRenderLayer::Opaque,
                 occlusion: FaceOcclusion::FullCube,
@@ -166,9 +178,17 @@ impl BlockType {
     pub fn is_solid(&self) -> bool {
         use BlockType::*;
         match self {
-            Air => false,
+            Air | Water => false,
             _ => true,
         }
+    }
+
+    pub const fn is_placeable(self) -> bool {
+        !matches!(self, Self::Air)
+    }
+
+    pub fn can_be_replaced_by_placement(self) -> bool {
+        !self.is_solid()
     }
 
     pub const fn storage_id(self) -> u16 {
@@ -205,8 +225,31 @@ impl BlockTextureLayer {
     }
 }
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct BlockTextureAnimation {
+    base_layer: BlockTextureLayer,
+    frame_count: u32,
+}
+
+impl BlockTextureAnimation {
+    pub const fn new(base_layer: BlockTextureLayer, frame_count: u32) -> Self {
+        Self {
+            base_layer,
+            frame_count,
+        }
+    }
+
+    pub const fn base_layer(self) -> BlockTextureLayer {
+        self.base_layer
+    }
+
+    pub const fn frame_count(self) -> u32 {
+        self.frame_count
+    }
+}
+
 #[derive(Resource)]
-pub struct BlockTextureMap(pub HashMap<String, BlockTextureLayer>);
+pub struct BlockTextureMap(pub HashMap<String, BlockTextureAnimation>);
 
 pub fn block_and_side_to_texture_path(block: BlockType, side: Direction) -> &'static str {
     use BlockType::*;
@@ -228,16 +271,26 @@ pub fn block_and_side_to_texture_path(block: BlockType, side: Direction) -> &'st
         },
         OakLeaves => "textures/block/oak_leaves.png",
         Glowstone => "textures/block/glowstone.png",
+        Water => "textures/block/water_still.png",
+        Ice => "textures/block/ice.png",
     }
 }
 
 impl BlockTextureMap {
-    pub fn block_to_texture_layer(&self, block: BlockType, side: Direction) -> BlockTextureLayer {
+    pub fn block_to_texture_animation(
+        &self,
+        block: BlockType,
+        side: Direction,
+    ) -> BlockTextureAnimation {
         let path = block_and_side_to_texture_path(block, side);
         self.0
             .get(path)
             .copied()
             .unwrap_or_else(|| panic!("missing texture for {block:?} {side:?}: {path}"))
+    }
+
+    pub fn block_to_texture_layer(&self, block: BlockType, side: Direction) -> BlockTextureLayer {
+        self.block_to_texture_animation(block, side).base_layer()
     }
 }
 
@@ -251,6 +304,7 @@ pub fn block_to_colour(block: BlockType, side: Direction) -> Vec4 {
             _ => Srgba::WHITE,
         },
         OakLeaves => Srgba::hex("77AB2F").unwrap(),
+        Water => Srgba::hex("55B8FF").unwrap().with_alpha(0.62),
         _ => Srgba::WHITE,
     };
 
@@ -276,6 +330,9 @@ mod tests {
         assert_eq!(BlockType::Glass.storage_id(), 5);
         assert_eq!(BlockType::OakLog.storage_id(), 6);
         assert_eq!(BlockType::OakLeaves.storage_id(), 7);
+        assert_eq!(BlockType::Glowstone.storage_id(), 8);
+        assert_eq!(BlockType::Water.storage_id(), 9);
+        assert_eq!(BlockType::Ice.storage_id(), 10);
     }
 
     #[test]
@@ -289,6 +346,36 @@ mod tests {
             }
         );
         assert_eq!(profile.material_layer(), BlockMaterialLayer::Cutout);
+    }
+
+    #[test]
+    fn water_is_translucent_non_solid_and_non_occluding() {
+        let profile = BlockType::Water.render_profile().unwrap();
+        assert_eq!(
+            profile,
+            BlockRenderProfile {
+                layer: BlockRenderLayer::Translucent,
+                occlusion: FaceOcclusion::None,
+            }
+        );
+        assert_eq!(profile.material_layer(), BlockMaterialLayer::Translucent);
+        assert!(!BlockType::Water.is_solid());
+        assert!(BlockType::Water.is_placeable());
+    }
+
+    #[test]
+    fn ice_is_translucent_solid_and_non_occluding() {
+        let profile = BlockType::Ice.render_profile().unwrap();
+        assert_eq!(
+            profile,
+            BlockRenderProfile {
+                layer: BlockRenderLayer::Translucent,
+                occlusion: FaceOcclusion::None,
+            }
+        );
+        assert_eq!(profile.material_layer(), BlockMaterialLayer::Translucent);
+        assert!(BlockType::Ice.is_solid());
+        assert!(BlockType::Ice.is_placeable());
     }
 }
 

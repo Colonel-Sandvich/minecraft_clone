@@ -16,7 +16,7 @@ use std::{
 use bevy::{
     asset::AssetId,
     camera::visibility::{self, VisibilityClass},
-    core_pipeline::core_3d::{Opaque3d, Opaque3dBatchSetKey, Opaque3dBinKey},
+    core_pipeline::core_3d::{Opaque3d, Opaque3dBatchSetKey, Opaque3dBinKey, Transparent3d},
     ecs::{
         change_detection::{Ref, Tick},
         component::Component,
@@ -34,8 +34,8 @@ use bevy::{
         render_asset::RenderAssets,
         render_phase::{
             AddRenderCommand, BinnedRenderPhaseType, DrawFunctions, InputUniformIndex, PhaseItem,
-            RenderCommand, RenderCommandResult, SetItemPipeline, TrackedRenderPass,
-            ViewBinnedRenderPhases,
+            PhaseItemExtraIndex, RenderCommand, RenderCommandResult, SetItemPipeline,
+            TrackedRenderPass, ViewBinnedRenderPhases, ViewSortedRenderPhases,
         },
         render_resource::*,
         renderer::{RenderDevice, RenderQueue},
@@ -49,9 +49,9 @@ use bevy::{
 use crate::block::BlockMaterialLayer;
 
 use super::{
-    CHUNK_SIZE, ChunkMeshBlocks, DIRECTION_COUNT, DIRECTION_INDEX_OFFSETS, block_mesh_flags,
-    face_ao_key_from_indices, material_layer_index_from_flags, padded_chunk_index,
-    should_emit_face_from_flags,
+    BLOCK_TYPE_COUNT, CHUNK_SIZE, ChunkMeshBlocks, DIRECTION_COUNT, DIRECTION_INDEX_OFFSETS,
+    block_mesh_flags, face_ao_key_from_indices, material_layer_index_from_flags,
+    padded_chunk_index, should_emit_face_from_flags,
 };
 
 // ---------------------------------------------------------------------------
@@ -180,6 +180,7 @@ pub struct PreparedChunkVp {
     pub bind_group: BindGroup,
     pub face_count: u32,
     pub material_layer: BlockMaterialLayer,
+    pub chunk_origin: Vec3,
     desc_buf: Buffer,
     origin_buf: Buffer,
     light_buf: Buffer,
@@ -206,6 +207,7 @@ pub struct VpPipeline {
     pub group0_bind_group_layout: BindGroupLayout,
     pub opaque_id: CachedRenderPipelineId,
     pub cutout_id: CachedRenderPipelineId,
+    pub translucent_id: CachedRenderPipelineId,
 }
 
 #[derive(Resource, Clone)]
@@ -215,6 +217,19 @@ pub struct VpTextureState {
     pub tint_colors: Vec<[f32; 4]>,
     pub emission_factors: Vec<f32>,
     pub ao_brightness: [f32; 4],
+}
+
+#[derive(Resource, Default, Clone, Copy)]
+pub struct VpAnimationClock {
+    pub seconds: f32,
+}
+
+impl ExtractResource for VpAnimationClock {
+    type Source = VpAnimationClock;
+
+    fn extract_resource(source: &Self::Source) -> Self {
+        *source
+    }
 }
 
 impl ExtractResource for VpTextureState {
@@ -319,6 +334,7 @@ fn vp_pipeline_descriptor(
     group1_desc: BindGroupLayoutDescriptor,
     alpha_to_coverage_enabled: bool,
     blend: Option<BlendState>,
+    depth_write_enabled: bool,
 ) -> RenderPipelineDescriptor {
     RenderPipelineDescriptor {
         label: Some(Cow::Borrowed(label)),
@@ -341,7 +357,7 @@ fn vp_pipeline_descriptor(
         },
         depth_stencil: Some(DepthStencilState {
             format: TextureFormat::Depth32Float,
-            depth_write_enabled: true,
+            depth_write_enabled,
             depth_compare: CompareFunction::GreaterEqual,
             stencil: StencilState::default(),
             bias: DepthBiasState::default(),
@@ -408,7 +424,7 @@ struct TerrainVisualSettingsUniform {
 }
 
 impl TerrainVisualSettingsUniform {
-    fn new(settings: TerrainVisualSettings, camera_position: Vec3) -> Self {
+    fn new(settings: TerrainVisualSettings, camera_position: Vec3, animation_seconds: f32) -> Self {
         Self {
             sky_light_color: [
                 settings.sky_light_color.x,
@@ -433,7 +449,7 @@ impl TerrainVisualSettingsUniform {
                 settings.fog_start,
                 settings.fog_end,
                 settings.fog_strength,
-                0.0,
+                animation_seconds,
             ],
         }
     }
@@ -492,6 +508,7 @@ pub struct VertexPullingPlugin;
 impl Plugin for VertexPullingPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<TerrainVisualSettings>()
+            .init_resource::<VpAnimationClock>()
             .register_type::<TerrainVisualSettings>();
         app.register_required_components::<VertexPullingMesh, Transform>()
             .register_required_components::<VertexPullingMesh, Visibility>()
@@ -504,7 +521,9 @@ impl Plugin for VertexPullingPlugin {
             SyncComponentPlugin::<VertexPullingMesh>::default(),
             ExtractResourcePlugin::<VpTextureState>::default(),
             ExtractResourcePlugin::<TerrainVisualSettings>::default(),
+            ExtractResourcePlugin::<VpAnimationClock>::default(),
         ));
+        app.add_systems(Update, update_vp_animation_clock);
 
         let Some(render_app) = app.get_sub_app_mut(RenderApp) else {
             return;
@@ -531,6 +550,7 @@ impl Plugin for VertexPullingPlugin {
         };
 
         render_app.add_render_command::<Opaque3d, DrawVpCmds>();
+        render_app.add_render_command::<Transparent3d, DrawVpCmds>();
 
         let render_device = render_app.world().resource::<RenderDevice>().clone();
 
@@ -558,15 +578,27 @@ impl Plugin for VertexPullingPlugin {
             group1_desc.clone(),
             false,
             None,
+            true,
         ));
 
         let cutout_id = pipeline_cache.queue_render_pipeline(vp_pipeline_descriptor(
             "vp_cutout",
+            shader.clone(),
+            group0_desc.clone(),
+            group1_desc.clone(),
+            true,
+            Some(BlendState::ALPHA_BLENDING),
+            true,
+        ));
+
+        let translucent_id = pipeline_cache.queue_render_pipeline(vp_pipeline_descriptor(
+            "vp_translucent",
             shader,
             group0_desc,
             group1_desc,
-            true,
+            false,
             Some(BlendState::ALPHA_BLENDING),
+            false,
         ));
 
         render_app.world_mut().insert_resource(VpPipeline {
@@ -574,6 +606,7 @@ impl Plugin for VertexPullingPlugin {
             group0_bind_group_layout: group0_layout.clone(),
             opaque_id,
             cutout_id,
+            translucent_id,
         });
 
         // Create placeholder group 0 bind group (replaced each frame)
@@ -604,12 +637,12 @@ impl Plugin for VertexPullingPlugin {
         let dummy_sampler = render_device.create_sampler(&SamplerDescriptor::default());
         let dummy_texture_layers = render_device.create_buffer_with_data(&BufferInitDescriptor {
             label: Some("vp_g0_dummy_texture_layers"),
-            contents: bytemuck::cast_slice(&vec![0u32; 54]),
+            contents: bytemuck::cast_slice(&vec![0u32; BLOCK_TYPE_COUNT * DIRECTION_COUNT]),
             usage: BufferUsages::STORAGE,
         });
         let dummy_tints = render_device.create_buffer_with_data(&BufferInitDescriptor {
             label: Some("vp_g0_dummy_tints"),
-            contents: bytemuck::cast_slice(&vec![0.0f32; 54 * 4]), // 54 vec4s
+            contents: bytemuck::cast_slice(&vec![0.0f32; BLOCK_TYPE_COUNT * DIRECTION_COUNT * 4]),
             usage: BufferUsages::STORAGE,
         });
         let dummy_ao = render_device.create_buffer_with_data(&BufferInitDescriptor {
@@ -619,11 +652,11 @@ impl Plugin for VertexPullingPlugin {
         });
         let dummy_emissions = render_device.create_buffer_with_data(&BufferInitDescriptor {
             label: Some("vp_g0_dummy_emissions"),
-            contents: bytemuck::cast_slice(&vec![0.0f32; 54]),
+            contents: bytemuck::cast_slice(&vec![0.0f32; BLOCK_TYPE_COUNT * DIRECTION_COUNT]),
             usage: BufferUsages::STORAGE,
         });
         let dummy_visual_settings =
-            TerrainVisualSettingsUniform::new(TerrainVisualSettings::default(), Vec3::ZERO);
+            TerrainVisualSettingsUniform::new(TerrainVisualSettings::default(), Vec3::ZERO, 0.0);
         let dummy_visual_settings_buf =
             render_device.create_buffer_with_data(&BufferInitDescriptor {
                 label: Some("vp_g0_dummy_visual_settings"),
@@ -678,6 +711,10 @@ impl Plugin for VertexPullingPlugin {
 // Systems (module-level functions so `in_set` works)
 // ---------------------------------------------------------------------------
 
+fn update_vp_animation_clock(time: Res<Time>, mut clock: ResMut<VpAnimationClock>) {
+    clock.seconds = time.elapsed_secs_wrapped();
+}
+
 fn extract_changed_vp_data(
     mut commands: Commands,
     meshes: Extract<Query<(RenderEntity, &VertexPullingMesh), Changed<VertexPullingMesh>>>,
@@ -725,6 +762,7 @@ fn prepare_gpu_data(
     prepared_q: Query<&PreparedChunkVp>,
     cameras_q: Query<&ExtractedView>,
     visual_settings: Option<Res<TerrainVisualSettings>>,
+    animation_clock: Option<Res<VpAnimationClock>>,
     mut globals: ResMut<VpGlobals>,
     mut static_res: ResMut<VpStaticResources>,
 ) {
@@ -748,8 +786,11 @@ fn prepare_gpu_data(
     let visual_settings = visual_settings
         .map(|settings| *settings)
         .unwrap_or_default();
+    let animation_seconds = animation_clock
+        .map(|clock| clock.seconds)
+        .unwrap_or_default();
     let visual_settings_uniform =
-        TerrainVisualSettingsUniform::new(visual_settings, camera_position);
+        TerrainVisualSettingsUniform::new(visual_settings, camera_position, animation_seconds);
 
     let Some(texture_state) = texture_state.as_deref() else {
         return;
@@ -947,6 +988,7 @@ fn prepare_gpu_data(
             bind_group,
             face_count: mesh.face_count,
             material_layer: mesh.material_layer,
+            chunk_origin: mesh.chunk_origin,
             desc_buf,
             origin_buf,
             light_buf,
@@ -961,13 +1003,14 @@ fn prepare_gpu_data(
         }
 
         let light_buf = light_buffer_for(&render_device, &mut prepared_light_buffers, &light, None);
-        let (desc_buf, origin_buf, face_count, material_layer) =
+        let (desc_buf, origin_buf, face_count, material_layer, chunk_origin) =
             if let Ok(prepared) = prepared_q.get(entity) {
                 (
                     prepared.desc_buf.clone(),
                     prepared.origin_buf.clone(),
                     prepared.face_count,
                     prepared.material_layer,
+                    prepared.chunk_origin,
                 )
             } else if let Ok(desc) = descriptors_q.get(entity) {
                 let Ok(mesh) = all_meshes_q.get(entity) else {
@@ -982,6 +1025,7 @@ fn prepare_gpu_data(
                     create_origin_buffer(&render_device, mesh),
                     mesh.face_count,
                     mesh.material_layer,
+                    mesh.chunk_origin,
                 )
             } else {
                 continue;
@@ -998,6 +1042,7 @@ fn prepare_gpu_data(
             bind_group,
             face_count,
             material_layer,
+            chunk_origin,
             desc_buf,
             origin_buf,
             light_buf,
@@ -1090,10 +1135,12 @@ fn create_chunk_bind_group(
 
 fn queue_vp_meshes(
     pipeline: Option<Res<VpPipeline>>,
-    mut phases: ResMut<ViewBinnedRenderPhases<Opaque3d>>,
+    mut opaque_phases: ResMut<ViewBinnedRenderPhases<Opaque3d>>,
+    mut transparent_phases: ResMut<ViewSortedRenderPhases<Transparent3d>>,
     views: Query<(&ExtractedView, &RenderVisibleEntities)>,
     prepared_chunks: Query<&PreparedChunkVp>,
-    draw_fns: Res<DrawFunctions<Opaque3d>>,
+    opaque_draw_fns: Res<DrawFunctions<Opaque3d>>,
+    transparent_draw_fns: Res<DrawFunctions<Transparent3d>>,
 ) {
     let Some(pipeline) = pipeline.as_deref() else {
         return;
@@ -1102,10 +1149,11 @@ fn queue_vp_meshes(
         return;
     }
 
-    let draw_fn = draw_fns.read().id::<DrawVpCmds>();
+    let opaque_draw_fn = opaque_draw_fns.read().id::<DrawVpCmds>();
+    let transparent_draw_fn = transparent_draw_fns.read().id::<DrawVpCmds>();
     let opaque_batch_set_key = Opaque3dBatchSetKey {
         pipeline: pipeline.opaque_id,
-        draw_function: draw_fn,
+        draw_function: opaque_draw_fn,
         material_bind_group_index: None,
         vertex_slab: SlabId::default(),
         index_slab: None,
@@ -1120,25 +1168,47 @@ fn queue_vp_meshes(
     };
 
     for (view, visible_entities) in &views {
-        let Some(phase) = phases.get_mut(&view.retained_view_entity) else {
+        let Some(opaque_phase) = opaque_phases.get_mut(&view.retained_view_entity) else {
             continue;
         };
+        let Some(transparent_phase) = transparent_phases.get_mut(&view.retained_view_entity) else {
+            continue;
+        };
+        let rangefinder = view.rangefinder3d();
         for &(entity, main_entity) in visible_entities.iter::<VertexPullingMesh>() {
             let Ok(data) = prepared_chunks.get(entity) else {
                 continue;
             };
-            let batch_set_key = match data.material_layer {
-                BlockMaterialLayer::Opaque => opaque_batch_set_key.clone(),
-                BlockMaterialLayer::Cutout => cutout_batch_set_key.clone(),
-            };
-            phase.add(
-                batch_set_key,
-                bin_key.clone(),
-                (entity, main_entity),
-                InputUniformIndex::default(),
-                BinnedRenderPhaseType::NonMesh,
-                Tick::default(),
-            );
+            match data.material_layer {
+                BlockMaterialLayer::Opaque => opaque_phase.add(
+                    opaque_batch_set_key.clone(),
+                    bin_key.clone(),
+                    (entity, main_entity),
+                    InputUniformIndex::default(),
+                    BinnedRenderPhaseType::NonMesh,
+                    Tick::default(),
+                ),
+                BlockMaterialLayer::Cutout => opaque_phase.add(
+                    cutout_batch_set_key.clone(),
+                    bin_key.clone(),
+                    (entity, main_entity),
+                    InputUniformIndex::default(),
+                    BinnedRenderPhaseType::NonMesh,
+                    Tick::default(),
+                ),
+                BlockMaterialLayer::Translucent => {
+                    let chunk_center = data.chunk_origin + Vec3::splat(CHUNK_SIZE as f32 * 0.5);
+                    transparent_phase.add(Transparent3d {
+                        entity: (entity, main_entity),
+                        pipeline: pipeline.translucent_id,
+                        draw_function: transparent_draw_fn,
+                        distance: rangefinder.distance(&chunk_center),
+                        batch_range: 0..1,
+                        extra_index: PhaseItemExtraIndex::None,
+                        indexed: false,
+                    });
+                }
+            }
         }
     }
 }

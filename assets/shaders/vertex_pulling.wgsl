@@ -4,7 +4,7 @@
 //   binding 0: view_proj uniform (mat4x4<f32>)
 //   binding 1: terrain_texture (texture_2d_array<f32>)
 //   binding 2: terrain_sampler (sampler)
-//   binding 4: texture_layers storage (array<u32>)       // (block_type * 6 + face_dir)
+//   binding 4: texture_layers storage (array<u32>)       // low 24 bits = base layer, high 8 bits = frame count
 //   binding 5: tint_colors storage (array<vec4<f32>>)    // (block_type * 6 + face_dir)
 //   binding 6: ao_brightness uniform (vec4<f32>)
 //   binding 7: emission_factors storage (array<f32>)      // (block_type * 6 + face_dir)
@@ -24,7 +24,7 @@ struct TerrainVisualSettings {
     block_light_color: vec4<f32>,
     fog_color: vec4<f32>,
     camera_position: vec4<f32>,
-    fog_params: vec4<f32>, // x=start, y=end, z=strength, w=unused
+    fog_params: vec4<f32>, // x=start, y=end, z=strength, w=animation seconds
 }
 
 @group(0) @binding(0) var<uniform> view_proj: mat4x4<f32>;
@@ -71,6 +71,7 @@ const TRI_TO_QUAD_B: array<u32, 6> = array(0u, 3u, 1u, 0u, 2u, 3u);
 
 const LIGHT_FLOOR: f32 = 0.05;
 const LIGHT_FALLOFF: f32 = 0.8;
+const TEXTURE_FRAME_SECONDS: f32 = 0.08;
 
 const PADDED_DIM: u32 = 18u;
 const PADDED_AREA: u32 = PADDED_DIM * PADDED_DIM;
@@ -222,7 +223,11 @@ fn fragment(@location(0) world_pos: vec3<f32>,
     let block_uv = fract(face_uv);
 
     let lookup = block_type * 6u + face_dir;
-    let layer = i32(texture_layers[lookup]);
+    let texture_info = texture_layers[lookup];
+    let base_layer = texture_info & 0x00ffffffu;
+    let frame_count = max(texture_info >> 24u, 1u);
+    let frame = u32(floor(terrain_visuals.fog_params.w / TEXTURE_FRAME_SECONDS)) % frame_count;
+    let layer = i32(base_layer + frame);
     let tex_color = textureSampleGrad(
         terrain_texture,
         terrain_sampler,
@@ -241,7 +246,7 @@ fn fragment(@location(0) world_pos: vec3<f32>,
     let shaded_color = tex_color.rgb * tint.rgb * light_color;
     let fogged_color = apply_distance_fog(shaded_color, world_pos);
     let color = vec4(fogged_color, tex_color.a * tint.a);
-    if color.a < 0.5 {
+    if tex_color.a < 0.5 {
         discard;
     }
     return color;

@@ -501,7 +501,9 @@ fn reference_face_counts(blocks: &ChunkMeshBlocks) -> Vec<(BlockMaterialLayer, u
                         continue;
                     };
 
-                    if neighbor_profile.occlusion == crate::block::FaceOcclusion::FullCube {
+                    if neighbor_profile.occlusion == crate::block::FaceOcclusion::FullCube
+                        && profile.material_layer() != BlockMaterialLayer::Translucent
+                    {
                         continue;
                     }
 
@@ -539,7 +541,10 @@ fn test_texture_map() -> crate::block::BlockTextureMap {
             let next_layer = paths.len() as u32;
             paths
                 .entry(path)
-                .or_insert(crate::block::BlockTextureLayer::new(next_layer));
+                .or_insert(crate::block::BlockTextureAnimation::new(
+                    crate::block::BlockTextureLayer::new(next_layer),
+                    1,
+                ));
         }
     }
     crate::block::BlockTextureMap(paths)
@@ -587,6 +592,15 @@ fn test_chunks() -> Vec<TestChunkCase> {
     let mut all_glass = Chunk::default();
     all_glass.blocks = [[[BlockType::Glass; CHUNK_SIZE]; CHUNK_SIZE]; CHUNK_SIZE];
 
+    let mut water_basin = Chunk::default();
+    water_basin.blocks = [[[BlockType::Stone; CHUNK_SIZE]; CHUNK_SIZE]; CHUNK_SIZE];
+    for x in 4..12 {
+        for z in 4..12 {
+            water_basin.blocks[x][z][8] = BlockType::Water;
+        }
+    }
+    water_basin.blocks[8][8][9] = BlockType::Ice;
+
     vec![
         TestChunkCase {
             name: "empty",
@@ -599,6 +613,10 @@ fn test_chunks() -> Vec<TestChunkCase> {
         TestChunkCase {
             name: "all_glass",
             chunk: all_glass,
+        },
+        TestChunkCase {
+            name: "water_basin",
+            chunk: water_basin,
         },
         TestChunkCase {
             name: "single",
