@@ -164,102 +164,7 @@ pub(super) fn propagate_block_increase(
     }
 }
 
-// ── Starlight decrease propagation ──────────────────────────────────────────
-//
-// Decrease is used when a block is placed (solidifying previously lit space).
-// For each direction, checks if the neighbor's light exceeds what it SHOULD
-// receive through the new opacity. If it does, sets it to 0 and enqueues for
-// further decrease. Also detects clobbered light sources (emission) and
-// re-enqueues them as INCREASE entries.
-//
-// After all decreases are processed, increase propagation runs to re-spread
-// the re-discovered sources.
-
-pub(super) fn propagate_sky_decrease(
-    center_light: &mut ChunkLight,
-    blocks: &HashMap<IVec3, &Chunk>,
-    lights: &mut HashMap<IVec3, ChunkLight>,
-    center_pos: IVec3,
-    center_chunk: &Chunk,
-    queue: &mut VecDeque<DecreaseEntry>,
-    increase_queue: &mut VecDeque<IncreaseEntry>,
-    dirty_neighbors: &mut u32,
-) {
-    while let Some(entry) = queue.pop_front() {
-        for (dir_idx, &offset) in DIRECTION_OFFSETS.iter().enumerate() {
-            if entry.directions & (1 << dir_idx) == 0 {
-                continue;
-            }
-
-            let (n_chunk, n_local) = neighbor_chunk_local(entry.chunk, entry.local, offset);
-
-            let n_current = sky_light_at(center_light, lights, center_pos, n_chunk, n_local);
-            if n_current == 0 {
-                continue;
-            }
-
-            let n_block = block_at(center_chunk, blocks, center_pos, n_chunk, n_local);
-            let attenuation = if n_block.is_transparent_to_sky_light() {
-                n_block.light_opacity().max(1)
-            } else {
-                15
-            };
-
-            let target = entry.level.saturating_sub(attenuation);
-
-            if n_current > target {
-                let opposite_idx = dir_idx ^ 1;
-                let mut exclude = 1u8 << opposite_idx;
-                if n_chunk.x != 0 {
-                    exclude |= 1 << if n_chunk.x < 0 { 0 } else { 1 };
-                }
-                if n_chunk.z != 0 {
-                    exclude |= 1 << if n_chunk.z < 0 { 2 } else { 3 };
-                }
-                if n_chunk.y != 0 {
-                    exclude |= 1 << if n_chunk.y < 0 { 4 } else { 5 };
-                }
-                let next_dirs = ALL_DIRECTIONS_BITSET ^ exclude;
-                increase_queue.push_back(IncreaseEntry {
-                    chunk: n_chunk,
-                    local: n_local,
-                    level: n_current,
-                    directions: next_dirs,
-                });
-            }
-
-            if write_sky_light(
-                center_light,
-                lights,
-                center_pos,
-                n_chunk,
-                n_local,
-                0,
-                dirty_neighbors,
-            ) && target > 0
-            {
-                let opposite_idx = dir_idx ^ 1;
-                let next_dirs = ALL_DIRECTIONS_BITSET ^ (1 << opposite_idx);
-                queue.push_back(DecreaseEntry {
-                    chunk: n_chunk,
-                    local: n_local,
-                    level: target,
-                    directions: next_dirs,
-                });
-            }
-        }
-    }
-
-    propagate_sky_increase(
-        center_light,
-        blocks,
-        lights,
-        center_pos,
-        center_chunk,
-        increase_queue,
-        dirty_neighbors,
-    );
-}
+// ── Block-light decrease propagation ────────────────────────────────────────
 
 pub(super) fn propagate_block_decrease(
     center_light: &mut ChunkLight,
@@ -270,7 +175,6 @@ pub(super) fn propagate_block_decrease(
     queue: &mut VecDeque<DecreaseEntry>,
     increase_queue: &mut VecDeque<IncreaseEntry>,
     dirty_neighbors: &mut u32,
-    clobbered_increases: bool,
 ) {
     while let Some(entry) = queue.pop_front() {
         for (dir_idx, &offset) in DIRECTION_OFFSETS.iter().enumerate() {
@@ -289,27 +193,6 @@ pub(super) fn propagate_block_decrease(
             let attenuation = n_block.light_opacity().max(1);
 
             let target = entry.level.saturating_sub(attenuation);
-
-            if clobbered_increases && n_current > target {
-                let opposite_idx = dir_idx ^ 1;
-                let mut exclude = 1u8 << opposite_idx;
-                if n_chunk.x != 0 {
-                    exclude |= 1 << if n_chunk.x < 0 { 0 } else { 1 };
-                }
-                if n_chunk.z != 0 {
-                    exclude |= 1 << if n_chunk.z < 0 { 2 } else { 3 };
-                }
-                if n_chunk.y != 0 {
-                    exclude |= 1 << if n_chunk.y < 0 { 4 } else { 5 };
-                }
-                let next_dirs = ALL_DIRECTIONS_BITSET ^ exclude;
-                increase_queue.push_back(IncreaseEntry {
-                    chunk: n_chunk,
-                    local: n_local,
-                    level: n_current,
-                    directions: next_dirs,
-                });
-            }
 
             let emitted = n_block.light_emission();
             if emitted > 0 {

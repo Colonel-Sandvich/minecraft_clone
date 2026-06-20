@@ -165,7 +165,6 @@ pub fn clear_stale_neighbor_block_light(
             &mut block_decrease,
             &mut block_increase,
             dirty_neighbors,
-            false,
         );
     }
     *center_light = pre_decrease;

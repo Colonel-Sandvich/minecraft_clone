@@ -11,8 +11,7 @@ use minecraft_clone::{
             CHUNK_SIZE, Chunk,
             light::{
                 ChunkHeightmap, ChunkLight, clear_stale_neighbor_block_light, compute_block_light,
-                compute_light_region, compute_sky_light, light_on_place_block, light_on_place_sky,
-                pull_neighbor_block_light,
+                compute_light_region, compute_sky_light, pull_neighbor_block_light,
             },
         },
         generation::generate_chunk,
@@ -277,136 +276,6 @@ fn bench_full_light_compute(c: &mut Criterion) {
     }
 }
 
-struct IncrementalScenario {
-    name: &'static str,
-    center_chunk: Chunk,
-    neighbors: HashMap<IVec3, (Chunk, ChunkLight)>,
-    /// World-space position in the center chunk to place/break
-    place_pos: IVec3,
-}
-
-fn incremental_scenarios() -> Vec<IncrementalScenario> {
-    vec![
-        // Place stone in middle of empty chunk -> sky decrease
-        IncrementalScenario {
-            name: "place_stone_empty",
-            center_chunk: empty_chunk(),
-            neighbors: HashMap::new(),
-            place_pos: IVec3::new(8, 8, 8),
-        },
-        // Place glass in solid chunk -> no sky through, block light only
-        IncrementalScenario {
-            name: "place_glass_solid",
-            center_chunk: solid_chunk(BlockType::Stone),
-            neighbors: HashMap::new(),
-            place_pos: IVec3::new(8, 8, 8),
-        },
-        // Place glowstone -> triggers block light increase
-        IncrementalScenario {
-            name: "place_glowstone",
-            center_chunk: empty_chunk(),
-            neighbors: HashMap::new(),
-            place_pos: IVec3::new(8, 8, 8),
-        },
-    ]
-}
-
-fn bench_incremental_light(c: &mut Criterion) {
-    let scenarios = incremental_scenarios();
-    let mut sky_group = c.benchmark_group("light_incremental_sky");
-    sky_group.throughput(Throughput::Elements(1));
-
-    for scenario in &scenarios {
-        let blocks: HashMap<IVec3, &Chunk> = scenario
-            .neighbors
-            .iter()
-            .map(|(pos, (chunk, _))| (*pos, chunk))
-            .collect();
-        let neighbor_template: Vec<(IVec3, ChunkLight)> = scenario
-            .neighbors
-            .iter()
-            .map(|(pos, (_, light))| (*pos, light.clone()))
-            .collect();
-
-        // Sky decrease (place)
-        sky_group.bench_function(BenchmarkId::from_parameter(scenario.name), move |b| {
-            b.iter(|| {
-                let mut center_light = ChunkLight::default();
-                // First do a full compute to establish baseline lighting
-                let mut heightmap = ChunkHeightmap::default();
-                let neighbor_lights: Vec<(IVec3, ChunkLight)> = neighbor_template.clone();
-                let mut lights_map: HashMap<IVec3, ChunkLight> =
-                    neighbor_lights.into_iter().collect();
-                let mut dirty = 0;
-                rebuild_chunk_light(
-                    black_box(&scenario.center_chunk),
-                    black_box(&mut center_light),
-                    black_box(&mut heightmap),
-                    black_box(&blocks),
-                    black_box(&mut lights_map),
-                    &mut dirty,
-                );
-                // Now place and run incremental
-                light_on_place_sky(
-                    black_box(&scenario.center_chunk),
-                    black_box(&mut center_light),
-                    black_box(&blocks),
-                    black_box(&mut lights_map),
-                    black_box(scenario.place_pos),
-                    &mut dirty,
-                );
-            });
-        });
-    }
-
-    sky_group.finish();
-
-    let mut block_group = c.benchmark_group("light_incremental_block");
-    block_group.throughput(Throughput::Elements(1));
-
-    for scenario in &scenarios {
-        let blocks: HashMap<IVec3, &Chunk> = scenario
-            .neighbors
-            .iter()
-            .map(|(pos, (chunk, _))| (*pos, chunk))
-            .collect();
-        let neighbor_template: Vec<(IVec3, ChunkLight)> = scenario
-            .neighbors
-            .iter()
-            .map(|(pos, (_, light))| (*pos, light.clone()))
-            .collect();
-
-        block_group.bench_function(BenchmarkId::from_parameter(scenario.name), move |b| {
-            b.iter(|| {
-                let mut center_light = ChunkLight::default();
-                let mut heightmap = ChunkHeightmap::default();
-                let neighbor_lights: Vec<(IVec3, ChunkLight)> = neighbor_template.clone();
-                let mut lights_map: HashMap<IVec3, ChunkLight> =
-                    neighbor_lights.into_iter().collect();
-                let mut dirty = 0;
-                rebuild_chunk_light(
-                    black_box(&scenario.center_chunk),
-                    black_box(&mut center_light),
-                    black_box(&mut heightmap),
-                    black_box(&blocks),
-                    black_box(&mut lights_map),
-                    &mut dirty,
-                );
-                light_on_place_block(
-                    black_box(&scenario.center_chunk),
-                    black_box(&mut center_light),
-                    black_box(&blocks),
-                    black_box(&mut lights_map),
-                    black_box(scenario.place_pos),
-                    &mut dirty,
-                );
-            });
-        });
-    }
-
-    block_group.finish();
-}
-
 struct RegionScenario {
     name: &'static str,
     chunks: HashMap<IVec3, Chunk>,
@@ -510,7 +379,6 @@ fn bench_region_light_rebuild(c: &mut Criterion) {
 criterion_group!(
     benches,
     bench_full_light_compute,
-    bench_incremental_light,
     bench_region_light_rebuild
 );
 criterion_main!(benches);

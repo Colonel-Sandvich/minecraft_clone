@@ -5,7 +5,6 @@ mod sky;
 mod storage;
 #[cfg(test)]
 mod tests;
-mod updates;
 mod utils;
 
 #[cfg(test)]
@@ -18,7 +17,6 @@ pub use block::{clear_stale_neighbor_block_light, compute_block_light, pull_neig
 pub use region::compute_light_region;
 pub use sky::compute_sky_light;
 pub use storage::{ChunkHeightmap, ChunkLight};
-pub use updates::{light_on_place_block, light_on_place_sky};
 pub use utils::world_to_chunk_local;
 
 #[cfg(test)]
