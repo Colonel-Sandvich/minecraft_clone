@@ -99,11 +99,11 @@ pub fn load_or_generate_chunk(
     repository: ChunkRepository,
 ) -> ChunkLoadOutput {
     match repository.load_chunk(request.pos) {
-        Ok(Some((chunk, light, heightmap))) => ChunkLoadOutput {
+        Ok(Some((chunk, heightmap))) => ChunkLoadOutput {
             pos: request.pos,
             result: Ok(LoadedChunk {
                 chunk,
-                light,
+                light: ChunkLight::default(),
                 heightmap,
                 source: ChunkLoadSource::Stored,
             }),
@@ -209,7 +209,7 @@ mod tests {
         assert_eq!(repository.metadata(), &metadata);
         assert_eq!(loaded.result.unwrap().source, ChunkLoadSource::Stored);
         assert_eq!(
-            repository.load_chunk(pos).unwrap().map(|(c, _l, _h)| c),
+            repository.load_chunk(pos).unwrap().map(|(c, _h)| c),
             Some(Chunk::default()),
         );
     }

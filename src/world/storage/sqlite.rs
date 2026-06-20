@@ -7,7 +7,7 @@ use bevy::prelude::*;
 use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::world::{
-    chunk::{Chunk, ChunkHeightmap, ChunkLight},
+    chunk::{Chunk, ChunkHeightmap},
     generation::WorldMetadata,
 };
 
@@ -95,10 +95,7 @@ impl ChunkStore for SqliteChunkStore {
         &self.metadata
     }
 
-    fn load_chunk(
-        &self,
-        pos: IVec3,
-    ) -> ChunkStoreResult<Option<(Chunk, ChunkLight, ChunkHeightmap)>> {
+    fn load_chunk(&self, pos: IVec3) -> ChunkStoreResult<Option<(Chunk, ChunkHeightmap)>> {
         let connection = self.open_connection()?;
         let bytes = connection
             .query_row(SQL_SELECT_CHUNK, params![pos.x, pos.z, pos.y], |row| {
@@ -110,11 +107,10 @@ impl ChunkStore for SqliteChunkStore {
             return Ok(None);
         };
 
-        let (chunk, light) =
-            Chunk::try_from_storage_bytes(&bytes, self.metadata.chunk_format_version)?;
+        let chunk = Chunk::try_from_storage_bytes(&bytes)?;
         let heightmap = load_column_heightmap(&connection, pos.x, pos.z)?;
 
-        Ok(Some((chunk, light, heightmap)))
+        Ok(Some((chunk, heightmap)))
     }
 
     fn load_stored_column(&self, column: IVec2) -> ChunkStoreResult<Vec<StoredChunk>> {
@@ -125,15 +121,13 @@ impl ChunkStore for SqliteChunkStore {
             |row| Ok((row.get::<_, i32>(0)?, row.get::<_, Vec<u8>>(1)?)),
         )?;
 
-        let fmt = self.metadata.chunk_format_version;
         let mut chunks = Vec::new();
         for row in rows {
             let (y, bytes) = row?;
-            let (chunk, light) = Chunk::try_from_storage_bytes(&bytes, fmt)?;
+            let chunk = Chunk::try_from_storage_bytes(&bytes)?;
             chunks.push(StoredChunk {
                 pos: ivec3(column.x, y, column.y),
                 chunk,
-                light,
             });
         }
 

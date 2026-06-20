@@ -555,10 +555,7 @@ mod tests {
             &self.metadata
         }
 
-        fn load_chunk(
-            &self,
-            _pos: IVec3,
-        ) -> ChunkStoreResult<Option<(Chunk, ChunkLight, ChunkHeightmap)>> {
+        fn load_chunk(&self, _pos: IVec3) -> ChunkStoreResult<Option<(Chunk, ChunkHeightmap)>> {
             Err(ChunkStoreError::WorldMetadataMismatch {
                 key: "seed".to_owned(),
                 expected: "1".to_owned(),
@@ -626,10 +623,7 @@ mod tests {
             &self.metadata
         }
 
-        fn load_chunk(
-            &self,
-            _pos: IVec3,
-        ) -> ChunkStoreResult<Option<(Chunk, ChunkLight, ChunkHeightmap)>> {
+        fn load_chunk(&self, _pos: IVec3) -> ChunkStoreResult<Option<(Chunk, ChunkHeightmap)>> {
             Ok(None)
         }
 

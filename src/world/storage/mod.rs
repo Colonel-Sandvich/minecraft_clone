@@ -14,7 +14,7 @@ use bevy::prelude::*;
 use rusqlite::ErrorCode;
 
 use crate::world::{
-    chunk::{Chunk, ChunkDecodeError, ChunkHeightmap, ChunkLight},
+    chunk::{Chunk, ChunkDecodeError, ChunkHeightmap},
     generation::WorldMetadata,
 };
 
@@ -39,23 +39,19 @@ pub(crate) const SQL_INSERT_METADATA_VALUE: &str =
 pub struct StoredChunk {
     pub pos: IVec3,
     pub chunk: Chunk,
-    pub light: ChunkLight,
 }
 
 pub trait ChunkStore: Send + Sync + 'static {
     fn metadata(&self) -> &WorldMetadata;
 
-    fn load_chunk(
-        &self,
-        pos: IVec3,
-    ) -> ChunkStoreResult<Option<(Chunk, ChunkLight, ChunkHeightmap)>>;
+    fn load_chunk(&self, pos: IVec3) -> ChunkStoreResult<Option<(Chunk, ChunkHeightmap)>>;
 
     fn load_stored_column(&self, column: IVec2) -> ChunkStoreResult<Vec<StoredChunk>> {
         let mut chunks = Vec::new();
         for y in 0..self.metadata().height_chunks as i32 {
             let pos = ivec3(column.x, y, column.y);
-            if let Some((chunk, light, _heightmap)) = self.load_chunk(pos)? {
-                chunks.push(StoredChunk { pos, chunk, light });
+            if let Some((chunk, _heightmap)) = self.load_chunk(pos)? {
+                chunks.push(StoredChunk { pos, chunk });
             }
         }
 
@@ -89,10 +85,7 @@ impl ChunkRepository {
         &self.metadata
     }
 
-    pub fn load_chunk(
-        &self,
-        pos: IVec3,
-    ) -> ChunkStoreResult<Option<(Chunk, ChunkLight, ChunkHeightmap)>> {
+    pub fn load_chunk(&self, pos: IVec3) -> ChunkStoreResult<Option<(Chunk, ChunkHeightmap)>> {
         self.store.load_chunk(pos)
     }
 

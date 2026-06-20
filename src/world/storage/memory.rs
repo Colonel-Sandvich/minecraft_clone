@@ -3,7 +3,7 @@ use std::{collections::HashMap, sync::Mutex};
 use bevy::prelude::*;
 
 use crate::world::{
-    chunk::{Chunk, ChunkHeightmap, ChunkLight},
+    chunk::{Chunk, ChunkHeightmap},
     generation::WorldMetadata,
 };
 
@@ -40,10 +40,7 @@ impl ChunkStore for InMemoryChunkStore {
         &self.metadata
     }
 
-    fn load_chunk(
-        &self,
-        pos: IVec3,
-    ) -> ChunkStoreResult<Option<(Chunk, ChunkLight, ChunkHeightmap)>> {
+    fn load_chunk(&self, pos: IVec3) -> ChunkStoreResult<Option<(Chunk, ChunkHeightmap)>> {
         let inner = self
             .inner
             .lock()
@@ -55,15 +52,14 @@ impl ChunkStore for InMemoryChunkStore {
             return Ok(None);
         };
 
-        let (chunk, light) =
-            Chunk::try_from_storage_bytes(bytes, self.metadata.chunk_format_version)?;
+        let chunk = Chunk::try_from_storage_bytes(bytes)?;
         let heightmap = inner
             .column_heightmaps
             .get(&(pos.x, pos.z))
             .map(|b| ChunkHeightmap::from_bytes(b))
             .unwrap_or_default();
 
-        Ok(Some((chunk, light, heightmap)))
+        Ok(Some((chunk, heightmap)))
     }
 
     fn load_stored_column(&self, column: IVec2) -> ChunkStoreResult<Vec<StoredChunk>> {
@@ -74,18 +70,13 @@ impl ChunkStore for InMemoryChunkStore {
                 store: "in-memory chunk store",
             })?;
 
-        let fmt = self.metadata.chunk_format_version;
         let mut chunks = inner
             .chunks
             .iter()
             .filter(|(pos, _)| pos.x == column.x && pos.z == column.y)
             .map(|(pos, bytes)| {
-                let (chunk, light) = Chunk::try_from_storage_bytes(bytes, fmt)?;
-                Ok(StoredChunk {
-                    pos: *pos,
-                    chunk,
-                    light,
-                })
+                let chunk = Chunk::try_from_storage_bytes(bytes)?;
+                Ok(StoredChunk { pos: *pos, chunk })
             })
             .collect::<ChunkStoreResult<Vec<_>>>()?;
         chunks.sort_by_key(|chunk| chunk.pos.y);
@@ -135,10 +126,7 @@ impl ChunkStore for NoopChunkStore {
         &self.metadata
     }
 
-    fn load_chunk(
-        &self,
-        _pos: IVec3,
-    ) -> ChunkStoreResult<Option<(Chunk, ChunkLight, ChunkHeightmap)>> {
+    fn load_chunk(&self, _pos: IVec3) -> ChunkStoreResult<Option<(Chunk, ChunkHeightmap)>> {
         Ok(None)
     }
 

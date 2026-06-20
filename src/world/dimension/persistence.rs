@@ -271,10 +271,7 @@ mod tests {
             &self.metadata
         }
 
-        fn load_chunk(
-            &self,
-            _pos: IVec3,
-        ) -> ChunkStoreResult<Option<(Chunk, ChunkLight, ChunkHeightmap)>> {
+        fn load_chunk(&self, _pos: IVec3) -> ChunkStoreResult<Option<(Chunk, ChunkHeightmap)>> {
             Ok(None)
         }
 
@@ -338,7 +335,7 @@ mod tests {
             world.get::<ChunkNeedsSave>(chunk_entity).is_none()
         });
 
-        let (loaded, _light, _heightmap) = repository.load_chunk(pos).unwrap().unwrap();
+        let (loaded, _heightmap) = repository.load_chunk(pos).unwrap().unwrap();
         assert_eq!(loaded, chunk);
     }
 
@@ -411,7 +408,7 @@ mod tests {
 
         let mut expected = Chunk::default();
         expected.blocks[0][0][0] = BlockType::Stone;
-        let (loaded, _light, _heightmap) = repository.load_chunk(pos).unwrap().unwrap();
+        let (loaded, _heightmap) = repository.load_chunk(pos).unwrap().unwrap();
         assert_eq!(loaded, expected);
     }
 

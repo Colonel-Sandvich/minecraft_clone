@@ -104,7 +104,7 @@ fn sqlite_store_roundtrips_full_chunks() {
 
     store.save_chunk(pos, &chunk, &default_heightmap()).unwrap();
 
-    let (loaded, _l, _h) = store.load_chunk(pos).unwrap().unwrap();
+    let (loaded, _h) = store.load_chunk(pos).unwrap().unwrap();
     assert_eq!(loaded, chunk);
 }
 
@@ -191,7 +191,7 @@ fn turso_store_roundtrips_full_chunks() {
 
     store.save_chunk(pos, &chunk, &default_heightmap()).unwrap();
 
-    let (loaded, _l, _h) = store.load_chunk(pos).unwrap().unwrap();
+    let (loaded, _h) = store.load_chunk(pos).unwrap().unwrap();
     assert_eq!(loaded, chunk);
 }
 

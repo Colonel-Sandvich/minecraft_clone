@@ -6,7 +6,7 @@ use std::{
 use bevy::prelude::*;
 
 use crate::world::{
-    chunk::{Chunk, ChunkHeightmap, ChunkLight},
+    chunk::{Chunk, ChunkHeightmap},
     generation::WorldMetadata,
 };
 
@@ -99,11 +99,7 @@ impl ChunkStore for TursoChunkStore {
         &self.metadata
     }
 
-    fn load_chunk(
-        &self,
-        pos: IVec3,
-    ) -> ChunkStoreResult<Option<(Chunk, ChunkLight, ChunkHeightmap)>> {
-        let fmt = self.metadata.chunk_format_version;
+    fn load_chunk(&self, pos: IVec3) -> ChunkStoreResult<Option<(Chunk, ChunkHeightmap)>> {
         self.runtime.block_on(async {
             let connection = self.database.connect()?;
             let bytes = {
@@ -115,15 +111,14 @@ impl ChunkStore for TursoChunkStore {
                 };
                 row.get::<Vec<u8>>(0)?
             };
-            let (chunk, light) = Chunk::try_from_storage_bytes(&bytes, fmt)?;
+            let chunk = Chunk::try_from_storage_bytes(&bytes)?;
             let heightmap = load_column_heightmap(&connection, pos.x, pos.z).await?;
 
-            Ok(Some((chunk, light, heightmap)))
+            Ok(Some((chunk, heightmap)))
         })
     }
 
     fn load_stored_column(&self, column: IVec2) -> ChunkStoreResult<Vec<StoredChunk>> {
-        let fmt = self.metadata.chunk_format_version;
         self.runtime.block_on(async {
             let connection = self.database.connect()?;
             let mut rows = connection
@@ -136,11 +131,10 @@ impl ChunkStore for TursoChunkStore {
             while let Some(row) = rows.next().await? {
                 let y = row.get::<i32>(0)?;
                 let bytes = row.get::<Vec<u8>>(1)?;
-                let (chunk, light) = Chunk::try_from_storage_bytes(&bytes, fmt)?;
+                let chunk = Chunk::try_from_storage_bytes(&bytes)?;
                 chunks.push(StoredChunk {
                     pos: ivec3(column.x, y, column.y),
                     chunk,
-                    light,
                 });
             }
 
