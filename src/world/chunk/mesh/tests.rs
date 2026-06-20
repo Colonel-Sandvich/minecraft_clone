@@ -330,7 +330,8 @@ fn light_upload_marker_updates_existing_vertex_pulling_light() {
     let mut app = light_upload_app();
 
     let mut chunk_light = ChunkLight::default();
-    chunk_light.set_packed_light(uvec3(0, 0, 0), 0xAF);
+    chunk_light.set_sky_light(uvec3(0, 0, 0), 10);
+    chunk_light.set_block_light(uvec3(0, 0, 0), 15);
     let expected_light_data = ChunkLight::build_padded_light_data(
         IVec3::ZERO,
         &HashMap::from([(IVec3::ZERO, &chunk_light)]),

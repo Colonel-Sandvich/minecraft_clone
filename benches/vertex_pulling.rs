@@ -224,14 +224,21 @@ fn patterned_light(chunk_pos: IVec3) -> ChunkLight {
     for x in 0..CHUNK_SIZE {
         for z in 0..CHUNK_SIZE {
             for y in 0..CHUNK_SIZE {
-                let value = ((x as i32 * 3
+                let sky = (x as i32 * 3
                     + y as i32 * 5
                     + z as i32 * 7
                     + chunk_pos.x * 11
                     + chunk_pos.y * 13
-                    + chunk_pos.z * 17)
-                    & 0xFF) as u8;
-                light.set_packed_light(uvec3(x as u32, y as u32, z as u32), value);
+                    + chunk_pos.z * 17) as u8;
+                let block = (x as i32 * 7
+                    + y as i32 * 3
+                    + z as i32 * 5
+                    + chunk_pos.x * 17
+                    + chunk_pos.y * 11
+                    + chunk_pos.z * 13) as u8;
+                let pos = uvec3(x as u32, y as u32, z as u32);
+                light.set_sky_light(pos, sky);
+                light.set_block_light(pos, block);
             }
         }
     }

@@ -16,6 +16,7 @@ pub struct ChunkMeshBlocks {
 }
 
 impl ChunkMeshBlocks {
+    #[cfg(test)]
     pub fn from_chunk(chunk: &Chunk) -> Self {
         let mut blocks = Self::empty();
         blocks.copy_center_chunk(chunk);

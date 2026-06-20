@@ -14,7 +14,7 @@ const MISSING_PADDED_LIGHT_WORD: u32 = 0xF0F0F0F0;
 
 #[derive(Component, Debug, Clone, PartialEq, Eq)]
 pub struct ChunkLight {
-    pub light: [[[u8; CHUNK_SIZE]; CHUNK_SIZE]; CHUNK_SIZE],
+    light: [[[u8; CHUNK_SIZE]; CHUNK_SIZE]; CHUNK_SIZE],
 }
 
 impl Default for ChunkLight {
@@ -115,10 +115,6 @@ impl ChunkLight {
     pub fn set_block_light(&mut self, pos: UVec3, value: u8) {
         let slot = &mut self.light[pos.x as usize][pos.z as usize][pos.y as usize];
         *slot = (*slot & 0xF0) | (value & 0x0F);
-    }
-
-    pub fn set_packed_light(&mut self, pos: UVec3, value: u8) {
-        self.light[pos.x as usize][pos.z as usize][pos.y as usize] = value;
     }
 
     pub fn reset_all_sky_light(&mut self) {
