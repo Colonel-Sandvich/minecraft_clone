@@ -8,7 +8,8 @@ use bevy::prelude::*;
 use collider::ChunkColliderPlugin;
 use fluid::ChunkFluidPlugin;
 use mesh::ChunkMeshPlugin;
-use strum::EnumCount;
+use std::{fmt, num::NonZeroU8, str::FromStr};
+use strum::{Display, EnumCount, EnumString};
 
 pub use light::{ChunkHeightmap, ChunkLight};
 
@@ -34,7 +35,7 @@ pub const CHUNK_VOLUME: usize = CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE;
 
 pub const AIR_BLOCK_STATE_ID: BlockStateId = BlockStateId(0);
 const FIRST_BLOCK_STATE_ID: u32 = 1;
-const FIRST_WATER_STATE_ID: u32 = FIRST_BLOCK_STATE_ID + BlockType::COUNT as u32;
+const FIRST_FLUID_STATE_ID: u32 = FIRST_BLOCK_STATE_ID + BlockType::COUNT as u32;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct BlockRegistry;
@@ -57,62 +58,213 @@ pub const fn chunk_linear_index(x: usize, y: usize, z: usize) -> usize {
     y + CHUNK_SIZE * (z + CHUNK_SIZE * x)
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Reflect)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Reflect, EnumString, Display)]
+#[strum(serialize_all = "snake_case")]
 pub enum FluidType {
     Water,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Reflect, EnumCount, EnumString, Display)]
+pub enum FluidForm {
+    #[strum(serialize = "source")]
+    Source,
+    #[strum(serialize = "flow")]
+    Flowing,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Reflect)]
+pub struct FluidLevel(NonZeroU8);
+
+impl FluidLevel {
+    pub const fn new(level: u8) -> Option<Self> {
+        match NonZeroU8::new(level) {
+            Some(level) => Some(Self(level)),
+            None => None,
+        }
+    }
+
+    pub const fn new_const(level: u8) -> Self {
+        match NonZeroU8::new(level) {
+            Some(nz) => FluidLevel(nz),
+            None => panic!("fluid level must be non-zero"),
+        }
+    }
+
+    pub const fn get(self) -> u8 {
+        self.0.get()
+    }
+}
+
+impl fmt::Display for FluidLevel {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.get().fmt(f)
+    }
+}
+
+impl FromStr for FluidLevel {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let level = s.parse::<u8>().map_err(|_| ())?;
+        Self::new(level).ok_or(())
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Reflect)]
 pub struct FluidState {
-    pub ty: FluidType,
-    pub level: u8,
+    ty: FluidType,
+    form: FluidForm,
+    level: FluidLevel,
 }
 
 impl FluidState {
-    pub const MAX_LEVEL: u8 = 8;
-
-    pub const fn water_source() -> Self {
-        Self {
-            ty: FluidType::Water,
-            level: Self::MAX_LEVEL,
-        }
+    const fn new(ty: FluidType, form: FluidForm, level: FluidLevel) -> Self {
+        Self { ty, form, level }
     }
 
-    pub const fn water_flow(level: u8) -> Self {
-        Self {
-            ty: FluidType::Water,
-            level: level.min(Self::MAX_LEVEL),
-        }
+    const fn source(ty: FluidType, level: FluidLevel) -> Self {
+        Self::new(ty, FluidForm::Source, level)
     }
 
-    pub const fn is_empty(self) -> bool {
-        self.level == 0
+    const fn flowing(ty: FluidType, level: FluidLevel) -> Self {
+        Self::new(ty, FluidForm::Flowing, level)
+    }
+
+    pub fn water_source() -> Self {
+        FluidProfile::WATER.source()
+    }
+
+    pub fn water_flow(level: u8) -> Self {
+        FluidProfile::WATER
+            .flowing_level(level)
+            .expect("water flow level must be within the water profile range")
+    }
+
+    pub const fn ty(self) -> FluidType {
+        self.ty
+    }
+
+    pub const fn form(self) -> FluidForm {
+        self.form
+    }
+
+    pub const fn level(self) -> FluidLevel {
+        self.level
     }
 
     pub const fn is_source(self) -> bool {
-        self.level == Self::MAX_LEVEL
+        matches!(self.form, FluidForm::Source)
     }
 
     pub fn name(self) -> String {
-        if self.is_source() {
-            "water".to_owned()
-        } else {
-            format!("water_{}", self.level)
-        }
+        self.to_string()
     }
 
     pub fn from_name(name: &str) -> Option<Self> {
-        if name == "water" {
-            return Some(Self::water_source());
+        name.parse().ok()
+    }
+}
+
+impl fmt::Display for FluidState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}_{}_{}", self.ty, self.form, self.level)
+    }
+}
+
+impl FromStr for FluidState {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let (name_and_form, level) = s.rsplit_once('_').ok_or(())?;
+        let (ty, form) = name_and_form.rsplit_once('_').ok_or(())?;
+        let ty = ty.parse::<FluidType>().map_err(|_| ())?;
+        let form = form.parse::<FluidForm>().map_err(|_| ())?;
+        let level = level.parse::<FluidLevel>()?;
+        let state = Self::new(ty, form, level);
+
+        if FluidProfile::default_for_type(ty).contains(state) {
+            Ok(state)
+        } else {
+            Err(())
         }
-        if let Some(level) = name.strip_prefix("water_") {
-            let level = level.parse::<u8>().ok()?;
-            if !(1..=Self::MAX_LEVEL).contains(&level) {
-                return None;
+    }
+}
+
+/// Simulation rules for a single fluid type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Reflect)]
+pub struct FluidProfile {
+    pub ty: FluidType,
+    pub full_level: FluidLevel,
+    pub horizontal_decay: NonZeroU8,
+    pub min_flow_level: FluidLevel,
+    pub creates_sources: bool,
+}
+
+impl FluidProfile {
+    pub const WATER: Self = Self {
+        ty: FluidType::Water,
+        full_level: FluidLevel::new_const(8),
+        horizontal_decay: nonzero_u8(1),
+        min_flow_level: FluidLevel::new_const(1),
+        creates_sources: true,
+    };
+
+    pub const fn default_for_type(ty: FluidType) -> Self {
+        match ty {
+            FluidType::Water => Self::WATER,
+        }
+    }
+
+    pub fn source(self) -> FluidState {
+        FluidState::source(self.ty, self.full_level)
+    }
+
+    pub fn falling(self) -> FluidState {
+        FluidState::flowing(self.ty, self.full_level)
+    }
+
+    pub fn flowing(self, level: FluidLevel) -> Option<FluidState> {
+        if level < self.min_flow_level || level > self.full_level {
+            return None;
+        }
+
+        Some(FluidState::flowing(self.ty, level))
+    }
+
+    pub fn flowing_level(self, level: u8) -> Option<FluidState> {
+        self.flowing(FluidLevel::new(level)?)
+    }
+
+    pub fn decayed_flow(self, fluid: FluidState) -> Option<FluidState> {
+        if fluid.ty() != self.ty {
+            return None;
+        }
+
+        let next_level = fluid
+            .level()
+            .get()
+            .saturating_sub(self.horizontal_decay.get());
+        self.flowing_level(next_level)
+    }
+
+    pub fn contains(self, fluid: FluidState) -> bool {
+        if fluid.ty() != self.ty {
+            return false;
+        }
+
+        match fluid.form() {
+            FluidForm::Source => fluid.level() == self.full_level,
+            FluidForm::Flowing => {
+                fluid.level() >= self.min_flow_level && fluid.level() <= self.full_level
             }
-            return Some(Self::water_flow(level));
         }
-        None
+    }
+}
+
+const fn nonzero_u8(value: u8) -> NonZeroU8 {
+    match NonZeroU8::new(value) {
+        Some(value) => value,
+        None => panic!("value must be non-zero"),
     }
 }
 
@@ -135,28 +287,29 @@ impl ChunkCell {
         Self::Fluid(fluid)
     }
 
-    pub const fn water_source() -> Self {
+    pub fn water_source() -> Self {
         Self::Fluid(FluidState::water_source())
     }
 
-    pub const fn water_flow(level: u8) -> Self {
+    pub fn water_flow(level: u8) -> Self {
         Self::Fluid(FluidState::water_flow(level))
     }
 
     #[inline(always)]
-    pub const fn canonical(self) -> Self {
+    pub fn state_id(self) -> BlockStateId {
         match self {
-            Self::Fluid(fluid) if fluid.is_empty() => Self::Empty,
-            _ => self,
-        }
-    }
-
-    #[inline(always)]
-    pub const fn state_id(self) -> BlockStateId {
-        match self.canonical() {
             Self::Empty => AIR_BLOCK_STATE_ID,
             Self::Block(block) => BlockStateId(FIRST_BLOCK_STATE_ID + block as u32),
-            Self::Fluid(fluid) => BlockStateId(FIRST_WATER_STATE_ID + fluid.level as u32 - 1),
+            Self::Fluid(fluid) => {
+                let profile = FluidProfile::default_for_type(fluid.ty());
+                debug_assert!(profile.contains(fluid));
+                let level_offset = fluid.level().get() as u32 - 1;
+                let form_offset = match fluid.form() {
+                    FluidForm::Flowing => 0,
+                    FluidForm::Source => profile.full_level.get() as u32,
+                };
+                BlockStateId(FIRST_FLUID_STATE_ID + level_offset + form_offset)
+            }
         }
     }
 
@@ -166,10 +319,10 @@ impl ChunkCell {
 
     #[inline(always)]
     pub const fn hot_meta(self) -> HotBlockStateMeta {
-        match self.canonical() {
+        match self {
             Self::Empty => HotBlockStateMeta::AIR,
             Self::Block(block) => HotBlockStateMeta::for_block(block),
-            Self::Fluid(fluid) => HotBlockStateMeta::water(fluid.level),
+            Self::Fluid(fluid) => HotBlockStateMeta::water(fluid.level().get()),
         }
     }
 
@@ -265,17 +418,25 @@ fn cell_from_state_id(state: BlockStateId) -> Option<ChunkCell> {
         return Some(ChunkCell::Empty);
     }
 
-    if raw < FIRST_WATER_STATE_ID {
+    if raw < FIRST_FLUID_STATE_ID {
         let block_id = (raw - FIRST_BLOCK_STATE_ID) as u16;
         return BlockType::from_storage_id(block_id).map(ChunkCell::Block);
     }
 
-    let water_level = raw - FIRST_WATER_STATE_ID + 1;
-    if water_level <= FluidState::MAX_LEVEL as u32 {
-        return Some(ChunkCell::Fluid(FluidState::water_flow(water_level as u8)));
+    let profile = FluidProfile::WATER;
+    let level_count = profile.full_level.get() as u32;
+    let fluid_offset = raw - FIRST_FLUID_STATE_ID;
+    if fluid_offset >= level_count * FluidForm::COUNT as u32 {
+        return None;
     }
+    let level = FluidLevel::new((fluid_offset % level_count) as u8 + 1)?;
+    let form = if fluid_offset >= level_count {
+        FluidForm::Source
+    } else {
+        FluidForm::Flowing
+    };
 
-    None
+    Some(ChunkCell::Fluid(FluidState::new(profile.ty, form, level)))
 }
 
 impl From<BlockType> for ChunkCell {
@@ -427,7 +588,6 @@ impl ChunkPalette {
     }
 
     fn get_or_insert_cell(&mut self, cell: ChunkCell) -> u32 {
-        let cell = cell.canonical();
         let state = cell.state_id();
         if let Some(index) = self.index_for_state(state) {
             return index;
@@ -656,7 +816,6 @@ impl Chunk {
     }
 
     fn write_cell_linear(&mut self, index: usize, cell: ChunkCell) -> ChunkCell {
-        let cell = cell.canonical();
         let palette_index = self.palette.get_or_insert_cell(cell);
         self.cells.promote_for_index(palette_index);
         self.cells.set_linear(index, palette_index);
@@ -690,7 +849,6 @@ impl Chunk {
     }
 
     pub fn place_cell(&mut self, pos: UVec3, cell: ChunkCell) -> Option<CellDelta> {
-        let cell = cell.canonical();
         if !cell.is_rendered() {
             return None;
         }
@@ -719,7 +877,7 @@ impl Chunk {
         Some(self.set_empty(pos))
     }
 
-    pub fn step_fluids(&mut self) -> FluidStepResult {
+    pub fn step_fluids(&mut self, profile: &FluidProfile) -> FluidStepResult {
         let old_cells = self.to_cell_buffer();
         let mut next_cells = old_cells;
 
@@ -741,39 +899,25 @@ impl Chunk {
                     let Some(fluid) = old_cells[index].as_fluid() else {
                         continue;
                     };
-                    if fluid.is_empty() || fluid.ty != FluidType::Water {
+                    if fluid.ty() != profile.ty {
                         continue;
                     }
 
                     if fluid.is_source() {
-                        write_fluid(&mut next_cells, x, y, z, FluidState::water_source());
+                        write_fluid(&mut next_cells, x, y, z, profile.source());
                     }
 
                     if y > 0 && fluid_can_occupy(old_cells[chunk_linear_index(x, y - 1, z)]) {
-                        write_fluid(
-                            &mut next_cells,
-                            x,
-                            y - 1,
-                            z,
-                            FluidState::water_flow(FluidState::MAX_LEVEL),
-                        );
+                        write_fluid(&mut next_cells, x, y - 1, z, profile.falling());
                         continue;
                     }
 
-                    if fluid.level <= 1 {
+                    let Some(next_fluid) = profile.decayed_flow(fluid) else {
                         continue;
-                    }
-
-                    let next_level = fluid.level - 1;
+                    };
                     for (nx, nz) in horizontal_neighbors(x, z) {
                         if fluid_can_occupy(old_cells[chunk_linear_index(nx, y, nz)]) {
-                            write_fluid(
-                                &mut next_cells,
-                                nx,
-                                y,
-                                nz,
-                                FluidState::water_flow(next_level),
-                            );
+                            write_fluid(&mut next_cells, nx, y, nz, next_fluid);
                         }
                     }
                 }
@@ -795,9 +939,16 @@ impl Chunk {
             }
         }
 
-        // Source creation pass: a flowing water block becomes a source if:
-        //   a) >=2 water source neighbors horizontally AND block below is solid/source
-        //   b) >=1 water source neighbor horizontally AND source vertically above
+        if !profile.creates_sources {
+            return FluidStepResult {
+                changed,
+                boundary_changed,
+            };
+        }
+
+        // Source creation pass: a flowing fluid becomes a source if:
+        //   a) >=2 source neighbors horizontally AND block below is solid/source
+        //   b) >=1 source neighbor horizontally AND source vertically above
         //      AND block below is solid/source (flowing-down source creation)
         for y in 0..CHUNK_SIZE {
             for z in 0..CHUNK_SIZE {
@@ -806,14 +957,14 @@ impl Chunk {
                     let Some(fluid) = current.as_fluid() else {
                         continue;
                     };
-                    if fluid.is_source() || fluid.is_empty() || fluid.ty != FluidType::Water {
+                    if fluid.is_source() || fluid.ty() != profile.ty {
                         continue;
                     }
                     let source_neighbors = horizontal_neighbors(x, z)
                         .filter(|&(nx, nz)| {
                             self.cell_xyz(nx, y, nz)
                                 .as_fluid()
-                                .is_some_and(|f| f.is_source() && f.ty == FluidType::Water)
+                                .is_some_and(|f| f.is_source() && f.ty() == profile.ty)
                         })
                         .count();
                     let below = if y > 0 {
@@ -824,12 +975,12 @@ impl Chunk {
                     let below_ok = below.is_block()
                         || below
                             .as_fluid()
-                            .is_some_and(|f| f.is_source() && f.ty == FluidType::Water);
+                            .is_some_and(|f| f.is_source() && f.ty() == profile.ty);
                     if !below_ok {
                         continue;
                     }
                     if source_neighbors >= 2 {
-                        self.set_cell_xyz(x, y, z, ChunkCell::water_source());
+                        self.set_cell_xyz(x, y, z, ChunkCell::fluid(profile.source()));
                         changed = true;
                         boundary_changed |= is_chunk_boundary_cell(x, y, z);
                         continue;
@@ -838,9 +989,9 @@ impl Chunk {
                         && y + 1 < CHUNK_SIZE
                         && old_cells[chunk_linear_index(x, y + 1, z)]
                             .as_fluid()
-                            .is_some_and(|f| f.is_source() && f.ty == FluidType::Water)
+                            .is_some_and(|f| f.is_source() && f.ty() == profile.ty)
                     {
-                        self.set_cell_xyz(x, y, z, ChunkCell::water_source());
+                        self.set_cell_xyz(x, y, z, ChunkCell::fluid(profile.source()));
                         changed = true;
                         boundary_changed |= is_chunk_boundary_cell(x, y, z);
                     }
@@ -944,8 +1095,7 @@ impl Chunk {
                 .map_err(|_| ChunkDecodeError::InvalidHeader)?;
             pos += len;
             let cell = ChunkCell::from_name(name)
-                .ok_or_else(|| ChunkDecodeError::UnknownBlock(name.to_owned()))?
-                .canonical();
+                .ok_or_else(|| ChunkDecodeError::UnknownBlock(name.to_owned()))?;
             palette.push(cell);
         }
 
@@ -1015,7 +1165,9 @@ fn write_fluid(
     let current_fluid = current.as_fluid();
     if current_fluid.is_none()
         || fluid.is_source()
-        || current_fluid.is_some_and(|current| !current.is_source() && fluid.level > current.level)
+        || current_fluid.is_some_and(|current| {
+            !current.is_source() && fluid.level().get() > current.level().get()
+        })
     {
         *current = ChunkCell::fluid(fluid);
     }
@@ -1183,10 +1335,7 @@ mod tests {
 
         assert!(matches!(chunk.cell_storage(), CellStorage::U8(_)));
         assert_eq!(chunk.palette().entries().len(), 3);
-        assert_eq!(
-            chunk.hot_meta(uvec3(2, 2, 3)).fluid_level,
-            FluidState::MAX_LEVEL
-        );
+        assert_eq!(chunk.hot_meta(uvec3(2, 2, 3)).fluid_level, 8);
     }
 
     #[test]
@@ -1221,6 +1370,26 @@ mod tests {
 
         assert_eq!(decoded, chunk);
         assert_eq!(decoded.get_cell(pos), ChunkCell::water_source());
+    }
+
+    #[test]
+    fn fluid_storage_names_include_form_and_level() {
+        let source = FluidProfile::WATER.source();
+        let falling = FluidProfile::WATER.falling();
+
+        assert_eq!(source.name(), "water_source_8");
+        assert_eq!(falling.name(), "water_flow_8");
+        assert_ne!(source, falling);
+        assert_eq!(FluidState::from_name("water_source_8"), Some(source));
+        assert_eq!(
+            FluidState::from_name("water_flow_7"),
+            Some(FluidState::water_flow(7))
+        );
+        assert_eq!(FluidState::from_name("water"), None);
+        assert_eq!(FluidState::from_name("water_7"), None);
+        assert_eq!(FluidState::from_name("water_flow_0"), None);
+        assert_eq!(FluidState::from_name("water_flow_9"), None);
+        assert_eq!(FluidState::from_name("water_source_7"), None);
     }
 
     #[test]
@@ -1263,7 +1432,7 @@ mod tests {
         let source = uvec3(8, 8, 8);
         chunk.set_cell(source, ChunkCell::water_source());
 
-        assert!(chunk.step_fluids().changed);
+        assert!(chunk.step_fluids(&FluidProfile::WATER).changed);
 
         assert_eq!(chunk.get_cell(source), ChunkCell::water_source());
         assert_eq!(chunk.get_cell(uvec3(8, 7, 8)), ChunkCell::water_flow(8));
@@ -1280,7 +1449,7 @@ mod tests {
         chunk.set_cell(source, ChunkCell::water_source());
         chunk.set_block(uvec3(8, 0, 8), BlockType::Stone);
 
-        assert!(chunk.step_fluids().changed);
+        assert!(chunk.step_fluids(&FluidProfile::WATER).changed);
 
         assert_eq!(chunk.get_cell(source), ChunkCell::water_source());
         for pos in [
@@ -1301,7 +1470,7 @@ mod tests {
         chunk.set_block(uvec3(8, 0, 8), BlockType::Stone);
         chunk.set_block(uvec3(7, 1, 8), BlockType::Stone);
 
-        assert!(chunk.step_fluids().changed);
+        assert!(chunk.step_fluids(&FluidProfile::WATER).changed);
 
         assert_eq!(chunk.get_cell(uvec3(7, 1, 8)), BlockType::Stone.into());
     }
@@ -1313,7 +1482,7 @@ mod tests {
         chunk.set_cell(pos, ChunkCell::water_flow(1));
         chunk.set_block(uvec3(8, 0, 8), BlockType::Stone);
 
-        assert!(chunk.step_fluids().changed);
+        assert!(chunk.step_fluids(&FluidProfile::WATER).changed);
 
         assert_eq!(chunk.get_cell(pos), ChunkCell::EMPTY);
     }

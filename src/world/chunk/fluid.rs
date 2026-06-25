@@ -2,7 +2,7 @@ use bevy::prelude::*;
 
 use super::{
     CHUNK_SIZE, Chunk, ChunkBlockCounts, ChunkCell, ChunkHasActiveFluids, ChunkNeedsMeshRebuild,
-    ChunkNeedsSave, ChunkPosition, FluidState, FluidType,
+    ChunkNeedsSave, ChunkPosition, FluidProfile, FluidState,
 };
 
 pub(crate) struct ChunkFluidPlugin;
@@ -44,7 +44,7 @@ fn step_chunk_fluids(
             (Entity, &ChunkPosition, &mut Chunk, &mut ChunkBlockCounts),
             With<ChunkHasActiveFluids>,
         >,
-        Query<(Entity, &ChunkPosition, &mut Chunk)>,
+        Query<(Entity, &ChunkPosition, &mut Chunk, &mut ChunkBlockCounts)>,
     )>,
 ) {
     // Water in Minecraft spreads at 1 block per 5 ticks (4/sec).
@@ -70,7 +70,8 @@ fn step_chunk_fluids(
         }
         stepped += 1;
 
-        let result = chunk.step_fluids();
+        let profile = FluidProfile::WATER;
+        let result = chunk.step_fluids(&profile);
         if !result.changed {
             commands.entity(entity).remove::<ChunkHasActiveFluids>();
             continue;
@@ -92,57 +93,53 @@ fn step_chunk_fluids(
                         let Some(fluid) = chunk.cell_xyz(x, y, z).as_fluid() else {
                             continue;
                         };
-                        if fluid.is_empty() || fluid.ty != FluidType::Water {
+                        if fluid.ty() != profile.ty {
                             continue;
                         }
 
                         // Horizontal boundary: water at x=0 → flow to -X neighbor
                         if x == 0 {
-                            let next_level = fluid.level.saturating_sub(1);
-                            if next_level > 0 {
+                            if let Some(next_fluid) = profile.decayed_flow(fluid) {
                                 boundary_flows.push(BoundaryFlow {
                                     target_pos: cp + IVec3::NEG_X,
                                     x: CHUNK_SIZE - 1,
                                     y,
                                     z,
-                                    fluid: FluidState::water_flow(next_level),
+                                    fluid: next_fluid,
                                 });
                             }
                         }
                         if x == CHUNK_SIZE - 1 {
-                            let next_level = fluid.level.saturating_sub(1);
-                            if next_level > 0 {
+                            if let Some(next_fluid) = profile.decayed_flow(fluid) {
                                 boundary_flows.push(BoundaryFlow {
                                     target_pos: cp + IVec3::X,
                                     x: 0,
                                     y,
                                     z,
-                                    fluid: FluidState::water_flow(next_level),
+                                    fluid: next_fluid,
                                 });
                             }
                         }
                         // Horizontal boundary: water at z=0 → flow to -Z neighbor
                         if z == 0 {
-                            let next_level = fluid.level.saturating_sub(1);
-                            if next_level > 0 {
+                            if let Some(next_fluid) = profile.decayed_flow(fluid) {
                                 boundary_flows.push(BoundaryFlow {
                                     target_pos: cp + IVec3::NEG_Z,
                                     x,
                                     y,
                                     z: CHUNK_SIZE - 1,
-                                    fluid: FluidState::water_flow(next_level),
+                                    fluid: next_fluid,
                                 });
                             }
                         }
                         if z == CHUNK_SIZE - 1 {
-                            let next_level = fluid.level.saturating_sub(1);
-                            if next_level > 0 {
+                            if let Some(next_fluid) = profile.decayed_flow(fluid) {
                                 boundary_flows.push(BoundaryFlow {
                                     target_pos: cp + IVec3::Z,
                                     x,
                                     y,
                                     z: 0,
-                                    fluid: FluidState::water_flow(next_level),
+                                    fluid: next_fluid,
                                 });
                             }
                         }
@@ -153,7 +150,7 @@ fn step_chunk_fluids(
                                 x,
                                 y: CHUNK_SIZE - 1,
                                 z,
-                                fluid: FluidState::water_source(),
+                                fluid: profile.falling(),
                             });
                         }
                     }
@@ -164,15 +161,16 @@ fn step_chunk_fluids(
 
     // Second pass: write boundary flows into neighbor chunks
     for flow in boundary_flows {
-        for (entity, cpos, mut chunk) in &mut param_set.p1() {
+        for (entity, cpos, mut chunk, mut counts) in &mut param_set.p1() {
             if cpos.0 == flow.target_pos {
                 let cell = chunk.cell_xyz(flow.x, flow.y, flow.z);
                 if !cell.is_block()
                     && cell
                         .as_fluid()
-                        .is_none_or(|f| !f.is_source() && flow.fluid.level > f.level)
+                        .is_none_or(|f| !f.is_source() && flow.fluid.level() > f.level())
                 {
                     chunk.set_cell_xyz(flow.x, flow.y, flow.z, ChunkCell::fluid(flow.fluid));
+                    *counts = chunk.compute_block_counts();
                     commands.entity(entity).insert((
                         ChunkHasActiveFluids,
                         ChunkNeedsSave,

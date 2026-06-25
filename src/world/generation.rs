@@ -5,6 +5,7 @@ use crate::{
     world::chunk::{CHUNK_ISIZE, CHUNK_SIZE, Chunk, ChunkCell},
 };
 
+// KEEP THIS AT 1. IF THERE ARE BREAKING CHANGES IN CHUNK FORMAT THAT'S FINE I WILL JUST DELETE THE dev save world and make a new one!
 pub const CHUNK_FORMAT_VERSION: u32 = 1;
 pub const WORLD_GENERATOR_VERSION: u32 = 1;
 pub const DEFAULT_DIMENSION_HEIGHT_IN_SUB_CHUNKS: usize = 5;
