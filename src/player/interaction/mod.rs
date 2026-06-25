@@ -5,13 +5,14 @@ use avian3d::{
 use bevy::{color::palettes::basic, input::InputSystems, prelude::*};
 
 use crate::{
-    block::{BlockPos, BlockType, BlockUpdateKind, BlockUpdateMessage},
+    block::{BlockPos, BlockUpdateKind, BlockUpdateMessage},
     ui::Hotbar,
     world::{
         ACTOR_LAYER, WORLD_LAYER,
         chunk::{
-            Chunk, ChunkBlockCounts, ChunkNeedsColliderRebuild, ChunkNeedsLightRebuild,
-            ChunkNeedsMeshRebuild, ChunkNeedsSave, chunk_neighbor_offsets_for_block,
+            Chunk, ChunkBlockCounts, ChunkCell, ChunkHasActiveFluids, ChunkNeedsColliderRebuild,
+            ChunkNeedsLightRebuild, ChunkNeedsMeshRebuild, ChunkNeedsSave,
+            chunk_neighbor_offsets_for_block,
         },
         dimension::Dimension,
     },
@@ -179,7 +180,7 @@ fn apply_block_interaction_requests(
 
         match request.kind {
             BlockInteractionKind::Pick => {
-                hotbar.set_selected_block(chunk.get_block(pos.block));
+                hotbar.set_selected_cell(chunk.get_cell(pos.block));
             }
             BlockInteractionKind::Break => {
                 let Some(delta) = chunk.break_block(pos.block) else {
@@ -188,6 +189,7 @@ fn apply_block_interaction_requests(
                 if let Ok(mut meta) = meta_q.get_mut(chunk_entity) {
                     meta.apply_delta(delta);
                 }
+                mark_chunk_fluid_activity(&mut commands, chunk_entity, &chunk);
 
                 block_updates.write(BlockUpdateMessage {
                     chunk: chunk_entity,
@@ -204,27 +206,30 @@ fn apply_block_interaction_requests(
                 mark_block_edit_light_columns_dirty(&mut commands, &dimension, pos.chunk);
             }
             BlockInteractionKind::Place => {
-                let Some(block) = hotbar.selected_block() else {
+                let Some(cell) = hotbar.selected_cell() else {
                     continue;
                 };
-                if placement_requires_actor_clearance(block)
+                if placement_requires_actor_clearance(cell)
                     && block_place_would_intersect(pos, &spatial_query)
                 {
                     continue;
                 }
 
-                let Some(delta) = chunk.place_block(pos.block, block) else {
+                let Some(delta) = chunk.place_cell(pos.block, cell) else {
                     continue;
                 };
                 if let Ok(mut meta) = meta_q.get_mut(chunk_entity) {
                     meta.apply_delta(delta);
                 }
+                mark_chunk_fluid_activity(&mut commands, chunk_entity, &chunk);
 
-                block_updates.write(BlockUpdateMessage {
-                    chunk: chunk_entity,
-                    pos,
-                    kind: BlockUpdateKind::Place(block),
-                });
+                if let Some(block) = cell.as_block() {
+                    block_updates.write(BlockUpdateMessage {
+                        chunk: chunk_entity,
+                        pos,
+                        kind: BlockUpdateKind::Place(block),
+                    });
+                }
                 commands.entity(chunk_entity).insert((
                     ChunkNeedsSave,
                     ChunkNeedsMeshRebuild,
@@ -235,6 +240,16 @@ fn apply_block_interaction_requests(
                 mark_block_edit_light_columns_dirty(&mut commands, &dimension, pos.chunk);
             }
         }
+    }
+}
+
+fn mark_chunk_fluid_activity(commands: &mut Commands, chunk_entity: Entity, chunk: &Chunk) {
+    if chunk.has_fluids() {
+        commands.entity(chunk_entity).insert(ChunkHasActiveFluids);
+    } else {
+        commands
+            .entity(chunk_entity)
+            .remove::<ChunkHasActiveFluids>();
     }
 }
 
@@ -266,8 +281,8 @@ fn block_edit_light_reaches_column(edit_chunk: IVec3, chunk_pos: IVec3) -> bool 
     (chunk_pos.x - edit_chunk.x).abs() <= 1 && (chunk_pos.z - edit_chunk.z).abs() <= 1
 }
 
-fn placement_requires_actor_clearance(block: BlockType) -> bool {
-    block.is_solid()
+fn placement_requires_actor_clearance(cell: ChunkCell) -> bool {
+    cell.is_solid()
 }
 
 fn block_place_would_intersect(pos: BlockPos, spatial_query: &SpatialQuery) -> bool {

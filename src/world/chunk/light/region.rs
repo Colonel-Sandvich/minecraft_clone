@@ -5,18 +5,16 @@ use bevy::{
     prelude::*,
 };
 
-use crate::block::BlockType;
-
-use super::super::{CHUNK_ISIZE, CHUNK_SIZE, Chunk};
+use super::super::{CHUNK_ISIZE, CHUNK_SIZE, Chunk, ChunkCell};
 use super::propagation::{ALL_DIRECTIONS_BITSET, DIRECTION_OFFSETS, IncreaseEntry};
 use super::storage::{ChunkHeightmap, ChunkLight, SKY_LIGHT_MAX};
 use super::utils::{face_local_pair, neighbor_chunk_local};
 
-fn region_block_at(chunks: &HashMap<IVec3, &Chunk>, chunk_pos: IVec3, local: UVec3) -> BlockType {
+fn region_block_at(chunks: &HashMap<IVec3, &Chunk>, chunk_pos: IVec3, local: UVec3) -> ChunkCell {
     chunks
         .get(&chunk_pos)
-        .map(|chunk| chunk.get_block(local))
-        .unwrap_or(BlockType::Air)
+        .map(|chunk| chunk.get_cell(local))
+        .unwrap_or(ChunkCell::EMPTY)
 }
 
 fn region_sky_light_at(lights: &HashMap<IVec3, ChunkLight>, chunk_pos: IVec3, local: UVec3) -> u8 {
@@ -194,8 +192,8 @@ fn seed_region_sky_sources(
                     let is_target = targets.contains(&chunk_pos);
 
                     for y in (0..CHUNK_SIZE).rev() {
-                        let block = chunk.blocks[x][z][y];
-                        if !block.is_transparent_to_sky_light() {
+                        let meta = chunk.hot_meta_xyz(x, y, z);
+                        if meta.light_opacity >= 15 {
                             if !found_highest {
                                 highest = (chunk_y * CHUNK_ISIZE + y as i32) as u8;
                                 found_highest = true;
@@ -204,7 +202,7 @@ fn seed_region_sky_sources(
                             continue;
                         }
 
-                        current_sky = current_sky.saturating_sub(block.light_opacity());
+                        current_sky = current_sky.saturating_sub(meta.light_opacity);
                         if current_sky == 0 || !is_target {
                             continue;
                         }
@@ -241,12 +239,12 @@ fn seed_region_sky_sources(
                         continue;
                     }
 
-                    let block = chunk.get_block(local);
-                    if !block.is_transparent_to_sky_light() {
+                    let cell = chunk.get_cell(local);
+                    if !cell.is_transparent_to_sky_light() {
                         continue;
                     }
 
-                    let attenuation = block.light_opacity().max(1);
+                    let attenuation = cell.light_opacity().max(1);
                     let mut best = current;
                     for &offset in &DIRECTION_OFFSETS {
                         let (n_chunk, n_local) = neighbor_chunk_local(chunk_pos, local, offset);
@@ -289,12 +287,12 @@ fn seed_region_block_sources(
         for x in 0..CHUNK_SIZE {
             for z in 0..CHUNK_SIZE {
                 for y in 0..CHUNK_SIZE {
-                    let local = uvec3(x as u32, y as u32, z as u32);
-                    let emission = chunk.get_block(local).light_emission();
+                    let emission = chunk.hot_meta_xyz(x, y, z).light_emission;
                     if emission == 0 {
                         continue;
                     }
 
+                    let local = uvec3(x as u32, y as u32, z as u32);
                     if write_region_block_light(lights, targets, chunk_pos, local, emission) {
                         queue.push_back(IncreaseEntry {
                             chunk: chunk_pos,

@@ -1,4 +1,4 @@
-use crate::block::BlockType;
+use crate::{block::BlockType, world::chunk::ChunkCell};
 
 use super::*;
 use bevy::time::TimeUpdateStrategy;
@@ -59,15 +59,17 @@ fn placing_air_is_ignored() {
     let mut chunk = Chunk::default();
     let pos = uvec3(1, 2, 3);
 
-    assert!(chunk.place_block(pos, BlockType::Air).is_none());
-    assert_eq!(chunk.get_block(pos), BlockType::Air);
+    assert!(chunk.place_cell(pos, ChunkCell::EMPTY).is_none());
+    assert_eq!(chunk.get_cell(pos), ChunkCell::EMPTY);
 }
 
 #[test]
 fn water_placement_does_not_require_actor_clearance() {
-    assert!(!placement_requires_actor_clearance(BlockType::Water));
-    assert!(placement_requires_actor_clearance(BlockType::Stone));
-    assert!(placement_requires_actor_clearance(BlockType::Ice));
+    assert!(!placement_requires_actor_clearance(
+        ChunkCell::water_source()
+    ));
+    assert!(placement_requires_actor_clearance(BlockType::Stone.into()));
+    assert!(placement_requires_actor_clearance(BlockType::Ice.into()));
 }
 
 fn app_with_request_emitter() -> App {

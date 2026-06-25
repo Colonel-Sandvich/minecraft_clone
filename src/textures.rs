@@ -12,8 +12,8 @@ use image::{RgbaImage, imageops::FilterType};
 use strum::IntoEnumIterator;
 
 use crate::block::{
-    BlockTextureAnimation, BlockTextureLayer, BlockTextureMap, BlockType,
-    block_and_side_to_texture_path,
+    BlockTextureAnimation, BlockTextureLayer, BlockTextureMap, BlockType, WATER_RENDER_ID,
+    render_id_for_block, render_id_to_texture_path,
 };
 use crate::quad::Direction;
 
@@ -272,12 +272,18 @@ fn loaded_images_by_path(
 
 fn used_terrain_texture_paths() -> Vec<&'static str> {
     let mut paths = Vec::new();
-    for block in BlockType::iter().filter(|block| block.is_rendered()) {
+    for block in BlockType::iter() {
         for side in Direction::iter() {
-            let path = block_and_side_to_texture_path(block, side);
+            let path = render_id_to_texture_path(render_id_for_block(block), side);
             if !paths.contains(&path) {
                 paths.push(path);
             }
+        }
+    }
+    for side in Direction::iter() {
+        let path = render_id_to_texture_path(WATER_RENDER_ID, side);
+        if !paths.contains(&path) {
+            paths.push(path);
         }
     }
     paths

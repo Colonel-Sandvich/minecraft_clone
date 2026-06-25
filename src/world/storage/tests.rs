@@ -86,7 +86,7 @@ fn test_turso_store(metadata: &WorldMetadata) -> TestTursoStore {
 
 fn chunk_with_block(block: BlockType) -> Chunk {
     let mut chunk = Chunk::default();
-    chunk.blocks[0][0][0] = block;
+    chunk.set_cell_xyz(0, 0, 0, block.into());
     chunk
 }
 
@@ -100,7 +100,7 @@ fn sqlite_store_roundtrips_full_chunks() {
     let store = test_sqlite_store(&metadata);
     let pos = ivec3(-2, 1, 3);
     let mut chunk = chunk_with_block(BlockType::Grass);
-    chunk.blocks[15][15][15] = BlockType::OakLeaves;
+    chunk.set_cell_xyz(15, 15, 15, BlockType::OakLeaves.into());
 
     store.save_chunk(pos, &chunk, &default_heightmap()).unwrap();
 
@@ -187,7 +187,7 @@ fn turso_store_roundtrips_full_chunks() {
     let store = test_turso_store(&metadata);
     let pos = ivec3(-2, 1, 3);
     let mut chunk = chunk_with_block(BlockType::Grass);
-    chunk.blocks[15][15][15] = BlockType::OakLeaves;
+    chunk.set_cell_xyz(15, 15, 15, BlockType::OakLeaves.into());
 
     store.save_chunk(pos, &chunk, &default_heightmap()).unwrap();
 

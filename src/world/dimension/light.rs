@@ -162,7 +162,8 @@ mod tests {
     use crate::{
         block::BlockType,
         world::chunk::{
-            CHUNK_SIZE, ChunkNeedsLightRebuild, ChunkNeedsLightUpload, ChunkNeedsMeshRebuild,
+            CHUNK_SIZE, ChunkCell, ChunkNeedsLightRebuild, ChunkNeedsLightUpload,
+            ChunkNeedsMeshRebuild,
         },
     };
 
@@ -177,9 +178,7 @@ mod tests {
     }
 
     fn solid_chunk(block: BlockType) -> Chunk {
-        let mut chunk = Chunk::default();
-        chunk.blocks = [[[block; CHUNK_SIZE]; CHUNK_SIZE]; CHUNK_SIZE];
-        chunk
+        Chunk::filled(block.into())
     }
 
     fn heightmap_with(value: u8) -> ChunkHeightmap {
@@ -207,7 +206,7 @@ mod tests {
         let mut upper = Chunk::default();
         for x in 0..CHUNK_SIZE {
             for z in 0..CHUNK_SIZE {
-                upper.blocks[x][z][0] = BlockType::Stone;
+                upper.set_cell_xyz(x, 0, z, BlockType::Stone.into());
             }
         }
         let upper_entity = app
@@ -304,7 +303,7 @@ mod tests {
             .id();
 
         let mut right_chunk = Chunk::default();
-        right_chunk.blocks[0][8][8] = BlockType::Glowstone;
+        right_chunk.set_cell_xyz(0, 8, 8, BlockType::Glowstone.into());
         let right_entity = app
             .world_mut()
             .spawn((
@@ -330,7 +329,7 @@ mod tests {
             .entity_mut(right_entity)
             .get_mut::<Chunk>()
             .unwrap()
-            .blocks[0][8][8] = BlockType::Air;
+            .set_cell_xyz(0, 8, 8, ChunkCell::EMPTY);
         app.world_mut()
             .entity_mut(left_entity)
             .insert(ChunkNeedsLightRebuild);

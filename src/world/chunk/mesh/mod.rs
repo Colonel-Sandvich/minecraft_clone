@@ -1,3 +1,4 @@
+pub mod binary;
 mod blocks;
 pub mod vertex_pulling;
 
@@ -9,10 +10,12 @@ pub use vertex_pulling::{
 use std::sync::Arc;
 
 use bevy::{camera::primitives::Aabb, platform::collections::HashMap, prelude::*, utils::Parallel};
-use strum::{EnumCount, IntoEnumIterator};
+use strum::IntoEnumIterator;
 
 use crate::block::{
-    BlockMaterialLayer, BlockTextureLayer, BlockTextureMap, BlockType, block_to_colour,
+    BLOCK_FLAG_CUTOUT, BLOCK_FLAG_EMITS_INTERNAL_FACES, BLOCK_FLAG_FULL_CUBE, BLOCK_FLAG_RENDERED,
+    BLOCK_FLAG_TRANSLUCENT, BlockMaterialLayer, BlockTextureLayer, BlockTextureMap, BlockType,
+    RENDER_ID_COUNT, WATER_RENDER_ID, from_render_id, render_id_for_block, render_id_to_colour,
 };
 use crate::quad::Direction;
 use crate::textures::{BlockTextures, TextureState};
@@ -26,13 +29,7 @@ pub(crate) const PADDED_CHUNK_SIZE: usize = CHUNK_SIZE + 2;
 pub(crate) const PADDED_CHUNK_VOLUME: usize =
     PADDED_CHUNK_SIZE * PADDED_CHUNK_SIZE * PADDED_CHUNK_SIZE;
 pub(crate) const PADDED_CHUNK_LAYER_SIZE: usize = PADDED_CHUNK_SIZE * PADDED_CHUNK_SIZE;
-pub(crate) const BLOCK_TYPE_COUNT: usize = BlockType::COUNT;
 pub(crate) const DIRECTION_COUNT: usize = 6;
-pub(crate) const BLOCK_FLAG_RENDERED: u8 = 1 << 0;
-pub(crate) const BLOCK_FLAG_FULL_CUBE: u8 = 1 << 1;
-pub(crate) const BLOCK_FLAG_EMITS_INTERNAL_FACES: u8 = 1 << 2;
-pub(crate) const BLOCK_FLAG_CUTOUT: u8 = 1 << 3;
-pub(crate) const BLOCK_FLAG_TRANSLUCENT: u8 = 1 << 4;
 pub(crate) const DIRECTION_INDEX_OFFSETS: [isize; DIRECTION_COUNT] = [
     -1,
     1,
@@ -41,24 +38,15 @@ pub(crate) const DIRECTION_INDEX_OFFSETS: [isize; DIRECTION_COUNT] = [
     -(PADDED_CHUNK_SIZE as isize),
     PADDED_CHUNK_SIZE as isize,
 ];
-pub(crate) const BLOCK_MESH_FLAGS: [u8; BLOCK_TYPE_COUNT] = [
-    0,
-    BLOCK_FLAG_RENDERED | BLOCK_FLAG_FULL_CUBE,
-    BLOCK_FLAG_RENDERED | BLOCK_FLAG_FULL_CUBE,
-    BLOCK_FLAG_RENDERED | BLOCK_FLAG_FULL_CUBE,
-    BLOCK_FLAG_RENDERED | BLOCK_FLAG_FULL_CUBE,
-    BLOCK_FLAG_RENDERED | BLOCK_FLAG_CUTOUT,
-    BLOCK_FLAG_RENDERED | BLOCK_FLAG_FULL_CUBE,
-    BLOCK_FLAG_RENDERED | BLOCK_FLAG_CUTOUT | BLOCK_FLAG_EMITS_INTERNAL_FACES,
-    BLOCK_FLAG_RENDERED | BLOCK_FLAG_FULL_CUBE,
-    BLOCK_FLAG_RENDERED | BLOCK_FLAG_TRANSLUCENT,
-    BLOCK_FLAG_RENDERED | BLOCK_FLAG_TRANSLUCENT,
-];
 pub(crate) const VERTEX_AO: [u32; 8] = [3, 2, 2, 0, 2, 1, 1, 0];
 
 #[inline(always)]
-pub(crate) fn block_mesh_flags(block: BlockType) -> u8 {
-    unsafe { *BLOCK_MESH_FLAGS.get_unchecked(block as usize) }
+pub(crate) fn block_mesh_flags(rid: u16) -> u8 {
+    match rid {
+        0 => 0,
+        WATER_RENDER_ID => BLOCK_FLAG_RENDERED | BLOCK_FLAG_TRANSLUCENT,
+        _ => BlockType::from_repr(rid - 1).unwrap().mesh_flags(),
+    }
 }
 
 #[inline(always)]
@@ -130,30 +118,33 @@ struct ChunkMaterialLayerMarker(BlockMaterialLayer);
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct BlockMeshTables {
-    pub(crate) texture_layers: [[BlockTextureLayer; DIRECTION_COUNT]; BLOCK_TYPE_COUNT],
-    pub(crate) texture_frame_counts: [[u32; DIRECTION_COUNT]; BLOCK_TYPE_COUNT],
-    pub(crate) colors: [[Vec4; DIRECTION_COUNT]; BLOCK_TYPE_COUNT],
+    pub(crate) texture_layers: [[BlockTextureLayer; DIRECTION_COUNT]; RENDER_ID_COUNT],
+    pub(crate) texture_frame_counts: [[u32; DIRECTION_COUNT]; RENDER_ID_COUNT],
+    pub(crate) colors: [[Vec4; DIRECTION_COUNT]; RENDER_ID_COUNT],
 }
 
 impl BlockMeshTables {
     pub(crate) fn from_texture_map(block_texture_map: &BlockTextureMap) -> Self {
-        let mut texture_layers =
-            [[BlockTextureLayer::default(); DIRECTION_COUNT]; BLOCK_TYPE_COUNT];
-        let mut texture_frame_counts = [[1u32; DIRECTION_COUNT]; BLOCK_TYPE_COUNT];
-        let mut colors = [[Vec4::ZERO; DIRECTION_COUNT]; BLOCK_TYPE_COUNT];
+        let mut texture_layers = [[BlockTextureLayer::default(); DIRECTION_COUNT]; RENDER_ID_COUNT];
+        let mut texture_frame_counts = [[1u32; DIRECTION_COUNT]; RENDER_ID_COUNT];
+        let mut colors = [[Vec4::ZERO; DIRECTION_COUNT]; RENDER_ID_COUNT];
 
         for block in BlockType::iter() {
-            let block_index = block as usize;
-            if !block.is_rendered() {
-                continue;
-            };
-
+            let rid = render_id_for_block(block) as usize;
             for (side_index, side) in Direction::iter().enumerate() {
                 let animation = block_texture_map.block_to_texture_animation(block, side);
-                texture_layers[block_index][side_index] = animation.base_layer();
-                texture_frame_counts[block_index][side_index] = animation.frame_count();
-                colors[block_index][side_index] = block_to_colour(block, side);
+                texture_layers[rid][side_index] = animation.base_layer();
+                texture_frame_counts[rid][side_index] = animation.frame_count();
+                colors[rid][side_index] = render_id_to_colour(rid as u16, side);
             }
+        }
+
+        let water = WATER_RENDER_ID as usize;
+        for (side_index, side) in Direction::iter().enumerate() {
+            let animation = block_texture_map.render_id_to_texture_animation(WATER_RENDER_ID, side);
+            texture_layers[water][side_index] = animation.base_layer();
+            texture_frame_counts[water][side_index] = animation.frame_count();
+            colors[water][side_index] = render_id_to_colour(WATER_RENDER_ID, side);
         }
 
         Self {
@@ -176,6 +167,7 @@ impl Plugin for ChunkMeshPlugin {
     }
 }
 
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn rebuild_chunk_meshes(
     mut commands: Commands,
     block_textures: Res<BlockTextures>,
@@ -199,7 +191,7 @@ fn rebuild_chunk_meshes(
         .collect::<HashMap<_, _>>();
 
     let tables = BlockMeshTables::from_texture_map(&block_texture_map);
-    let texture_layers: Vec<u32> = (0..BLOCK_TYPE_COUNT)
+    let texture_layers: Vec<u32> = (0..RENDER_ID_COUNT)
         .flat_map(|bt| {
             (0..DIRECTION_COUNT).map(move |dir| {
                 pack_texture_layer(
@@ -209,7 +201,7 @@ fn rebuild_chunk_meshes(
             })
         })
         .collect();
-    let tint_colors: Vec<[f32; 4]> = (0..BLOCK_TYPE_COUNT)
+    let tint_colors: Vec<[f32; 4]> = (0..RENDER_ID_COUNT)
         .flat_map(|bt| {
             (0..DIRECTION_COUNT).map(move |dir| {
                 let c = tables.colors[bt][dir];
@@ -217,10 +209,13 @@ fn rebuild_chunk_meshes(
             })
         })
         .collect();
-    let emission_factors: Vec<f32> = (0..BLOCK_TYPE_COUNT)
-        .flat_map(|bt| {
-            let block = BlockType::from_repr(bt as u16).unwrap_or(BlockType::Air);
-            let emission = f32::from(block.light_emission()) / 15.0;
+    let emission_factors: Vec<f32> = (0..RENDER_ID_COUNT)
+        .flat_map(|rid| {
+            let emission = if rid == 0 || rid == WATER_RENDER_ID as usize {
+                0.0
+            } else {
+                f32::from(from_render_id(rid as u16).unwrap().light_emission()) / 15.0
+            };
             (0..DIRECTION_COUNT).map(move |_| emission)
         })
         .collect();
@@ -241,7 +236,7 @@ fn rebuild_chunk_meshes(
         || build_queue.borrow_local_mut(),
         |builds, (chunk_pos, chunk_entity)| {
             let blocks = ChunkMeshBlocks::from_chunks(chunk_pos.0, &chunks_by_pos);
-            let layers = vertex_pulling::build_descriptors(&blocks);
+            let layers = binary::build_descriptors_hybrid(&blocks);
             builds.push(VpChunkBuild {
                 entity: chunk_entity,
                 chunk_pos: chunk_pos.0,
@@ -284,6 +279,7 @@ struct VpChunkBuild {
     layers: Vec<(BlockMaterialLayer, Vec<vertex_pulling::FaceDescriptor>)>,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn update_chunk_vp_children(
     commands: &mut Commands,
     vp_children_q: &Query<(Entity, &ChunkMaterialLayerMarker), With<VertexPullingMesh>>,
@@ -421,9 +417,9 @@ const fn chunk_render_aabb() -> Aabb {
 
 #[inline(always)]
 pub(crate) fn should_emit_face_from_flags(
-    block: BlockType,
+    cell: u16,
     block_flags: u8,
-    neighbor: BlockType,
+    neighbor: u16,
     neighbor_flags: u8,
 ) -> bool {
     if neighbor_flags & BLOCK_FLAG_RENDERED == 0 {
@@ -434,11 +430,101 @@ pub(crate) fn should_emit_face_from_flags(
         return false;
     }
 
-    if block == neighbor && block_flags & BLOCK_FLAG_FULL_CUBE == 0 {
+    if cell == neighbor && block_flags & BLOCK_FLAG_FULL_CUBE == 0 {
         return block_flags & BLOCK_FLAG_EMITS_INTERNAL_FACES != 0;
     }
 
     true
+}
+
+/// Translucent-specific face culling (water, ice).
+///
+/// Same rules as the scalar pass except translucent blocks are culled by
+/// full-cube face occluders (stone, dirt, grass, etc.). Same-fluid-type
+/// faces are also culled.
+#[inline(always)]
+pub(crate) fn should_emit_translucent_face(
+    cell: u16,
+    _block_flags: u8,
+    neighbor: u16,
+    neighbor_flags: u8,
+) -> bool {
+    if neighbor_flags & BLOCK_FLAG_RENDERED == 0 {
+        return true;
+    }
+
+    if neighbor_flags & BLOCK_FLAG_FULL_CUBE != 0 {
+        return false;
+    }
+
+    if cell == neighbor {
+        return false;
+    }
+
+    true
+}
+
+/// Compute the 4 corner water heights for a water cell's top surface.
+///
+/// Each corner height is the average of the water levels in the four cells
+/// that meet at that corner (Minecraft-style corner interpolation). This
+/// ensures adjacent water blocks compute the same height for shared vertices,
+/// preventing surface gaps.
+///
+/// Returns (h00, h10, h01, h11) where:
+///   h00 = corner at (x+0, z+0)  h10 = corner at (x+1, z+0)
+///   h01 = corner at (x+0, z+1)  h11 = corner at (x+1, z+1)
+pub(crate) fn water_corner_heights(
+    self_level: u8,
+    blocks: &ChunkMeshBlocks,
+    padded_index: usize,
+) -> (u32, u32, u32, u32) {
+    let base = padded_index as isize;
+    let pcs = PADDED_CHUNK_SIZE as isize;
+    let n1 = base - 1;
+    let p1 = base + 1;
+    let nz = base - pcs;
+    let pz = base + pcs;
+    let h00 = water_corner_4(self_level, blocks, n1, nz, n1 - pcs);
+    let h10 = water_corner_4(self_level, blocks, p1, nz, p1 - pcs);
+    let h01 = water_corner_4(self_level, blocks, n1, pz, n1 + pcs);
+    let h11 = water_corner_4(self_level, blocks, p1, pz, p1 + pcs);
+    (h00 as u32, h10 as u32, h01 as u32, h11 as u32)
+}
+
+/// Average of self_level + up to 3 other cells at the given offsets.
+/// Only cells containing water contribute; non-water neighbours are skipped.
+fn water_corner_4(self_level: u8, blocks: &ChunkMeshBlocks, o1: isize, o2: isize, o3: isize) -> u8 {
+    let mut sum = self_level as u32;
+    let mut count = 1u32;
+    for &offset in &[o1, o2, o3] {
+        let cell = unsafe { *blocks.blocks.get_unchecked(offset as usize) };
+        if cell == WATER_RENDER_ID {
+            sum += blocks.get_fluid_level(offset as usize) as u32;
+            count += 1;
+        }
+    }
+    ((sum + count / 2) / count) as u8
+}
+
+/// Return the (lo, hi) lower-water corner height pair for a given side-index
+/// bottom vertex.  lo = corner at qi=0 in quad space, hi = corner at qi=1.
+/// For the y-facing indices (down=2, up=3) both values are zero.
+#[inline(always)]
+pub(crate) fn water_below_pair(
+    side_index: usize,
+    bh00: u32,
+    bh10: u32,
+    bh01: u32,
+    bh11: u32,
+) -> (u32, u32) {
+    match side_index {
+        0 => (bh00, bh01), // -X / Left
+        1 => (bh10, bh11), // +X / Right
+        4 => (bh00, bh10), // -Z / Back
+        5 => (bh01, bh11), // +Z / Forward
+        _ => (0, 0),       // DOWN, UP
+    }
 }
 
 #[inline(always)]
@@ -529,7 +615,7 @@ pub(crate) fn face_ao_from_indices(
 }
 
 #[inline(always)]
-fn vertex_ao_key(s1: u32, s2: u32, corner: u32) -> u32 {
+pub(crate) fn vertex_ao_key(s1: u32, s2: u32, corner: u32) -> u32 {
     VERTEX_AO[(s1 | (s2 << 1) | (corner << 2)) as usize]
 }
 

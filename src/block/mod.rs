@@ -30,8 +30,7 @@ impl Plugin for BlockPlugin {
 #[strum(serialize_all = "snake_case")]
 pub enum BlockType {
     #[default]
-    Air = 0,
-    Grass,
+    Grass = 0,
     Dirt,
     Stone,
     Sand,
@@ -39,9 +38,68 @@ pub enum BlockType {
     OakLog,
     OakLeaves,
     Glowstone,
-    Water,
     Ice,
 }
+
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct BlockStateId(pub u32);
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct HotBlockStateMeta {
+    pub render_id: u16,
+    pub mesh_flags: u8,
+    pub light_opacity: u8,
+    pub light_emission: u8,
+    pub fluid_level: u8,
+}
+
+impl HotBlockStateMeta {
+    pub const AIR: Self = Self {
+        render_id: 0,
+        mesh_flags: 0,
+        light_opacity: 0,
+        light_emission: 0,
+        fluid_level: 0,
+    };
+
+    pub const fn for_block(block: BlockType) -> Self {
+        Self {
+            render_id: render_id_for_block(block),
+            mesh_flags: block.mesh_flags(),
+            light_opacity: block.light_opacity(),
+            light_emission: block.light_emission(),
+            fluid_level: 0,
+        }
+    }
+
+    pub const fn water(level: u8) -> Self {
+        Self {
+            render_id: WATER_RENDER_ID,
+            mesh_flags: BLOCK_FLAG_RENDERED | BLOCK_FLAG_TRANSLUCENT,
+            light_opacity: 0,
+            light_emission: 0,
+            fluid_level: level,
+        }
+    }
+}
+
+pub const fn render_id_for_block(block: BlockType) -> u16 {
+    block as u16 + 1
+}
+
+pub fn from_render_id(rid: u16) -> Option<BlockType> {
+    BlockType::from_repr(rid.checked_sub(1)?)
+}
+
+pub const WATER_RENDER_ID: u16 = BlockType::COUNT as u16 + 1;
+pub const RENDER_ID_COUNT: usize = BlockType::COUNT + 2;
+
+pub const BLOCK_FLAG_RENDERED: u8 = 1 << 0;
+pub const BLOCK_FLAG_FULL_CUBE: u8 = 1 << 1;
+pub const BLOCK_FLAG_EMITS_INTERNAL_FACES: u8 = 1 << 2;
+pub const BLOCK_FLAG_CUTOUT: u8 = 1 << 3;
+pub const BLOCK_FLAG_TRANSLUCENT: u8 = 1 << 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BlockRenderLayer {
@@ -95,7 +153,7 @@ impl BlockRenderProfile {
 impl BlockType {
     #[inline(always)]
     pub const fn is_rendered(self) -> bool {
-        !matches!(self, Self::Air)
+        true
     }
 
     #[inline(always)]
@@ -117,8 +175,7 @@ impl BlockType {
     #[inline(always)]
     pub const fn light_opacity(self) -> u8 {
         match self {
-            Self::Air => 0,
-            Self::Water | Self::Ice => 0,
+            Self::Ice => 0,
             Self::Glass => 0,
             Self::OakLeaves => 1,
             _ => 15,
@@ -128,7 +185,7 @@ impl BlockType {
     #[inline(always)]
     pub const fn is_transparent_to_sky_light(self) -> bool {
         match self {
-            Self::Air | Self::Glass | Self::OakLeaves | Self::Water | Self::Ice => true,
+            Self::Glass | Self::OakLeaves | Self::Ice => true,
             _ => false,
         }
     }
@@ -147,7 +204,7 @@ impl BlockType {
     pub const fn material_layer_index(self) -> usize {
         match self {
             Self::Glass | Self::OakLeaves => 1,
-            Self::Water | Self::Ice => 2,
+            Self::Ice => 2,
             _ => 0,
         }
     }
@@ -155,7 +212,6 @@ impl BlockType {
     pub const fn render_profile(self) -> Option<BlockRenderProfile> {
         use BlockType::*;
         match self {
-            Air => None,
             Glass => Some(BlockRenderProfile {
                 layer: BlockRenderLayer::Cutout,
                 occlusion: FaceOcclusion::None,
@@ -164,7 +220,7 @@ impl BlockType {
                 layer: BlockRenderLayer::Cutout,
                 occlusion: FaceOcclusion::None,
             }),
-            Water | Ice => Some(BlockRenderProfile {
+            Ice => Some(BlockRenderProfile {
                 layer: BlockRenderLayer::Translucent,
                 occlusion: FaceOcclusion::None,
             }),
@@ -175,20 +231,12 @@ impl BlockType {
         }
     }
 
-    pub fn is_solid(&self) -> bool {
-        use BlockType::*;
-        match self {
-            Air | Water => false,
-            _ => true,
-        }
+    pub const fn is_solid(self) -> bool {
+        true
     }
 
     pub const fn is_placeable(self) -> bool {
-        !matches!(self, Self::Air)
-    }
-
-    pub fn can_be_replaced_by_placement(self) -> bool {
-        !self.is_solid()
+        true
     }
 
     pub const fn storage_id(self) -> u16 {
@@ -208,6 +256,22 @@ impl BlockType {
     pub fn from_name(name: &str) -> Option<Self> {
         use std::str::FromStr;
         Self::from_str(name).ok()
+    }
+
+    pub const fn mesh_flags(self) -> u8 {
+        let mut f = BLOCK_FLAG_RENDERED;
+        if self.is_full_cube() {
+            f |= BLOCK_FLAG_FULL_CUBE;
+        }
+        if self.emits_internal_faces() {
+            f |= BLOCK_FLAG_EMITS_INTERNAL_FACES;
+        }
+        f |= match self.material_layer_index() {
+            1 => BLOCK_FLAG_CUTOUT,
+            2 => BLOCK_FLAG_TRANSLUCENT,
+            _ => 0,
+        };
+        f
     }
 }
 
@@ -251,11 +315,24 @@ impl BlockTextureAnimation {
 #[derive(Resource)]
 pub struct BlockTextureMap(pub HashMap<String, BlockTextureAnimation>);
 
+pub fn render_id_to_texture_path(rid: u16, side: Direction) -> &'static str {
+    use Direction::*;
+    if rid == WATER_RENDER_ID {
+        return match side {
+            Up | Down => "textures/block/water_still.png",
+            _ => "textures/block/water_flow.png",
+        };
+    }
+    block_and_side_to_texture_path(
+        from_render_id(rid).expect("invalid render_id for texture"),
+        side,
+    )
+}
+
 pub fn block_and_side_to_texture_path(block: BlockType, side: Direction) -> &'static str {
     use BlockType::*;
     use Direction::*;
     match block {
-        Air => unreachable!(),
         Dirt => "textures/block/dirt.png",
         Grass => match side {
             Up => "textures/block/grass_block_top.png",
@@ -271,7 +348,6 @@ pub fn block_and_side_to_texture_path(block: BlockType, side: Direction) -> &'st
         },
         OakLeaves => "textures/block/oak_leaves.png",
         Glowstone => "textures/block/glowstone.png",
-        Water => "textures/block/water_still.png",
         Ice => "textures/block/ice.png",
     }
 }
@@ -282,16 +358,38 @@ impl BlockTextureMap {
         block: BlockType,
         side: Direction,
     ) -> BlockTextureAnimation {
-        let path = block_and_side_to_texture_path(block, side);
+        self.render_id_to_texture_animation(render_id_for_block(block), side)
+    }
+
+    pub fn render_id_to_texture_animation(
+        &self,
+        rid: u16,
+        side: Direction,
+    ) -> BlockTextureAnimation {
+        let path = render_id_to_texture_path(rid, side);
         self.0
             .get(path)
             .copied()
-            .unwrap_or_else(|| panic!("missing texture for {block:?} {side:?}: {path}"))
+            .unwrap_or_else(|| panic!("missing texture for rid={rid} {side:?}: {path}"))
     }
 
     pub fn block_to_texture_layer(&self, block: BlockType, side: Direction) -> BlockTextureLayer {
         self.block_to_texture_animation(block, side).base_layer()
     }
+
+    pub fn render_id_to_texture_layer(&self, rid: u16, side: Direction) -> BlockTextureLayer {
+        self.render_id_to_texture_animation(rid, side).base_layer()
+    }
+}
+
+pub fn render_id_to_colour(rid: u16, side: Direction) -> Vec4 {
+    if rid == WATER_RENDER_ID {
+        return Srgba::hex("55B8FF").unwrap().with_alpha(0.62).to_vec4();
+    }
+    block_to_colour(
+        from_render_id(rid).expect("invalid render_id for colour"),
+        side,
+    )
 }
 
 pub fn block_to_colour(block: BlockType, side: Direction) -> Vec4 {
@@ -304,7 +402,6 @@ pub fn block_to_colour(block: BlockType, side: Direction) -> Vec4 {
             _ => Srgba::WHITE,
         },
         OakLeaves => Srgba::hex("77AB2F").unwrap(),
-        Water => Srgba::hex("55B8FF").unwrap().with_alpha(0.62),
         _ => Srgba::WHITE,
     };
 
@@ -322,17 +419,15 @@ mod tests {
             assert_eq!(BlockType::from_storage_id(block.storage_id()), Some(block));
         }
 
-        assert_eq!(BlockType::Air.storage_id(), 0);
-        assert_eq!(BlockType::Grass.storage_id(), 1);
-        assert_eq!(BlockType::Dirt.storage_id(), 2);
-        assert_eq!(BlockType::Stone.storage_id(), 3);
-        assert_eq!(BlockType::Sand.storage_id(), 4);
-        assert_eq!(BlockType::Glass.storage_id(), 5);
-        assert_eq!(BlockType::OakLog.storage_id(), 6);
-        assert_eq!(BlockType::OakLeaves.storage_id(), 7);
-        assert_eq!(BlockType::Glowstone.storage_id(), 8);
-        assert_eq!(BlockType::Water.storage_id(), 9);
-        assert_eq!(BlockType::Ice.storage_id(), 10);
+        assert_eq!(BlockType::Grass.storage_id(), 0);
+        assert_eq!(BlockType::Dirt.storage_id(), 1);
+        assert_eq!(BlockType::Stone.storage_id(), 2);
+        assert_eq!(BlockType::Sand.storage_id(), 3);
+        assert_eq!(BlockType::Glass.storage_id(), 4);
+        assert_eq!(BlockType::OakLog.storage_id(), 5);
+        assert_eq!(BlockType::OakLeaves.storage_id(), 6);
+        assert_eq!(BlockType::Glowstone.storage_id(), 7);
+        assert_eq!(BlockType::Ice.storage_id(), 8);
     }
 
     #[test]
@@ -350,17 +445,11 @@ mod tests {
 
     #[test]
     fn water_is_translucent_non_solid_and_non_occluding() {
-        let profile = BlockType::Water.render_profile().unwrap();
-        assert_eq!(
-            profile,
-            BlockRenderProfile {
-                layer: BlockRenderLayer::Translucent,
-                occlusion: FaceOcclusion::None,
-            }
-        );
+        let profile = BlockRenderProfile {
+            layer: BlockRenderLayer::Translucent,
+            occlusion: FaceOcclusion::None,
+        };
         assert_eq!(profile.material_layer(), BlockMaterialLayer::Translucent);
-        assert!(!BlockType::Water.is_solid());
-        assert!(BlockType::Water.is_placeable());
     }
 
     #[test]
@@ -401,7 +490,6 @@ impl BlockPos {
 pub enum BlockUpdateKind {
     Break,
     Place(BlockType),
-    // Replace(BlockType, BlockType), // (old, new) ?
 }
 
 #[derive(Message)]

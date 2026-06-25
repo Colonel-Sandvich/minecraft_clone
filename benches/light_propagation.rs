@@ -8,7 +8,7 @@ use minecraft_clone::{
     world::{
         WorldMetadata,
         chunk::{
-            CHUNK_SIZE, Chunk,
+            CHUNK_SIZE, Chunk, ChunkCell,
             light::{
                 ChunkHeightmap, ChunkLight, clear_stale_neighbor_block_light, compute_block_light,
                 compute_light_region, compute_sky_light, pull_neighbor_block_light,
@@ -25,15 +25,7 @@ fn empty_chunk() -> Chunk {
 }
 
 fn solid_chunk(block: BlockType) -> Chunk {
-    let mut chunk = Chunk::default();
-    for x in 0..CHUNK_SIZE {
-        for z in 0..CHUNK_SIZE {
-            for y in 0..CHUNK_SIZE {
-                chunk.blocks[x][z][y] = block;
-            }
-        }
-    }
-    chunk
+    Chunk::filled(block.into())
 }
 
 fn surface_terrain_chunk() -> Chunk {
@@ -47,7 +39,7 @@ fn checkerboard_leaves_chunk() -> Chunk {
         for z in 0..CHUNK_SIZE {
             for y in 0..CHUNK_SIZE {
                 if (x + y + z) % 2 == 0 {
-                    chunk.blocks[x][z][y] = BlockType::OakLeaves;
+                    chunk.set_cell_xyz(x, y, z, BlockType::OakLeaves.into());
                 }
             }
         }
@@ -61,7 +53,7 @@ fn glowstone_lattice_chunk() -> Chunk {
         for z in 0..CHUNK_SIZE {
             for y in 0..CHUNK_SIZE {
                 if x % 4 == 0 && z % 4 == 0 && y % 4 == 0 {
-                    chunk.blocks[x][z][y] = BlockType::Glowstone;
+                    chunk.set_cell_xyz(x, y, z, BlockType::Glowstone.into());
                 }
             }
         }
@@ -81,7 +73,7 @@ fn hollow_chamber_chunk() -> Chunk {
                     || y == 0
                     || y == CHUNK_SIZE - 1;
                 if is_surface {
-                    chunk.blocks[x][z][y] = BlockType::Stone;
+                    chunk.set_cell_xyz(x, y, z, BlockType::Stone.into());
                 }
             }
         }
@@ -99,17 +91,17 @@ fn cave_chunk() -> Chunk {
                 let dist = (cx + cz).sqrt();
                 let wave = ((z as f32 * 1.5).sin() * 3.0 + 8.0) as i32;
                 if dist < 5.5 && (y as i32 - wave).abs() < 3 {
-                    chunk.blocks[x][z][y] = BlockType::Air;
+                    chunk.set_cell_xyz(x, y, z, ChunkCell::EMPTY);
                 }
                 let wave2 = ((x as f32 * 1.3).cos() * 3.0 + 6.0) as i32;
                 if (y as i32 - wave2).abs() < 2 && z > 2 && z < 13 && x > 1 && x < 14 {
-                    chunk.blocks[x][z][y] = BlockType::Air;
+                    chunk.set_cell_xyz(x, y, z, ChunkCell::EMPTY);
                 }
             }
         }
     }
-    chunk.blocks[4][7][8] = BlockType::Glowstone;
-    chunk.blocks[11][10][8] = BlockType::Glowstone;
+    chunk.set_cell_xyz(4, 8, 7, BlockType::Glowstone.into());
+    chunk.set_cell_xyz(11, 8, 10, BlockType::Glowstone.into());
     chunk
 }
 
@@ -117,18 +109,19 @@ fn glass_column_chunk() -> Chunk {
     let mut chunk = Chunk::default();
     for x in 0..CHUNK_SIZE {
         for z in 0..CHUNK_SIZE {
-            chunk.blocks[x][z][0] = BlockType::Stone;
+            chunk.set_cell_xyz(x, 0, z, BlockType::Stone.into());
         }
     }
     for x in 0..CHUNK_SIZE {
         for z in 0..CHUNK_SIZE {
             for y in 1..CHUNK_SIZE {
                 if x % 3 == 0 && z % 3 == 0 {
-                    chunk.blocks[x][z][y] = if (y + x / 3 + z / 3) % 2 == 0 {
-                        BlockType::Glass
+                    let cell = if (y + x / 3 + z / 3) % 2 == 0 {
+                        BlockType::Glass.into()
                     } else {
-                        BlockType::OakLeaves
+                        BlockType::OakLeaves.into()
                     };
+                    chunk.set_cell_xyz(x, y, z, cell);
                 }
             }
         }

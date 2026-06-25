@@ -1,13 +1,15 @@
 use std::time::Duration;
 
 use avian3d::PhysicsPlugins;
+#[cfg(debug_assertions)]
+use bevy::render::settings::InstanceFlags;
 use bevy::{
     diagnostic::FrameTimeDiagnosticsPlugin,
     input::common_conditions::input_toggle_active,
     prelude::*,
     render::{
         RenderPlugin,
-        settings::{InstanceFlags, RenderCreation, WgpuSettings},
+        settings::{RenderCreation, WgpuSettings},
     },
 };
 use bevy_framepace::FramepacePlugin;
@@ -91,8 +93,11 @@ pub fn run() {
 }
 
 fn wgpu_settings() -> WgpuSettings {
+    #[allow(unused_mut)]
     let mut settings = WgpuSettings::default();
     #[cfg(debug_assertions)]
-    settings.instance_flags.insert(InstanceFlags::debugging());
+    {
+        settings.instance_flags.insert(InstanceFlags::debugging());
+    }
     settings
 }

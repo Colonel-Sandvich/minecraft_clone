@@ -26,9 +26,9 @@ pub fn compute_block_light(
     for x in 0..CHUNK_SIZE {
         for z in 0..CHUNK_SIZE {
             for y in 0..CHUNK_SIZE {
-                let pos = uvec3(x as u32, y as u32, z as u32);
-                let emission = center_chunk.get_block(pos).light_emission();
+                let emission = center_chunk.hot_meta_xyz(x, y, z).light_emission;
                 if emission > 0 {
+                    let pos = uvec3(x as u32, y as u32, z as u32);
                     center_light.set_block_light(pos, emission);
                     increase_queue.push_back(IncreaseEntry {
                         chunk: center_pos,
@@ -81,8 +81,8 @@ pub fn pull_neighbor_block_light(
                     continue;
                 }
 
-                let center_block = center_chunk.get_block(center_local);
-                let attenuation = center_block.light_opacity().max(1);
+                let center_cell = center_chunk.get_cell(center_local);
+                let attenuation = center_cell.light_opacity().max(1);
                 let target = n_level.saturating_sub(attenuation);
 
                 let current = center_light.block_light(center_local);

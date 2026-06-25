@@ -22,8 +22,8 @@ fn insert_one(
     }
 
     let mut voxels = Vec::with_capacity(meta.rendered as usize);
-    for (block, (x, y, z)) in chunk.iter() {
-        if !block.is_solid() {
+    for (cell, (x, y, z)) in chunk.iter() {
+        if !cell.is_solid() {
             continue;
         }
 
@@ -68,6 +68,7 @@ fn rebuild_chunk_colliders(
 mod tests {
     use super::*;
     use crate::block::BlockType;
+    use crate::world::chunk::ChunkCell;
 
     #[test]
     fn collider_rebuild_marker_is_removed_after_rebuild() {
@@ -76,7 +77,7 @@ mod tests {
             .add_systems(Update, rebuild_chunk_colliders);
 
         let mut chunk = Chunk::default();
-        chunk.blocks[0][0][0] = BlockType::Stone;
+        chunk.set_cell_xyz(0, 0, 0, BlockType::Stone.into());
         let meta = chunk.compute_block_counts();
         let chunk_entity = app
             .world_mut()
@@ -106,8 +107,8 @@ mod tests {
             .add_systems(Update, rebuild_chunk_colliders);
 
         let mut chunk = Chunk::default();
-        chunk.blocks[0][0][0] = BlockType::Ice;
-        chunk.blocks[1][0][0] = BlockType::Water;
+        chunk.set_cell_xyz(0, 0, 0, BlockType::Ice.into());
+        chunk.set_cell_xyz(1, 0, 0, ChunkCell::water_source());
         let meta = chunk.compute_block_counts();
         let chunk_entity = app
             .world_mut()

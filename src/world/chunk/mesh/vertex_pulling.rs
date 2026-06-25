@@ -46,12 +46,13 @@ use bevy::{
     },
 };
 
-use crate::block::BlockMaterialLayer;
+use crate::block::{BLOCK_FLAG_TRANSLUCENT, BlockMaterialLayer, RENDER_ID_COUNT, WATER_RENDER_ID};
 
 use super::{
-    BLOCK_TYPE_COUNT, CHUNK_SIZE, ChunkMeshBlocks, DIRECTION_COUNT, DIRECTION_INDEX_OFFSETS,
-    block_mesh_flags, face_ao_key_from_indices, material_layer_index_from_flags,
-    padded_chunk_index, should_emit_face_from_flags,
+    CHUNK_SIZE, ChunkMeshBlocks, DIRECTION_COUNT, DIRECTION_INDEX_OFFSETS, block_mesh_flags,
+    face_ao_key_from_indices, material_layer_index_from_flags, padded_chunk_index,
+    should_emit_face_from_flags, should_emit_translucent_face, water_below_pair,
+    water_corner_heights,
 };
 
 // ---------------------------------------------------------------------------
@@ -72,6 +73,34 @@ impl FaceDescriptor {
             packed: (x << 27) | (z << 22) | (y << 17) | (face_dir << 14),
             info: block_type | (ao_key << 8),
         }
+    }
+
+    /// Pack 4 corner water heights (0–8 each) into the upper 16 bits of `info`.
+    /// Layout: `h00:4 h10:4 h01:4 h11:4` where:
+    ///   h00 = corner at (x+0, z+0)  h10 = corner at (x+1, z+0)
+    ///   h01 = corner at (x+0, z+1)  h11 = corner at (x+1, z+1)
+    /// Non-water blocks keep these at zero (the shader treats 0 as full-block).
+    #[inline]
+    pub fn with_corner_heights(mut self, h00: u32, h10: u32, h01: u32, h11: u32) -> Self {
+        self.info |= (h00 & 0xF) << 16 | (h10 & 0xF) << 20 | (h01 & 0xF) << 24 | (h11 & 0xF) << 28;
+        self
+    }
+
+    /// Set water surface heights for the cell directly below (0–8 each).
+    /// Two values because the bottom-left and bottom-right vertices of a side
+    /// face need to extend to different lower-surface heights along the shared
+    /// edge. Stored in `packed` bits 6-9 (lo) and 10-13 (hi).
+    #[inline]
+    pub fn with_water_below(mut self, lo: u32, hi: u32) -> Self {
+        self.packed |= ((lo & 0xF) << 6) | ((hi & 0xF) << 10);
+        self
+    }
+
+    /// Mark the UP face to use the flow texture instead of still (bit 0 of `packed`).
+    #[inline]
+    pub fn with_water_up_flowing(mut self) -> Self {
+        self.packed |= 1;
+        self
     }
 }
 
@@ -99,24 +128,66 @@ pub fn build_descriptors(
                 let block_flags = block_mesh_flags(block);
 
                 if block_flags != 0 {
+                    let is_water = block == WATER_RENDER_ID;
+
                     for side_index in 0..DIRECTION_COUNT {
                         let neighbor_index =
                             (padded_index as isize + DIRECTION_INDEX_OFFSETS[side_index]) as usize;
                         let neighbor = unsafe { *blocks.blocks.get_unchecked(neighbor_index) };
                         let neighbor_flags = block_mesh_flags(neighbor);
 
-                        if should_emit_face_from_flags(block, block_flags, neighbor, neighbor_flags)
-                        {
+                        let emit = if block_flags & BLOCK_FLAG_TRANSLUCENT != 0 {
+                            should_emit_translucent_face(
+                                block,
+                                block_flags,
+                                neighbor,
+                                neighbor_flags,
+                            )
+                        } else {
+                            should_emit_face_from_flags(
+                                block,
+                                block_flags,
+                                neighbor,
+                                neighbor_flags,
+                            )
+                        };
+
+                        if emit {
                             let ao_key = face_ao_key_from_indices(blocks, padded_index, side_index);
+                            let desc = FaceDescriptor::new(
+                                x as u32,
+                                y as u32,
+                                z as u32,
+                                side_index as u32,
+                                block as u32,
+                                ao_key,
+                            );
                             descriptors[material_layer_index_from_flags(block_flags)].push(
-                                FaceDescriptor::new(
-                                    x as u32,
-                                    y as u32,
-                                    z as u32,
-                                    side_index as u32,
-                                    block as u32,
-                                    ao_key,
-                                ),
+                                if is_water {
+                                    let level = blocks.get_fluid_level(padded_index);
+                                    let (h00, h10, h01, h11) =
+                                        water_corner_heights(level, blocks, padded_index);
+                                    let mut desc = desc.with_corner_heights(h00, h10, h01, h11);
+                                    let below_idx = (padded_index as isize
+                                        + DIRECTION_INDEX_OFFSETS[2])
+                                        as usize;
+                                    let below = unsafe { *blocks.blocks.get_unchecked(below_idx) };
+                                    if below == WATER_RENDER_ID {
+                                        let bl = blocks.get_fluid_level(below_idx);
+                                        let (bh00, bh10, bh01, bh11) =
+                                            water_corner_heights(bl, blocks, below_idx);
+                                        let (lo, hi) =
+                                            water_below_pair(side_index, bh00, bh10, bh01, bh11);
+                                        desc = desc.with_water_below(lo, hi);
+                                    }
+                                    // UP face uses flow texture unless all 4 corners are 8
+                                    if side_index == 3 && (h00 | h10 | h01 | h11) != 8 {
+                                        desc = desc.with_water_up_flowing();
+                                    }
+                                    desc
+                                } else {
+                                    desc
+                                },
                             );
                         }
                     }
@@ -637,12 +708,12 @@ impl Plugin for VertexPullingPlugin {
         let dummy_sampler = render_device.create_sampler(&SamplerDescriptor::default());
         let dummy_texture_layers = render_device.create_buffer_with_data(&BufferInitDescriptor {
             label: Some("vp_g0_dummy_texture_layers"),
-            contents: bytemuck::cast_slice(&vec![0u32; BLOCK_TYPE_COUNT * DIRECTION_COUNT]),
+            contents: bytemuck::cast_slice(&vec![0u32; RENDER_ID_COUNT * DIRECTION_COUNT]),
             usage: BufferUsages::STORAGE,
         });
         let dummy_tints = render_device.create_buffer_with_data(&BufferInitDescriptor {
             label: Some("vp_g0_dummy_tints"),
-            contents: bytemuck::cast_slice(&vec![0.0f32; BLOCK_TYPE_COUNT * DIRECTION_COUNT * 4]),
+            contents: bytemuck::cast_slice(&vec![0.0f32; RENDER_ID_COUNT * DIRECTION_COUNT * 4]),
             usage: BufferUsages::STORAGE,
         });
         let dummy_ao = render_device.create_buffer_with_data(&BufferInitDescriptor {
@@ -652,7 +723,7 @@ impl Plugin for VertexPullingPlugin {
         });
         let dummy_emissions = render_device.create_buffer_with_data(&BufferInitDescriptor {
             label: Some("vp_g0_dummy_emissions"),
-            contents: bytemuck::cast_slice(&vec![0.0f32; BLOCK_TYPE_COUNT * DIRECTION_COUNT]),
+            contents: bytemuck::cast_slice(&vec![0.0f32; RENDER_ID_COUNT * DIRECTION_COUNT]),
             usage: BufferUsages::STORAGE,
         });
         let dummy_visual_settings =

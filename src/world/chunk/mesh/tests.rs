@@ -3,10 +3,12 @@ use std::sync::Arc;
 use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
 
-use crate::block::{BlockMaterialLayer, BlockType};
+use crate::block::{
+    BlockMaterialLayer, BlockType, WATER_RENDER_ID, from_render_id, render_id_for_block,
+};
 use crate::quad::Direction;
 use crate::world::chunk::mesh::vertex_pulling;
-use crate::world::chunk::{Chunk, ChunkLight, ChunkNeedsLightUpload};
+use crate::world::chunk::{Chunk, ChunkCell, ChunkLight, ChunkNeedsLightUpload};
 
 use super::{
     CHUNK_ISIZE, CHUNK_SIZE, ChunkMeshBlocks, ChunkNeedsMeshRebuild, ChunkPosition,
@@ -71,20 +73,40 @@ fn ao_occludes(blocks: &ChunkMeshBlocks, x: i32, y: i32, z: i32) -> bool {
     block_occludes_ambient_light(get_block(blocks, x, y, z))
 }
 
-fn block_occludes_ambient_light(block: BlockType) -> bool {
-    block
-        .render_profile()
+fn render_id_profile(rid: u16) -> Option<crate::block::BlockRenderProfile> {
+    if rid == 0 {
+        return None;
+    }
+    if rid == WATER_RENDER_ID {
+        return Some(crate::block::BlockRenderProfile {
+            layer: crate::block::BlockRenderLayer::Translucent,
+            occlusion: crate::block::FaceOcclusion::None,
+        });
+    }
+    from_render_id(rid).and_then(|b| b.render_profile())
+}
+
+fn block_occludes_ambient_light(cell: u16) -> bool {
+    if cell == 0 || cell == WATER_RENDER_ID {
+        return false;
+    }
+    from_render_id(cell)
+        .and_then(|b| b.render_profile())
         .is_some_and(|profile| profile.occlusion == crate::block::FaceOcclusion::FullCube)
 }
 
-fn get_block(blocks: &ChunkMeshBlocks, x: i32, y: i32, z: i32) -> BlockType {
+fn get_block(blocks: &ChunkMeshBlocks, x: i32, y: i32, z: i32) -> u16 {
     if !is_in_padded_chunk(x) || !is_in_padded_chunk(y) || !is_in_padded_chunk(z) {
-        return BlockType::Air;
+        return 0;
     }
     let x = (x + 1) as usize;
     let y = (y + 1) as usize;
     let z = (z + 1) as usize;
     blocks.blocks[padded_chunk_index(x, y, z)]
+}
+
+fn block_cell(block: BlockType) -> ChunkCell {
+    block.into()
 }
 
 fn is_in_padded_chunk(value: i32) -> bool {
@@ -201,13 +223,13 @@ fn vertex_ao_uses_four_symmetric_levels() {
 #[test]
 fn face_ao_samples_adjacent_plane_and_only_full_cube_occluders() {
     let mut chunk = Chunk::default();
-    chunk.blocks[1][1][1] = BlockType::Stone;
+    chunk.set_cell_xyz(1, 1, 1, block_cell(BlockType::Stone));
 
-    chunk.blocks[0][1][2] = BlockType::Stone;
-    chunk.blocks[1][2][2] = BlockType::Stone;
-    chunk.blocks[0][2][2] = BlockType::Stone;
-    chunk.blocks[2][1][2] = BlockType::Glass;
-    chunk.blocks[2][2][2] = BlockType::OakLeaves;
+    chunk.set_cell_xyz(0, 2, 1, block_cell(BlockType::Stone));
+    chunk.set_cell_xyz(1, 2, 2, block_cell(BlockType::Stone));
+    chunk.set_cell_xyz(0, 2, 2, block_cell(BlockType::Stone));
+    chunk.set_cell_xyz(2, 2, 1, block_cell(BlockType::Glass));
+    chunk.set_cell_xyz(2, 2, 2, block_cell(BlockType::OakLeaves));
 
     let blocks = ChunkMeshBlocks::from_chunk(&chunk);
     assert_eq!(
@@ -219,12 +241,12 @@ fn face_ao_samples_adjacent_plane_and_only_full_cube_occluders() {
 #[test]
 fn face_ao_samples_loaded_face_neighbor_chunk() {
     let mut centre = Chunk::default();
-    centre.blocks[1][1][15] = BlockType::Stone;
+    centre.set_cell_xyz(1, 15, 1, block_cell(BlockType::Stone));
 
     let mut above = Chunk::default();
-    above.blocks[0][1][0] = BlockType::Stone;
-    above.blocks[1][2][0] = BlockType::Stone;
-    above.blocks[0][2][0] = BlockType::Stone;
+    above.set_cell_xyz(0, 0, 1, block_cell(BlockType::Stone));
+    above.set_cell_xyz(1, 0, 2, block_cell(BlockType::Stone));
+    above.set_cell_xyz(0, 0, 2, block_cell(BlockType::Stone));
 
     let padded_blocks = padded_chunk_blocks([(IVec3::ZERO, &centre), (IVec3::Y, &above)]);
 
@@ -237,11 +259,11 @@ fn face_ao_samples_loaded_face_neighbor_chunk() {
 #[test]
 fn face_ao_samples_loaded_edge_neighbor_chunk() {
     let mut centre = Chunk::default();
-    centre.blocks[0][1][15] = BlockType::Stone;
+    centre.set_cell_xyz(0, 15, 1, block_cell(BlockType::Stone));
 
     let mut edge = Chunk::default();
-    edge.blocks[15][1][0] = BlockType::Stone;
-    edge.blocks[15][2][0] = BlockType::Stone;
+    edge.set_cell_xyz(15, 0, 1, block_cell(BlockType::Stone));
+    edge.set_cell_xyz(15, 0, 2, block_cell(BlockType::Stone));
 
     let padded_blocks = padded_chunk_blocks([(IVec3::ZERO, &centre), (ivec3(-1, 1, 0), &edge)]);
 
@@ -254,10 +276,10 @@ fn face_ao_samples_loaded_edge_neighbor_chunk() {
 #[test]
 fn face_ao_samples_loaded_corner_neighbor_chunk() {
     let mut centre = Chunk::default();
-    centre.blocks[0][15][15] = BlockType::Stone;
+    centre.set_cell_xyz(0, 15, 15, block_cell(BlockType::Stone));
 
     let mut corner = Chunk::default();
-    corner.blocks[15][0][0] = BlockType::Stone;
+    corner.set_cell_xyz(15, 0, 0, block_cell(BlockType::Stone));
 
     let padded_blocks = padded_chunk_blocks([(IVec3::ZERO, &centre), (ivec3(-1, 1, 1), &corner)]);
 
@@ -274,11 +296,12 @@ fn indexed_face_ao_matches_reference_corner_order_for_all_directions() {
         for y in 0..CHUNK_SIZE {
             for z in 0..CHUNK_SIZE {
                 let hash = x * 17 + y * 31 + z * 43;
-                chunk.blocks[x][z][y] = match hash % 5 {
-                    0 | 3 => BlockType::Stone,
-                    1 => BlockType::Glass,
-                    _ => BlockType::Air,
+                let cell = match hash % 5 {
+                    0 | 3 => block_cell(BlockType::Stone),
+                    1 => block_cell(BlockType::Glass),
+                    _ => ChunkCell::EMPTY,
                 };
+                chunk.set_cell_xyz(x, y, z, cell);
             }
         }
     }
@@ -307,7 +330,7 @@ fn mesh_rebuild_marker_is_removed_after_rebuild() {
     let mut app = mesh_rebuild_app();
 
     let mut chunk = Chunk::default();
-    chunk.blocks[0][0][0] = BlockType::Stone;
+    chunk.set_cell_xyz(0, 0, 0, block_cell(BlockType::Stone));
     let chunk_entity = app
         .world_mut()
         .spawn((ChunkPosition(IVec3::ZERO), chunk, ChunkNeedsMeshRebuild))
@@ -377,8 +400,8 @@ fn mesh_rebuild_new_layer_child_reuses_existing_light_data() {
     let mut app = mesh_rebuild_app();
 
     let mut chunk = Chunk::default();
-    chunk.blocks[0][0][0] = BlockType::Stone;
-    chunk.blocks[1][0][0] = BlockType::Glass;
+    chunk.set_cell_xyz(0, 0, 0, block_cell(BlockType::Stone));
+    chunk.set_cell_xyz(1, 0, 0, block_cell(BlockType::Glass));
     let existing_light_data = empty_light_data();
 
     let chunk_entity = app
@@ -481,8 +504,8 @@ fn reference_face_counts(blocks: &ChunkMeshBlocks) -> Vec<(BlockMaterialLayer, u
     for x in 0..CHUNK_SIZE {
         for y in 0..CHUNK_SIZE {
             for z in 0..CHUNK_SIZE {
-                let block = get_block(blocks, x as i32, y as i32, z as i32);
-                let Some(profile) = block.render_profile() else {
+                let cell = get_block(blocks, x as i32, y as i32, z as i32);
+                let Some(profile) = render_id_profile(cell) else {
                     continue;
                 };
 
@@ -496,21 +519,19 @@ fn reference_face_counts(blocks: &ChunkMeshBlocks) -> Vec<(BlockMaterialLayer, u
                 ];
 
                 for neighbor in neighbors {
-                    let Some(neighbor_profile) = neighbor.render_profile() else {
+                    let Some(neighbor_profile) = render_id_profile(neighbor) else {
                         counts[profile.material_layer().index()] += 1;
                         continue;
                     };
 
-                    if neighbor_profile.occlusion == crate::block::FaceOcclusion::FullCube
-                        && profile.material_layer() != BlockMaterialLayer::Translucent
-                    {
+                    if neighbor_profile.occlusion == crate::block::FaceOcclusion::FullCube {
                         continue;
                     }
 
-                    if block == neighbor
+                    if cell == neighbor
                         && profile.occlusion == crate::block::FaceOcclusion::None
                         && neighbor_profile.occlusion == crate::block::FaceOcclusion::None
-                        && !matches!(block, BlockType::OakLeaves)
+                        && cell != render_id_for_block(BlockType::OakLeaves)
                     {
                         continue;
                     }
@@ -531,13 +552,11 @@ fn reference_face_counts(blocks: &ChunkMeshBlocks) -> Vec<(BlockMaterialLayer, u
 }
 
 fn test_texture_map() -> crate::block::BlockTextureMap {
+    use crate::block::{RENDER_ID_COUNT, render_id_to_texture_path};
     let mut paths = HashMap::default();
-    for block in BlockType::iter() {
-        if block == BlockType::Air {
-            continue;
-        }
+    for rid in 1..RENDER_ID_COUNT as u16 {
         for side in Direction::iter() {
-            let path = crate::block::block_and_side_to_texture_path(block, side).to_owned();
+            let path = render_id_to_texture_path(rid, side).to_owned();
             let next_layer = paths.len() as u32;
             paths
                 .entry(path)
@@ -557,7 +576,7 @@ struct TestChunkCase {
 
 fn test_chunks() -> Vec<TestChunkCase> {
     let mut single = Chunk::default();
-    single.blocks[8][8][8] = BlockType::Stone;
+    single.set_cell_xyz(8, 8, 8, block_cell(BlockType::Stone));
 
     let mut checkerboard = Chunk::default();
     let mut mixed = Chunk::default();
@@ -565,41 +584,38 @@ fn test_chunks() -> Vec<TestChunkCase> {
         for y in 0..CHUNK_SIZE {
             for z in 0..CHUNK_SIZE {
                 if (x + y + z) % 2 == 0 {
-                    checkerboard.blocks[x][z][y] = BlockType::Stone;
+                    checkerboard.set_cell_xyz(x, y, z, block_cell(BlockType::Stone));
                 }
 
-                mixed.blocks[x][z][y] = if y < 4 {
-                    BlockType::Stone
+                let cell = if y < 4 {
+                    block_cell(BlockType::Stone)
                 } else if (x + z) % 7 == 0 {
-                    BlockType::Glass
+                    block_cell(BlockType::Glass)
                 } else if (x * 3 + y + z * 5) % 11 == 0 {
-                    BlockType::OakLeaves
+                    block_cell(BlockType::OakLeaves)
                 } else {
-                    BlockType::Air
+                    ChunkCell::EMPTY
                 };
+                mixed.set_cell_xyz(x, y, z, cell);
             }
         }
     }
 
-    let mut leaves = Chunk::default();
-    leaves.blocks = [[[BlockType::OakLeaves; CHUNK_SIZE]; CHUNK_SIZE]; CHUNK_SIZE];
+    let leaves = Chunk::filled(block_cell(BlockType::OakLeaves));
 
     let empty = Chunk::default();
 
-    let mut full_stone = Chunk::default();
-    full_stone.blocks = [[[BlockType::Stone; CHUNK_SIZE]; CHUNK_SIZE]; CHUNK_SIZE];
+    let full_stone = Chunk::filled(block_cell(BlockType::Stone));
 
-    let mut all_glass = Chunk::default();
-    all_glass.blocks = [[[BlockType::Glass; CHUNK_SIZE]; CHUNK_SIZE]; CHUNK_SIZE];
+    let all_glass = Chunk::filled(block_cell(BlockType::Glass));
 
-    let mut water_basin = Chunk::default();
-    water_basin.blocks = [[[BlockType::Stone; CHUNK_SIZE]; CHUNK_SIZE]; CHUNK_SIZE];
+    let mut water_basin = Chunk::filled(block_cell(BlockType::Stone));
     for x in 4..12 {
         for z in 4..12 {
-            water_basin.blocks[x][z][8] = BlockType::Water;
+            water_basin.set_cell_xyz(x, 8, z, ChunkCell::water_source());
         }
     }
-    water_basin.blocks[8][8][9] = BlockType::Ice;
+    water_basin.set_cell_xyz(8, 9, 8, block_cell(BlockType::Ice));
 
     vec![
         TestChunkCase {

@@ -3,26 +3,30 @@ use super::*;
 
 fn test_chunk_with_blocks<F>(mut fill: F) -> Chunk
 where
-    F: FnMut(u32, u32, u32) -> BlockType,
+    F: FnMut(u32, u32, u32) -> ChunkCell,
 {
     let mut chunk = Chunk::default();
     for x in 0..CHUNK_SIZE {
         for z in 0..CHUNK_SIZE {
             for y in 0..CHUNK_SIZE {
-                chunk.blocks[x][z][y] = fill(x as u32, y as u32, z as u32);
+                chunk.set_cell_xyz(x, y, z, fill(x as u32, y as u32, z as u32));
             }
         }
     }
     chunk
 }
 
+fn block_cell(block: BlockType) -> ChunkCell {
+    block.into()
+}
+
 #[test]
 fn sky_light_vertical_pass_above_surface_is_full() {
     let chunk = test_chunk_with_blocks(|_, y, _| {
         if y < 10 {
-            BlockType::Stone
+            block_cell(BlockType::Stone)
         } else {
-            BlockType::Air
+            ChunkCell::EMPTY
         }
     });
     let mut light = ChunkLight::default();
@@ -57,11 +61,11 @@ fn sky_light_vertical_pass_attenuates_through_transparent() {
     let chunk = test_chunk_with_blocks(|x, y, z| {
         let _ = (x, z);
         if y < 10 {
-            BlockType::Stone
+            block_cell(BlockType::Stone)
         } else if y < 13 {
-            BlockType::OakLeaves
+            block_cell(BlockType::OakLeaves)
         } else {
-            BlockType::Air
+            ChunkCell::EMPTY
         }
     });
     let mut light = ChunkLight::default();
@@ -93,9 +97,9 @@ fn sky_light_vertical_pass_attenuates_through_transparent() {
 fn sky_light_vertical_pass_fully_opaque_stops_light() {
     let chunk = test_chunk_with_blocks(|_x, y, _z| {
         if y < 10 {
-            BlockType::Stone
+            block_cell(BlockType::Stone)
         } else {
-            BlockType::Air
+            ChunkCell::EMPTY
         }
     });
     let mut light = ChunkLight::default();
@@ -126,9 +130,10 @@ fn sky_light_vertical_pass_fully_opaque_stops_light() {
     for y in 0..10 {
         let sl = light.sky_light(uvec3(0, y as u32, 0));
         assert_eq!(
-            sl, 0,
+            sl,
+            0,
             "sky_light at y={y} should be 0, but got {sl}. Block={:?}",
-            chunk.blocks[0][0][y as usize]
+            chunk.cell_xyz(0, y as usize, 0)
         );
     }
 }
@@ -137,9 +142,9 @@ fn sky_light_vertical_pass_fully_opaque_stops_light() {
 fn sky_light_horizontal_bfs_into_cave() {
     let chunk = test_chunk_with_blocks(|x, y, z| {
         if z == 8 && (x == 0 || (x == 1 && (6..=10).contains(&y))) {
-            BlockType::Air
+            ChunkCell::EMPTY
         } else {
-            BlockType::Stone
+            block_cell(BlockType::Stone)
         }
     });
 
@@ -168,7 +173,7 @@ fn sky_light_horizontal_bfs_into_cave() {
 #[test]
 fn block_light_bfs_emitter_propagates() {
     let mut chunk = Chunk::default();
-    chunk.blocks[8][8][8] = BlockType::Glowstone;
+    chunk.set_cell_xyz(8, 8, 8, block_cell(BlockType::Glowstone));
 
     let mut light = ChunkLight::default();
     let blocks = HashMap::new();
@@ -185,16 +190,9 @@ fn block_light_bfs_emitter_propagates() {
 
 #[test]
 fn block_light_bfs_stopped_by_opaque() {
-    let mut chunk = Chunk::default();
-    for x in 0..CHUNK_SIZE {
-        for z in 0..CHUNK_SIZE {
-            for y in 0..CHUNK_SIZE {
-                chunk.blocks[x][z][y] = BlockType::Stone;
-            }
-        }
-    }
-    chunk.blocks[8][8][8] = BlockType::Glowstone;
-    chunk.blocks[7][8][8] = BlockType::Air;
+    let mut chunk = Chunk::filled(block_cell(BlockType::Stone));
+    chunk.set_cell_xyz(8, 8, 8, block_cell(BlockType::Glowstone));
+    chunk.set_cell_xyz(7, 8, 8, ChunkCell::EMPTY);
 
     let mut light = ChunkLight::default();
     let blocks = HashMap::new();
@@ -211,8 +209,8 @@ fn block_light_bfs_stopped_by_opaque() {
 #[test]
 fn block_light_bfs_through_transparent() {
     let mut chunk = Chunk::default();
-    chunk.blocks[8][8][8] = BlockType::Glowstone;
-    chunk.blocks[7][8][8] = BlockType::OakLeaves;
+    chunk.set_cell_xyz(8, 8, 8, block_cell(BlockType::Glowstone));
+    chunk.set_cell_xyz(7, 8, 8, block_cell(BlockType::OakLeaves));
 
     let mut light = ChunkLight::default();
     let blocks = HashMap::new();
@@ -230,15 +228,9 @@ fn block_light_bfs_through_transparent() {
 fn cross_chunk_sky_light_propagates_upward() {
     let lower_chunk = Chunk::default();
     let mut lower_light = ChunkLight::default();
-    let mut upper_chunk = Chunk::default();
+    let upper_chunk = Chunk::default();
     let mut upper_light = ChunkLight::default();
     let mut heightmap = ChunkHeightmap::default();
-
-    for x in 0..CHUNK_SIZE {
-        for z in 0..CHUNK_SIZE {
-            upper_chunk.blocks[x][z][15] = BlockType::Air;
-        }
-    }
 
     lower_light.set_sky_light(uvec3(8, 15, 8), SKY_LIGHT_MAX);
 
@@ -266,7 +258,7 @@ fn cross_chunk_block_light_propagates_between_chunks() {
     let mut right_chunk = Chunk::default();
     let mut right_light = ChunkLight::default();
 
-    right_chunk.blocks[0][8][8] = BlockType::Glowstone;
+    right_chunk.set_cell_xyz(0, 8, 8, block_cell(BlockType::Glowstone));
 
     let blocks: HashMap<IVec3, &Chunk> = HashMap::from([(ivec3(-1, 0, 0), &left_chunk)]);
 
@@ -293,7 +285,7 @@ fn block_light_decrease_when_emitter_removed() {
     let mut right_chunk = Chunk::default();
     let mut right_light = ChunkLight::default();
 
-    right_chunk.blocks[0][8][8] = BlockType::Glowstone;
+    right_chunk.set_cell_xyz(0, 8, 8, block_cell(BlockType::Glowstone));
 
     let blocks: HashMap<IVec3, &Chunk> = HashMap::from([(ivec3(-1, 0, 0), &left_chunk)]);
 
@@ -312,7 +304,7 @@ fn block_light_decrease_when_emitter_removed() {
     assert_eq!(left_after_emit.block_light(uvec3(15, 8, 8)), 14);
 
     // Second: remove Glowstone and recompute.
-    right_chunk.blocks[0][8][8] = BlockType::Air;
+    right_chunk.set_cell_xyz(0, 8, 8, ChunkCell::EMPTY);
     let mut lights: HashMap<IVec3, ChunkLight> =
         HashMap::from([(ivec3(-1, 0, 0), left_after_emit)]);
     let mut dirty = 0;
@@ -458,7 +450,7 @@ fn region_sky_occlusion_spans_vertical_chunks() {
     let mut upper = empty_chunk();
     for x in 0..CHUNK_SIZE {
         for z in 0..CHUNK_SIZE {
-            upper.blocks[x][z][0] = BlockType::Stone;
+            upper.set_cell_xyz(x, 0, z, block_cell(BlockType::Stone));
         }
     }
 
@@ -517,7 +509,7 @@ fn region_all_air_chunk_clears_stale_block_light() {
 fn region_block_light_crosses_y_boundary() {
     let lower = empty_chunk();
     let mut upper = empty_chunk();
-    upper.blocks[8][8][0] = BlockType::Glowstone;
+    upper.set_cell_xyz(8, 0, 8, block_cell(BlockType::Glowstone));
     let chunks: HashMap<IVec3, &Chunk> =
         HashMap::from([(ivec3(0, 0, 0), &lower), (ivec3(0, 1, 0), &upper)]);
     let mut lights = HashMap::from([
@@ -540,7 +532,7 @@ fn region_block_light_crosses_y_boundary() {
 fn region_block_light_crosses_z_boundary() {
     let center = empty_chunk();
     let mut back = empty_chunk();
-    back.blocks[8][0][8] = BlockType::Glowstone;
+    back.set_cell_xyz(8, 8, 0, block_cell(BlockType::Glowstone));
     let chunks: HashMap<IVec3, &Chunk> = HashMap::from([(IVec3::ZERO, &center), (IVec3::Z, &back)]);
     let mut lights = HashMap::from([
         (IVec3::ZERO, ChunkLight::default()),
@@ -560,7 +552,12 @@ fn region_block_light_crosses_z_boundary() {
 
 fn neighbor_with_glowstone(x: u32, y: u32, z: u32) -> (Chunk, ChunkLight) {
     let mut chunk = empty_chunk();
-    chunk.blocks[x as usize][z as usize][y as usize] = BlockType::Glowstone;
+    chunk.set_cell_xyz(
+        x as usize,
+        y as usize,
+        z as usize,
+        block_cell(BlockType::Glowstone),
+    );
     let mut light = ChunkLight::default();
     let blocks = HashMap::new();
     let mut lights = HashMap::new();
@@ -736,8 +733,8 @@ fn empty_chunk_neighbor_pull_from_multiple_sides() {
 #[test]
 fn multiple_emitters_propagate_independently() {
     let mut chunk = empty_chunk();
-    chunk.blocks[4][4][8] = BlockType::Glowstone;
-    chunk.blocks[12][12][8] = BlockType::Glowstone;
+    chunk.set_cell_xyz(4, 8, 4, block_cell(BlockType::Glowstone));
+    chunk.set_cell_xyz(12, 8, 12, block_cell(BlockType::Glowstone));
 
     let mut light = ChunkLight::default();
     let blocks = HashMap::new();
@@ -761,9 +758,9 @@ fn multiple_emitters_on_faces_propagate_cross_chunk() {
     let left_light = ChunkLight::default();
     let mut right_light = ChunkLight::default();
 
-    right_chunk.blocks[0][8][8] = BlockType::Glowstone;
-    right_chunk.blocks[0][4][8] = BlockType::Glowstone;
-    right_chunk.blocks[0][12][8] = BlockType::Glowstone;
+    right_chunk.set_cell_xyz(0, 8, 8, block_cell(BlockType::Glowstone));
+    right_chunk.set_cell_xyz(0, 8, 4, block_cell(BlockType::Glowstone));
+    right_chunk.set_cell_xyz(0, 8, 12, block_cell(BlockType::Glowstone));
 
     let blocks: HashMap<IVec3, &Chunk> = HashMap::from([(ivec3(-1, 0, 0), &left_chunk)]);
     let mut lights: HashMap<IVec3, ChunkLight> =
@@ -789,8 +786,8 @@ fn multiple_emitters_on_faces_propagate_cross_chunk() {
 fn removal_of_one_emitter_preserves_other_emitter_light() {
     let left_chunk = empty_chunk();
     let mut right_chunk = empty_chunk();
-    right_chunk.blocks[0][8][8] = BlockType::Glowstone;
-    right_chunk.blocks[0][8][10] = BlockType::Glowstone;
+    right_chunk.set_cell_xyz(0, 8, 8, block_cell(BlockType::Glowstone));
+    right_chunk.set_cell_xyz(0, 10, 8, block_cell(BlockType::Glowstone));
 
     let blocks: HashMap<IVec3, &Chunk> = HashMap::from([(ivec3(-1, 0, 0), &left_chunk)]);
 
@@ -809,7 +806,7 @@ fn removal_of_one_emitter_preserves_other_emitter_light() {
     let left_after_both = lights.remove(&ivec3(-1, 0, 0)).unwrap();
     assert!(left_after_both.block_light(uvec3(15, 8, 8)) > 0);
 
-    right_chunk.blocks[0][8][8] = BlockType::Air;
+    right_chunk.set_cell_xyz(0, 8, 8, ChunkCell::EMPTY);
     let mut lights: HashMap<IVec3, ChunkLight> =
         HashMap::from([(ivec3(-1, 0, 0), left_after_both)]);
     let mut dirty = 0;
@@ -849,7 +846,7 @@ fn removal_of_one_emitter_preserves_other_emitter_light() {
 fn removal_of_all_emitters_clears_all_boundary_light() {
     let left_chunk = empty_chunk();
     let mut right_chunk = empty_chunk();
-    right_chunk.blocks[0][8][8] = BlockType::Glowstone;
+    right_chunk.set_cell_xyz(0, 8, 8, block_cell(BlockType::Glowstone));
 
     let blocks: HashMap<IVec3, &Chunk> = HashMap::from([(ivec3(-1, 0, 0), &left_chunk)]);
 
@@ -867,7 +864,7 @@ fn removal_of_all_emitters_clears_all_boundary_light() {
     let left_with = lights.remove(&ivec3(-1, 0, 0)).unwrap();
     assert_eq!(left_with.block_light(uvec3(15, 8, 8)), 14);
 
-    right_chunk.blocks[0][8][8] = BlockType::Air;
+    right_chunk.set_cell_xyz(0, 8, 8, ChunkCell::EMPTY);
     let mut lights: HashMap<IVec3, ChunkLight> = HashMap::from([(ivec3(-1, 0, 0), left_with)]);
     let mut dirty = 0;
     compute_block_light(

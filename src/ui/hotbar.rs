@@ -6,8 +6,11 @@ use bevy::{
 use image::{Rgba, RgbaImage, imageops::FilterType};
 use strum::IntoEnumIterator;
 
-use crate::block::{BlockType, block_and_side_to_texture_path, block_to_colour};
+use crate::block::{
+    BlockType, WATER_RENDER_ID, render_id_for_block, render_id_to_colour, render_id_to_texture_path,
+};
 use crate::quad::Direction;
+use crate::world::chunk::ChunkCell;
 
 pub struct HotbarPlugin;
 
@@ -34,7 +37,7 @@ pub const HOTBAR_SLOTS: usize = 9;
 
 #[derive(Resource)]
 pub struct Hotbar {
-    pub slots: [Option<BlockType>; HOTBAR_SLOTS],
+    pub slots: [Option<ChunkCell>; HOTBAR_SLOTS],
     pub selected: usize,
 }
 
@@ -42,15 +45,15 @@ impl Default for Hotbar {
     fn default() -> Self {
         Self {
             slots: [
-                Some(BlockType::Dirt),
-                Some(BlockType::Stone),
-                Some(BlockType::Sand),
-                Some(BlockType::Glass),
-                Some(BlockType::OakLog),
-                Some(BlockType::OakLeaves),
-                Some(BlockType::Glowstone),
-                Some(BlockType::Water),
-                Some(BlockType::Ice),
+                Some(BlockType::Dirt.into()),
+                Some(BlockType::Stone.into()),
+                Some(BlockType::Sand.into()),
+                Some(BlockType::Glass.into()),
+                Some(BlockType::OakLog.into()),
+                Some(BlockType::OakLeaves.into()),
+                Some(BlockType::Glowstone.into()),
+                Some(ChunkCell::water_source()),
+                Some(BlockType::Ice.into()),
             ],
             selected: 0,
         }
@@ -58,18 +61,18 @@ impl Default for Hotbar {
 }
 
 impl Hotbar {
-    pub fn selected_block(&self) -> Option<BlockType> {
+    pub fn selected_cell(&self) -> Option<ChunkCell> {
         self.slots[self.selected]
     }
 
-    pub fn set_selected_block(&mut self, block: BlockType) {
-        self.slots[self.selected] = Some(block);
+    pub fn set_selected_cell(&mut self, cell: ChunkCell) {
+        self.slots[self.selected] = cell.is_rendered().then_some(cell);
     }
 }
 
 #[derive(Resource, Default)]
 pub struct BlockIcons {
-    pub icons: HashMap<BlockType, Handle<Image>>,
+    pub icons: HashMap<u16, Handle<Image>>,
 }
 
 #[derive(Component)]
@@ -216,9 +219,10 @@ fn generate_block_icons(
     }
 
     let mut icons = HashMap::new();
-    for block in BlockType::iter().filter(|b| b.is_rendered()) {
-        let top_path = block_and_side_to_texture_path(block, Direction::Up);
-        let side_path = block_and_side_to_texture_path(block, Direction::Right);
+    for block in BlockType::iter() {
+        let rid = render_id_for_block(block);
+        let top_path = render_id_to_texture_path(rid, Direction::Up);
+        let side_path = render_id_to_texture_path(rid, Direction::Right);
         let Some(top_tex) = load_block_texture(top_path) else {
             continue;
         };
@@ -226,12 +230,30 @@ fn generate_block_icons(
             continue;
         };
 
-        let top_tint = block_to_colour(block, Direction::Up);
-        let side_tint = block_to_colour(block, Direction::Right);
+        let top_tint = render_id_to_colour(rid, Direction::Up);
+        let side_tint = render_id_to_colour(rid, Direction::Right);
         let icon = render_isometric_block(&top_tex, &side_tex, top_tint, side_tint);
         let handle = images.add(icon);
-        icons.insert(block, handle);
+        icons.insert(rid, handle);
     }
+
+    let rid = WATER_RENDER_ID;
+    let Some(top_tex) = load_block_texture(render_id_to_texture_path(rid, Direction::Up)) else {
+        commands.insert_resource(BlockIcons { icons });
+        return;
+    };
+    let Some(side_tex) = load_block_texture(render_id_to_texture_path(rid, Direction::Right))
+    else {
+        commands.insert_resource(BlockIcons { icons });
+        return;
+    };
+    let icon = render_isometric_block(
+        &top_tex,
+        &side_tex,
+        render_id_to_colour(rid, Direction::Up),
+        render_id_to_colour(rid, Direction::Right),
+    );
+    icons.insert(rid, images.add(icon));
 
     info!("Generated {} block icons", icons.len());
     commands.insert_resource(BlockIcons { icons });
@@ -408,8 +430,8 @@ fn update_hotbar_ui(
     for (slot, children) in &slot_children {
         for child in children.iter() {
             if let Ok(mut img) = images.get_mut(child)
-                && let Some(block_type) = hotbar.slots[slot.0]
-                && let Some(handle) = block_icons.icons.get(&block_type)
+                && let Some(cell) = hotbar.slots[slot.0]
+                && let Some(handle) = block_icons.icons.get(&cell.kind())
             {
                 img.image = handle.clone();
             }

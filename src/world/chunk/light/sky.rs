@@ -47,8 +47,8 @@ pub fn compute_sky_light(
             let mut highest = 0u8;
 
             for y in (0..CHUNK_SIZE).rev() {
-                let block = center_chunk.blocks[x][z][y];
-                if !block.is_transparent_to_sky_light() {
+                let meta = center_chunk.hot_meta_xyz(x, y, z);
+                if meta.light_opacity >= 15 {
                     // Safety: heightmap values stored as u8; column_y + y must
                     // fit in u8. Default 5 sub-chunks → max column_y=64 → max y=79.
                     // If height_chunks ever exceeds 16 (256 world height), the
@@ -57,8 +57,7 @@ pub fn compute_sky_light(
                     break;
                 }
 
-                let attenuation = block.light_opacity();
-                current_sky = current_sky.saturating_sub(attenuation);
+                current_sky = current_sky.saturating_sub(meta.light_opacity);
                 if current_sky > 0 {
                     center_light.set_sky_light(uvec3(x as u32, y as u32, z as u32), current_sky);
                 }

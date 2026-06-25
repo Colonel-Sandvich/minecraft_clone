@@ -27,4 +27,4 @@ use storage::{PADDED_CHUNK_LAYER_SIZE, PADDED_CHUNK_SIZE, PADDED_LIGHT_WORDS, SK
 #[cfg(test)]
 use super::CHUNK_SIZE;
 #[cfg(test)]
-use super::Chunk;
+use super::{Chunk, ChunkCell};

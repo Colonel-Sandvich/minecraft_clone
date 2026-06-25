@@ -1,8 +1,6 @@
 use bevy::{platform::collections::HashMap, prelude::*};
 
-use crate::block::BlockType;
-
-use super::super::{CHUNK_ISIZE, Chunk};
+use super::super::{CHUNK_ISIZE, Chunk, ChunkCell};
 use super::storage::{ChunkLight, SKY_LIGHT_MAX};
 
 pub(super) fn face_local_pair(offset: IVec3, a: usize, b: usize) -> Option<(UVec3, UVec3)> {
@@ -38,13 +36,13 @@ pub(super) fn block_at(
     center_pos: IVec3,
     chunk_pos: IVec3,
     local: UVec3,
-) -> BlockType {
+) -> ChunkCell {
     if chunk_pos == center_pos {
-        center_chunk.get_block(local)
+        center_chunk.get_cell(local)
     } else if let Some(chunk) = chunks.get(&chunk_pos) {
-        chunk.get_block(local)
+        chunk.get_cell(local)
     } else {
-        BlockType::Air
+        ChunkCell::EMPTY
     }
 }
 

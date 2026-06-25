@@ -69,6 +69,31 @@ const FACE_BRIGHTNESS: array<f32, 6> = array(0.80, 0.80, 0.62, 1.0, 0.90, 0.90);
 const TRI_TO_QUAD_A: array<u32, 6> = array(0u, 2u, 1u, 1u, 2u, 3u);
 const TRI_TO_QUAD_B: array<u32, 6> = array(0u, 3u, 1u, 0u, 2u, 3u);
 
+// Per-corner water height indices. 0xFFu means "bottom vertex, height 0".
+// Corner heights are packed in desc.info as: h00(0-3) | h10(4-7) | h01(8-11) | h11(12-15)
+// where h00 = corner at (x+0,z+0), h10 = at (x+1,z+0), h01 = at (x+0,z+1), h11 = at (x+1,z+1).
+const CORNER_HT_INDEX: array<array<u32, 4>, 6> = array(
+    array(0xFFu, 0xFFu, 2u, 0u), // Left:    top corners at h01, h00
+    array(0xFFu, 0xFFu, 1u, 3u), // Right:   top corners at h10, h11
+    array(0xFFu, 0xFFu, 0xFFu, 0xFFu), // Down: all bottom
+    array(2u, 0u, 3u, 1u),       // Up:      h01, h00, h11, h10
+    array(0xFFu, 0xFFu, 0u, 1u), // Forward: top corners at h00, h10
+    array(0xFFu, 0xFFu, 3u, 2u), // Back:    top corners at h11, h01
+);
+
+fn water_vertex_height(face_dir: u32, qi: u32, corner_heights: u32, wb_lo: u32, wb_hi: u32) -> f32 {
+    let index = CORNER_HT_INDEX[face_dir][qi];
+    if index == 0xFFu {
+        let bt = select(wb_lo, wb_hi, qi == 1u);
+        if bt > 0u {
+            return f32(bt) / 8.0 - 1.0;
+        }
+        return 0.0;
+    }
+    let height = (corner_heights >> (index * 4u)) & 0xFu;
+    return f32(height) / 8.0;
+}
+
 const LIGHT_FLOOR: f32 = 0.05;
 const LIGHT_FALLOFF: f32 = 0.8;
 const TEXTURE_FRAME_SECONDS: f32 = 0.08;
@@ -84,6 +109,7 @@ struct VertexOutput {
     @location(3) @interpolate(flat) face_dir: u32,
     @location(4) @interpolate(flat) ao_key: u32,
     @location(5) light: vec2<f32>,
+    @location(6) @interpolate(flat) water_up_flow: u32,
 }
 
 @vertex
@@ -100,6 +126,10 @@ fn vertex(@builtin(vertex_index) vid: u32) -> VertexOutput {
 
     let block_type = desc.info & 0xFFu;
     let ao_key = (desc.info >> 8) & 0xFFu;
+    let corner_heights = desc.info >> 16;
+    let water_below_lo = (desc.packed >> 6) & 0xFu;
+    let water_below_hi = (desc.packed >> 10) & 0xFu;
+    let water_up_flow = desc.packed & 1u;  // bit 0 → override UP-face texture to flow
 
     let ao0 = ao_key & 0x3u;
     let ao1 = (ao_key >> 2u) & 0x3u;
@@ -110,7 +140,10 @@ fn vertex(@builtin(vertex_index) vid: u32) -> VertexOutput {
         qi = TRI_TO_QUAD_A[corner_raw];
     }
 
-    let offset = CORNER_OFFSETS[face_dir][qi];
+    var offset = CORNER_OFFSETS[face_dir][qi];
+    if corner_heights != 0u {
+        offset.y = water_vertex_height(face_dir, qi, corner_heights, water_below_lo, water_below_hi);
+    }
     let local_pos = vec3<f32>(f32(x) + offset.x, f32(y) + offset.y, f32(z) + offset.z);
 
     let light = corner_light(vec3<i32>(i32(x), i32(y), i32(z)), face_dir, offset);
@@ -118,7 +151,7 @@ fn vertex(@builtin(vertex_index) vid: u32) -> VertexOutput {
     let world_pos = local_pos + chunk_origin.xyz;
     let clip_pos = view_proj * vec4(world_pos, 1.0);
 
-    return VertexOutput(clip_pos, world_pos, NORMALS[face_dir], block_type, face_dir, ao_key, light);
+    return VertexOutput(clip_pos, world_pos, NORMALS[face_dir], block_type, face_dir, ao_key, light, water_up_flow);
 }
 
 fn padded_coord(value: i32) -> u32 {
@@ -209,7 +242,8 @@ fn fragment(@location(0) world_pos: vec3<f32>,
             @location(2) @interpolate(flat) block_type: u32,
             @location(3) @interpolate(flat) face_dir: u32,
             @location(4) @interpolate(flat) ao_key: u32,
-            @location(5) light: vec2<f32>) -> @location(0) vec4<f32> {
+            @location(5) light: vec2<f32>,
+            @location(6) @interpolate(flat) water_up_flow: u32) -> @location(0) vec4<f32> {
     let n = abs(world_normal);
     let wp = world_pos;
     var face_uv: vec2<f32>;
@@ -222,7 +256,8 @@ fn fragment(@location(0) world_pos: vec3<f32>,
     }
     let block_uv = fract(face_uv);
 
-    let lookup = block_type * 6u + face_dir;
+    let lookup_face = select(face_dir, 0u, water_up_flow == 1u && face_dir == 3u);
+    let lookup = block_type * 6u + lookup_face;
     let texture_info = texture_layers[lookup];
     let base_layer = texture_info & 0x00ffffffu;
     let frame_count = max(texture_info >> 24u, 1u);

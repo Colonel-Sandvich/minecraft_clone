@@ -311,7 +311,7 @@ mod tests {
         let repository = ChunkRepository::new(InMemoryChunkStore::new(metadata.clone()));
         let pos = ivec3(2, 0, -1);
         let mut chunk = Chunk::default();
-        chunk.blocks[0][0][0] = BlockType::OakLog;
+        chunk.set_cell_xyz(0, 0, 0, BlockType::OakLog.into());
 
         let mut app = App::new();
         app.add_plugins(MinimalPlugins)
@@ -376,7 +376,7 @@ mod tests {
         let repository = ChunkRepository::new(InMemoryChunkStore::new(metadata.clone()));
         let pos = ivec3(2, 0, -1);
         let mut chunk = Chunk::default();
-        chunk.blocks[0][0][0] = BlockType::OakLog;
+        chunk.set_cell_xyz(0, 0, 0, BlockType::OakLog.into());
 
         let mut app = App::new();
         app.add_plugins(MinimalPlugins)
@@ -400,14 +400,14 @@ mod tests {
         app.world_mut()
             .get_mut::<Chunk>(chunk_entity)
             .unwrap()
-            .blocks[0][0][0] = BlockType::Stone;
+            .set_cell_xyz(0, 0, 0, BlockType::Stone.into());
 
         update_until(&mut app, |world| {
             world.get::<ChunkNeedsSave>(chunk_entity).is_none()
         });
 
         let mut expected = Chunk::default();
-        expected.blocks[0][0][0] = BlockType::Stone;
+        expected.set_cell_xyz(0, 0, 0, BlockType::Stone.into());
         let (loaded, _heightmap) = repository.load_chunk(pos).unwrap().unwrap();
         assert_eq!(loaded, expected);
     }

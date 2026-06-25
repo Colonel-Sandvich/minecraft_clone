@@ -8,8 +8,8 @@ use minecraft_clone::{
     block::{BlockMaterialLayer, BlockType},
     world::{
         WorldMetadata,
-        chunk::mesh::{ChunkMeshBlocks, vertex_pulling},
-        chunk::{CHUNK_SIZE, Chunk, ChunkLight},
+        chunk::mesh::{ChunkMeshBlocks, binary, vertex_pulling},
+        chunk::{CHUNK_SIZE, Chunk, ChunkCell, ChunkLight},
         generation::generate_chunk,
     },
 };
@@ -32,11 +32,6 @@ impl Scenario {
 
 fn make_scenarios() -> Vec<Scenario> {
     vec![
-        Scenario {
-            name: "empty",
-            center_pos: IVec3::ZERO,
-            chunks: vec![(IVec3::ZERO, Chunk::default())],
-        },
         Scenario {
             name: "single_stone",
             center_pos: IVec3::ZERO,
@@ -93,9 +88,7 @@ fn realistic_terrain_buried_scenario(name: &'static str) -> Scenario {
 // ---------------------------------------------------------------------------
 
 fn filled_chunk(block: BlockType) -> Chunk {
-    Chunk {
-        blocks: [[[block; CHUNK_SIZE]; CHUNK_SIZE]; CHUNK_SIZE],
-    }
+    Chunk::filled(block.into())
 }
 
 fn filled_neighborhood(block: BlockType) -> Vec<(IVec3, Chunk)> {
@@ -112,7 +105,7 @@ fn filled_neighborhood(block: BlockType) -> Vec<(IVec3, Chunk)> {
 
 fn single_stone_chunk() -> Chunk {
     let mut chunk = Chunk::default();
-    chunk.blocks[8][8][8] = BlockType::Stone;
+    chunk.set_cell_xyz(8, 8, 8, BlockType::Stone.into());
     chunk
 }
 
@@ -122,7 +115,7 @@ fn checkerboard_chunk() -> Chunk {
         for y in 0..CHUNK_SIZE {
             for z in 0..CHUNK_SIZE {
                 if (x + y + z) % 2 == 0 {
-                    chunk.blocks[x][z][y] = BlockType::Stone;
+                    chunk.set_cell_xyz(x, y, z, BlockType::Stone.into());
                 }
             }
         }
@@ -153,50 +146,70 @@ fn realistic_terrain_chunk() -> Chunk {
     for x in 0..CHUNK_SIZE {
         for z in 0..CHUNK_SIZE {
             for y in 0..CHUNK_SIZE {
-                chunk.blocks[x][z][y] = if y < 4 {
-                    BlockType::Stone
+                let cell = if y < 4 {
+                    BlockType::Stone.into()
                 } else if y < 6 {
-                    BlockType::Dirt
+                    BlockType::Dirt.into()
                 } else if y == 6 {
-                    BlockType::Grass
-                } else if y >= 7 && y <= 11 && x >= 6 && x <= 9 && z >= 6 && z <= 9 {
-                    BlockType::OakLog
+                    BlockType::Grass.into()
+                } else if (7..=11).contains(&y) && (6..=9).contains(&x) && (6..=9).contains(&z) {
+                    BlockType::OakLog.into()
                 } else if y == 12
-                    && x >= 5
-                    && x <= 10
-                    && z >= 5
-                    && z <= 10
-                    && !(x >= 7 && x <= 8 && z >= 7 && z <= 8)
+                    && (5..=10).contains(&x)
+                    && (5..=10).contains(&z)
+                    && !((7..=8).contains(&x) && (7..=8).contains(&z))
                 {
-                    BlockType::OakLeaves
-                } else if y == 11 && x >= 5 && x <= 10 && z >= 5 && z <= 10 {
-                    BlockType::OakLeaves
+                    BlockType::OakLeaves.into()
+                } else if y == 11 && (5..=10).contains(&x) && (5..=10).contains(&z) {
+                    BlockType::OakLeaves.into()
                 } else if y == 10
-                    && x >= 5
-                    && x <= 10
-                    && z >= 5
-                    && z <= 10
+                    && (5..=10).contains(&x)
+                    && (5..=10).contains(&z)
                     && (x == 5 || x == 10 || z == 5 || z == 10)
                 {
-                    BlockType::OakLeaves
+                    BlockType::OakLeaves.into()
                 } else if y == 3 && (x + z) % 13 == 0 {
-                    BlockType::Glass
+                    BlockType::Glass.into()
                 } else if y == 8 && (x * 7 + z * 11) % 23 == 0 {
-                    BlockType::Glass
+                    BlockType::Glass.into()
                 } else {
-                    BlockType::Air
+                    ChunkCell::EMPTY
                 };
+                chunk.set_cell_xyz(x, y, z, cell);
             }
         }
     }
+
+    // Water pond on top (y=7), covering center 10×8 area, with ice on edges.
+    for x in 3..=12 {
+        for z in 3..=10 {
+            let on_edge = x == 3 || x == 12 || z == 3 || z == 10;
+            let cell = if on_edge {
+                BlockType::Ice.into()
+            } else {
+                ChunkCell::water_source()
+            };
+            chunk.set_cell_xyz(x, 7, z, cell);
+        }
+    }
+    // Second water layer (y=8) — smaller area, fills down into pond.
+    for x in 5..=10 {
+        for z in 6..=9 {
+            if (x == 5 || x == 10 || z == 6 || z == 9)
+                && chunk.cell_xyz(x, 7, z) == ChunkCell::EMPTY
+            {
+                continue;
+            }
+            chunk.set_cell_xyz(x, 8, z, ChunkCell::water_source());
+        }
+    }
+
     chunk
 }
 
 // ---------------------------------------------------------------------------
 // Data size helpers
 // ---------------------------------------------------------------------------
-
-const FACEDESCRIPTOR_BYTES: usize = std::mem::size_of::<vertex_pulling::FaceDescriptor>();
 
 fn vp_face_count(layers: &[(BlockMaterialLayer, Vec<vertex_pulling::FaceDescriptor>)]) -> usize {
     layers.iter().map(|(_, desc)| desc.len()).sum()
@@ -252,13 +265,15 @@ fn patterned_light(chunk_pos: IVec3) -> ChunkLight {
 fn bench_vertex_pulling(c: &mut Criterion) {
     let scenarios = make_scenarios();
 
-    bench_mesh_descriptors(c, &scenarios);
-    print_data_size_summary(&scenarios);
+    bench_mesh_descriptors_scalar(c, &scenarios);
+    bench_mesh_descriptors_hybrid(c, &scenarios);
+    bench_mesh_descriptors_floor(c, &scenarios);
+    print_data_size_comparison(&scenarios);
     bench_light_upload(c);
 }
 
-fn bench_mesh_descriptors(c: &mut Criterion, scenarios: &[Scenario]) {
-    let mut group = c.benchmark_group("vp_mesh");
+fn bench_mesh_descriptors_scalar(c: &mut Criterion, scenarios: &[Scenario]) {
+    let mut group = c.benchmark_group("vp_mesh_scalar");
     group.throughput(Throughput::Elements(1));
     for scenario in scenarios {
         let chunk_refs = scenario.chunk_refs();
@@ -273,23 +288,54 @@ fn bench_mesh_descriptors(c: &mut Criterion, scenarios: &[Scenario]) {
     group.finish();
 }
 
-fn print_data_size_summary(scenarios: &[Scenario]) {
+fn bench_mesh_descriptors_hybrid(c: &mut Criterion, scenarios: &[Scenario]) {
+    let mut group = c.benchmark_group("vp_mesh_hybrid");
+    group.throughput(Throughput::Elements(1));
+    for scenario in scenarios {
+        let chunk_refs = scenario.chunk_refs();
+        let center = scenario.center_pos;
+        group.bench_function(BenchmarkId::from_parameter(scenario.name), |b| {
+            b.iter(|| {
+                let blocks = ChunkMeshBlocks::from_chunks(center, black_box(&chunk_refs));
+                black_box(binary::build_descriptors_hybrid(&blocks))
+            });
+        });
+    }
+    group.finish();
+}
+
+/// Absolute floor: masks + AND-NOT + iter_ones + coord recovery.
+/// Same memory access pattern as `build_descriptors_binary` but skips AO,
+/// cell lookup, and descriptor construction.
+fn bench_mesh_descriptors_floor(c: &mut Criterion, scenarios: &[Scenario]) {
+    let mut group = c.benchmark_group("vp_mesh_floor");
+    group.throughput(Throughput::Elements(1));
+
+    for scenario in scenarios {
+        let chunk_refs = scenario.chunk_refs();
+        let center = scenario.center_pos;
+        let blocks = ChunkMeshBlocks::from_chunks(center, &chunk_refs);
+
+        group.bench_function(BenchmarkId::from_parameter(scenario.name), move |b| {
+            b.iter(|| binary::build_descriptors_binary_floor(black_box(&blocks)))
+        });
+    }
+    group.finish();
+}
+
+fn print_data_size_comparison(scenarios: &[Scenario]) {
     println!();
-    println!("--- Data size comparison ---");
-    println!("  {:<30} {:>8} {:>10}", "scenario", "vp faces", "vp desc",);
+    println!("--- Scalar vs Hybrid descriptor counts ---");
+    println!("  {:<30} {:>8} {:>8}", "scenario", "scalar", "hybrid",);
     for scenario in scenarios {
         let chunk_refs = scenario.chunk_refs();
         let blocks = ChunkMeshBlocks::from_chunks(scenario.center_pos, &chunk_refs);
-        let vp_layers = vertex_pulling::build_descriptors(&blocks);
-        let vp_desc_bytes: usize = vp_layers
-            .iter()
-            .map(|(_, desc)| desc.len() * FACEDESCRIPTOR_BYTES)
-            .sum();
-        let vp_faces = vp_face_count(&vp_layers);
+        let scalar_faces = vp_face_count(&vertex_pulling::build_descriptors(&blocks));
+        let hybrid_faces = vp_face_count(&binary::build_descriptors_hybrid(&blocks));
 
         println!(
-            "  {:<30} {:>8} {:>10}",
-            scenario.name, vp_faces, vp_desc_bytes,
+            "  {:<30} {:>8} {:>8}",
+            scenario.name, scalar_faces, hybrid_faces,
         );
     }
     println!();

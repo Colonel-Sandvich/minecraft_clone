@@ -6,8 +6,9 @@ use crate::{
     player::Player,
     world::{
         chunk::{
-            CHUNK_SIZE, ChunkNeedsColliderRebuild, ChunkNeedsLightRebuild, ChunkNeedsLightUpload,
-            ChunkNeedsMeshRebuild, ChunkNeedsSave, ChunkPosition, chunk_neighbor_offsets,
+            CHUNK_SIZE, ChunkHasActiveFluids, ChunkNeedsColliderRebuild, ChunkNeedsLightRebuild,
+            ChunkNeedsLightUpload, ChunkNeedsMeshRebuild, ChunkNeedsSave, ChunkPosition,
+            chunk_neighbor_offsets,
         },
         generation::WorldMetadata,
         loading::{ChunkLoadRequest, load_or_generate_chunk},
@@ -161,6 +162,7 @@ pub(crate) fn finish_chunk_load_tasks(
 
         load_tasks.record_success(pos);
         let meta = loaded.chunk.compute_block_counts();
+        let has_active_fluids = loaded.chunk.has_fluids();
         let chunk_light = loaded.light;
         let heightmap = loaded.heightmap;
 
@@ -177,6 +179,9 @@ pub(crate) fn finish_chunk_load_tasks(
         ));
         if meta.rendered > 0 {
             entity_commands.insert((ChunkNeedsMeshRebuild, ChunkNeedsColliderRebuild));
+        }
+        if has_active_fluids {
+            entity_commands.insert(ChunkHasActiveFluids);
         }
         let chunk_entity = entity_commands.id();
 
@@ -246,7 +251,7 @@ mod tests {
     }
 
     fn update_until(app: &mut App, mut predicate: impl FnMut(&World) -> bool) {
-        for _ in 0..100 {
+        for _ in 0..1000 {
             app.update();
             if predicate(app.world()) {
                 return;
