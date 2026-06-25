@@ -29,7 +29,7 @@ impl ViewDistance {
 
 impl Default for ViewDistance {
     fn default() -> Self {
-        Self::new(40)
+        Self::new(24)
     }
 }
 
