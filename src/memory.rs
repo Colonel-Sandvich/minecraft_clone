@@ -253,27 +253,38 @@ fn update_memory_snapshot(
         }
     }
 
-    let mut mesh_entities = 0usize;
-    for _ in &mesh_q {
-        mesh_entities += 1;
-    }
+    let mesh_entities = mesh_q
+        .contiguous_iter()
+        .expect("VertexPullingMesh memory scan should stay dense")
+        .map(<[VertexPullingMesh]>::len)
+        .sum();
 
     let mut face_descriptors = 0usize;
     let mut face_descriptor_capacity = 0usize;
-    for desc in &mesh_desc_q {
-        face_descriptors += desc.0.len();
-        face_descriptor_capacity += desc.0.capacity();
+    for descriptors in mesh_desc_q
+        .contiguous_iter()
+        .expect("ChunkMeshDescriptors memory scan should stay dense")
+    {
+        for desc in descriptors {
+            face_descriptors += desc.0.len();
+            face_descriptor_capacity += desc.0.capacity();
+        }
     }
 
     let mut padded_light_components = 0usize;
     let mut unique_padded_light_words = 0usize;
     let mut gpu_padded_light_words_estimate = 0usize;
     let mut unique_padded_lights = HashSet::new();
-    for light in &light_q {
-        padded_light_components += 1;
-        gpu_padded_light_words_estimate += light.light_data.len();
-        if unique_padded_lights.insert(light.data_key()) {
-            unique_padded_light_words += light.light_data.len();
+    for lights in light_q
+        .contiguous_iter()
+        .expect("VertexPullingLight memory scan should stay dense")
+    {
+        padded_light_components += lights.len();
+        for light in lights {
+            gpu_padded_light_words_estimate += light.light_data.len();
+            if unique_padded_lights.insert(light.data_key()) {
+                unique_padded_light_words += light.light_data.len();
+            }
         }
     }
 

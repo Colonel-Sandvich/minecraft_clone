@@ -3,6 +3,7 @@ use std::f32::consts::PI;
 use bevy::input::mouse::AccumulatedMouseMotion;
 use bevy::prelude::*;
 use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
+use bevy_settings::{ReflectSettingsGroup, SettingsGroup};
 
 pub struct PlayerCamPlugin;
 
@@ -14,14 +15,12 @@ impl Plugin for PlayerCamPlugin {
             .add_systems(OnEnter(MouseState::Grabbed), grab_cursor)
             .add_systems(OnEnter(MouseState::Free), free_cursor);
 
-        app.insert_resource(MouseSettings {
-            sensitivity: 0.00007,
-            fov: 100.0,
-        });
+        app.init_resource::<MouseSettings>();
     }
 }
 
-#[derive(Resource)]
+#[derive(Resource, SettingsGroup, Reflect, Debug, Clone, Copy)]
+#[reflect(Resource, SettingsGroup, Default)]
 pub struct MouseSettings {
     pub sensitivity: f32,
     pub fov: f32,
@@ -30,8 +29,8 @@ pub struct MouseSettings {
 impl Default for MouseSettings {
     fn default() -> Self {
         Self {
-            sensitivity: 0.00012,
-            fov: 90.0,
+            sensitivity: 0.00007,
+            fov: 100.0,
         }
     }
 }

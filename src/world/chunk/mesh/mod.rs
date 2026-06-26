@@ -185,10 +185,18 @@ fn rebuild_chunk_meshes(
         return;
     }
 
-    let chunks_by_pos = all_chunks_q
-        .iter()
-        .map(|(pos, chunk)| (pos.0, chunk))
-        .collect::<HashMap<_, _>>();
+    let mut chunks_by_pos = HashMap::with_capacity(all_chunks_q.iter().len());
+    for (positions, chunks) in all_chunks_q
+        .contiguous_iter()
+        .expect("chunk mesh position map query should stay dense")
+    {
+        chunks_by_pos.extend(
+            positions
+                .iter()
+                .zip(chunks.iter())
+                .map(|(pos, chunk)| (pos.0, chunk)),
+        );
+    }
 
     let tables = BlockMeshTables::from_texture_map(&block_texture_map);
     let texture_layers: Vec<u32> = (0..RENDER_ID_COUNT)
@@ -228,8 +236,19 @@ fn rebuild_chunk_meshes(
     };
     commands.insert_resource(texture_state);
 
-    let lights_by_pos: HashMap<IVec3, &ChunkLight> =
-        light_q.iter().map(|(pos, light)| (pos.0, light)).collect();
+    let mut lights_by_pos: HashMap<IVec3, &ChunkLight> =
+        HashMap::with_capacity(light_q.iter().len());
+    for (positions, lights) in light_q
+        .contiguous_iter()
+        .expect("chunk mesh light map query should stay dense")
+    {
+        lights_by_pos.extend(
+            positions
+                .iter()
+                .zip(lights.iter())
+                .map(|(pos, light)| (pos.0, light)),
+        );
+    }
 
     let mut build_queue = Parallel::<Vec<VpChunkBuild>>::default();
     dirty_chunks_q.par_iter().for_each_init(
@@ -386,8 +405,19 @@ fn upload_chunk_lights(
         return;
     }
 
-    let lights_by_pos: HashMap<IVec3, &ChunkLight> =
-        light_q.iter().map(|(pos, light)| (pos.0, light)).collect();
+    let mut lights_by_pos: HashMap<IVec3, &ChunkLight> =
+        HashMap::with_capacity(light_q.iter().len());
+    for (positions, lights) in light_q
+        .contiguous_iter()
+        .expect("chunk light upload map query should stay dense")
+    {
+        lights_by_pos.extend(
+            positions
+                .iter()
+                .zip(lights.iter())
+                .map(|(pos, light)| (pos.0, light)),
+        );
+    }
 
     for (chunk_pos, chunk_entity) in &dirty_chunks_q {
         let light_data: Arc<[u32]> =

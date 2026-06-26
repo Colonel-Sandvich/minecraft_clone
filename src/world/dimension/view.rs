@@ -1,8 +1,10 @@
 use bevy::prelude::*;
+use bevy_settings::{ReflectSettingsGroup, SettingsGroup};
 
 use crate::world::chunk::CHUNK_ISIZE;
 
-#[derive(Resource, Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Resource, SettingsGroup, Reflect, Debug, Clone, Copy, PartialEq, Eq)]
+#[reflect(Resource, SettingsGroup, Default)]
 pub struct ViewDistance {
     chunks: i32,
 }

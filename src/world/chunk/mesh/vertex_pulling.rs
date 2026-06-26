@@ -8,6 +8,7 @@
 //! Bind group 1 (per chunk): face descriptor SSBO + chunk_origin + light_data
 
 use std::{
+    any::TypeId,
     borrow::Cow,
     collections::{HashMap, HashSet},
     sync::Arc,
@@ -16,9 +17,11 @@ use std::{
 use bevy::{
     asset::AssetId,
     camera::visibility::{self, VisibilityClass},
-    core_pipeline::core_3d::{Opaque3d, Opaque3dBatchSetKey, Opaque3dBinKey, Transparent3d},
+    core_pipeline::core_3d::{
+        Opaque3d, Opaque3dBatchSetKey, Opaque3dBinKey, Transparent3d, TransparentSortingInfo3d,
+    },
     ecs::{
-        change_detection::{Ref, Tick},
+        change_detection::Ref,
         component::Component,
         system::{
             SystemParamItem,
@@ -30,7 +33,7 @@ use bevy::{
     render::{
         Extract, ExtractSchedule, Render, RenderApp, RenderSystems,
         extract_resource::{ExtractResource, ExtractResourcePlugin},
-        mesh::allocator::SlabId,
+        mesh::allocator::MeshSlabs,
         render_asset::RenderAssets,
         render_phase::{
             AddRenderCommand, BinnedRenderPhaseType, DrawFunctions, InputUniformIndex, PhaseItem,
@@ -39,7 +42,7 @@ use bevy::{
         },
         render_resource::*,
         renderer::{RenderDevice, RenderQueue},
-        sync_component::SyncComponentPlugin,
+        sync_component::{SyncComponent, SyncComponentPlugin},
         sync_world::RenderEntity,
         texture::GpuImage,
         view::{ExtractedView, RenderVisibleEntities},
@@ -220,6 +223,10 @@ pub struct VertexPullingMesh {
     pub face_count: u32,
     pub material_layer: BlockMaterialLayer,
     pub chunk_origin: Vec3,
+}
+
+impl SyncComponent for VertexPullingMesh {
+    type Target = VertexPullingMesh;
 }
 
 #[derive(Component, Clone)]
@@ -410,7 +417,7 @@ fn vp_pipeline_descriptor(
     RenderPipelineDescriptor {
         label: Some(Cow::Borrowed(label)),
         layout: vec![group0_desc, group1_desc],
-        push_constant_ranges: vec![],
+        immediate_size: 0,
         vertex: VertexState {
             shader: shader.clone(),
             shader_defs: vec![],
@@ -428,8 +435,8 @@ fn vp_pipeline_descriptor(
         },
         depth_stencil: Some(DepthStencilState {
             format: TextureFormat::Depth32Float,
-            depth_write_enabled,
-            depth_compare: CompareFunction::GreaterEqual,
+            depth_write_enabled: Some(depth_write_enabled),
+            depth_compare: Some(CompareFunction::GreaterEqual),
             stencil: StencilState::default(),
             bias: DepthBiasState::default(),
         }),
@@ -443,7 +450,7 @@ fn vp_pipeline_descriptor(
             shader_defs: vec![],
             entry_point: Some(Cow::Borrowed("fragment")),
             targets: vec![Some(ColorTargetState {
-                format: TextureFormat::bevy_default(),
+                format: TextureFormat::Rgba8UnormSrgb,
                 blend,
                 write_mask: ColorWrites::ALL,
             })],
@@ -1226,8 +1233,7 @@ fn queue_vp_meshes(
         pipeline: pipeline.opaque_id,
         draw_function: opaque_draw_fn,
         material_bind_group_index: None,
-        vertex_slab: SlabId::default(),
-        index_slab: None,
+        slabs: MeshSlabs::default(),
         lightmap_slab: None,
     };
     let cutout_batch_set_key = Opaque3dBatchSetKey {
@@ -1246,7 +1252,13 @@ fn queue_vp_meshes(
             continue;
         };
         let rangefinder = view.rangefinder3d();
-        for &(entity, main_entity) in visible_entities.iter::<VertexPullingMesh>() {
+        let Some(visible_class) = visible_entities
+            .classes
+            .get(&TypeId::of::<VertexPullingMesh>())
+        else {
+            continue;
+        };
+        for &(entity, main_entity) in &visible_class.entities_cpu_culling {
             let Ok(data) = prepared_chunks.get(entity) else {
                 continue;
             };
@@ -1257,7 +1269,6 @@ fn queue_vp_meshes(
                     (entity, main_entity),
                     InputUniformIndex::default(),
                     BinnedRenderPhaseType::NonMesh,
-                    Tick::default(),
                 ),
                 BlockMaterialLayer::Cutout => opaque_phase.add(
                     cutout_batch_set_key.clone(),
@@ -1265,11 +1276,14 @@ fn queue_vp_meshes(
                     (entity, main_entity),
                     InputUniformIndex::default(),
                     BinnedRenderPhaseType::NonMesh,
-                    Tick::default(),
                 ),
                 BlockMaterialLayer::Translucent => {
                     let chunk_center = data.chunk_origin + Vec3::splat(CHUNK_SIZE as f32 * 0.5);
-                    transparent_phase.add(Transparent3d {
+                    transparent_phase.add_retained(Transparent3d {
+                        sorting_info: TransparentSortingInfo3d::Sorted {
+                            mesh_center: chunk_center,
+                            depth_bias: 0.0,
+                        },
                         entity: (entity, main_entity),
                         pipeline: pipeline.translucent_id,
                         draw_function: transparent_draw_fn,

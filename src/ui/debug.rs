@@ -56,7 +56,7 @@ fn spawn_debug_overlay(mut commands: Commands) {
     commands.spawn((
         Text::new(""),
         TextFont {
-            font_size: 14.0,
+            font_size: FontSize::Px(14.0),
             ..default()
         },
         TextColor(Color::WHITE),
@@ -269,7 +269,7 @@ fn manage_light_labels(
             p.spawn((
                 Text::new(label),
                 TextFont {
-                    font_size: 10.0,
+                    font_size: FontSize::Px(10.0),
                     ..default()
                 },
                 TextColor(Color::srgb(1.0, 0.95, 0.75)),

@@ -11,6 +11,7 @@ use super::{
 };
 use avian3d::prelude::*;
 use bevy::prelude::*;
+use bevy_settings::SaveSettingsDeferred;
 
 pub struct ControlPlayerPlugin;
 
@@ -173,15 +174,22 @@ fn debug_reset_character(
 }
 
 fn adjust_view_distance(
+    mut commands: Commands,
     keys: Res<ButtonInput<KeyCode>>,
     key_bindings: Res<KeyBindings>,
     mut view_distance: ResMut<ViewDistance>,
 ) {
+    let mut changed = false;
     if keys.just_pressed(key_bindings.view_distance_decrease) {
         view_distance.decrease();
+        changed = true;
     }
     if keys.just_pressed(key_bindings.view_distance_increase) {
         view_distance.increase();
+        changed = true;
+    }
+    if changed {
+        commands.queue(SaveSettingsDeferred::default());
     }
 }
 

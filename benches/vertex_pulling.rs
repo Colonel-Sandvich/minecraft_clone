@@ -2,14 +2,17 @@
 
 use std::{hint::black_box, sync::Arc, time::Duration};
 
-use bevy::{platform::collections::HashMap, prelude::*};
+use bevy::{
+    ecs::query::QueryState, platform::collections::HashMap, prelude::*, tasks::ComputeTaskPool,
+    utils::Parallel,
+};
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use minecraft_clone::{
     block::{BlockMaterialLayer, BlockType},
     world::{
         WorldMetadata,
         chunk::mesh::{ChunkMeshBlocks, binary, vertex_pulling},
-        chunk::{CHUNK_SIZE, Chunk, ChunkCell, ChunkLight},
+        chunk::{CHUNK_SIZE, Chunk, ChunkCell, ChunkLight, ChunkNeedsMeshRebuild, ChunkPosition},
         generation::generate_chunk,
     },
 };
@@ -263,6 +266,8 @@ fn patterned_light(chunk_pos: IVec3) -> ChunkLight {
 // ---------------------------------------------------------------------------
 
 fn bench_vertex_pulling(c: &mut Criterion) {
+    ComputeTaskPool::get_or_init(Default::default);
+
     let scenarios = make_scenarios();
 
     bench_mesh_descriptors_scalar(c, &scenarios);
@@ -270,6 +275,7 @@ fn bench_vertex_pulling(c: &mut Criterion) {
     bench_mesh_descriptors_floor(c, &scenarios);
     print_data_size_comparison(&scenarios);
     bench_light_upload(c);
+    bench_dirty_mesh_loop(c);
 }
 
 fn bench_mesh_descriptors_scalar(c: &mut Criterion, scenarios: &[Scenario]) {
@@ -379,6 +385,106 @@ fn bench_light_upload(c: &mut Criterion) {
             black_box(&components);
         });
     });
+    group.finish();
+}
+
+fn dirty_mesh_chunks(chunk_count: usize) -> Vec<(IVec3, Chunk)> {
+    let chunk = realistic_terrain_chunk();
+    let edge = (chunk_count as f32).cbrt().ceil() as i32;
+    let mut chunks = Vec::with_capacity(chunk_count);
+    for x in 0..edge {
+        for y in 0..edge {
+            for z in 0..edge {
+                if chunks.len() == chunk_count {
+                    return chunks;
+                }
+                chunks.push((ivec3(x, y, z), chunk.clone()));
+            }
+        }
+    }
+    chunks
+}
+
+fn dirty_mesh_world(chunks: &[(IVec3, Chunk)]) -> World {
+    let mut world = World::new();
+    for (pos, chunk) in chunks {
+        world.spawn((ChunkPosition(*pos), chunk.clone(), ChunkNeedsMeshRebuild));
+    }
+    world
+}
+
+fn build_dirty_meshes_serial_contiguous(
+    world: &World,
+    query: &mut QueryState<(&ChunkPosition, Entity), (With<Chunk>, With<ChunkNeedsMeshRebuild>)>,
+    chunks_by_pos: &HashMap<IVec3, &Chunk>,
+) -> usize {
+    let mut face_count = 0usize;
+    for (positions, _) in query
+        .contiguous_iter(world)
+        .expect("dirty mesh query should stay dense")
+    {
+        for pos in positions {
+            let blocks = ChunkMeshBlocks::from_chunks(pos.0, chunks_by_pos);
+            face_count += vp_face_count(&binary::build_descriptors_hybrid(&blocks));
+        }
+    }
+    face_count
+}
+
+fn build_dirty_meshes_parallel(
+    world: &World,
+    query: &mut QueryState<(&ChunkPosition, Entity), (With<Chunk>, With<ChunkNeedsMeshRebuild>)>,
+    chunks_by_pos: &HashMap<IVec3, &Chunk>,
+) -> usize {
+    let mut totals = Parallel::<usize>::default();
+    query.par_iter(world).for_each_init(
+        || totals.borrow_local_mut(),
+        |local_total, (pos, _)| {
+            let blocks = ChunkMeshBlocks::from_chunks(pos.0, chunks_by_pos);
+            **local_total += vp_face_count(&binary::build_descriptors_hybrid(&blocks));
+        },
+    );
+
+    totals.iter_mut().map(|total| *total).sum()
+}
+
+fn bench_dirty_mesh_loop(c: &mut Criterion) {
+    let mut group = c.benchmark_group("vp_dirty_mesh_loop");
+    for chunk_count in [1usize, 4, 16, 64, 256] {
+        let chunks = dirty_mesh_chunks(chunk_count);
+        let chunks_by_pos = chunks
+            .iter()
+            .map(|(pos, chunk)| (*pos, chunk))
+            .collect::<HashMap<_, _>>();
+        let mut world = dirty_mesh_world(&chunks);
+
+        group.throughput(Throughput::Elements(chunk_count as u64));
+        let mut query = world
+            .query_filtered::<(&ChunkPosition, Entity), (With<Chunk>, With<ChunkNeedsMeshRebuild>)>(
+            );
+        group.bench_function(BenchmarkId::new("serial_contiguous", chunk_count), |b| {
+            b.iter(|| {
+                black_box(build_dirty_meshes_serial_contiguous(
+                    &world,
+                    &mut query,
+                    black_box(&chunks_by_pos),
+                ))
+            })
+        });
+
+        let mut query = world
+            .query_filtered::<(&ChunkPosition, Entity), (With<Chunk>, With<ChunkNeedsMeshRebuild>)>(
+            );
+        group.bench_function(BenchmarkId::new("parallel", chunk_count), |b| {
+            b.iter(|| {
+                black_box(build_dirty_meshes_parallel(
+                    &world,
+                    &mut query,
+                    black_box(&chunks_by_pos),
+                ))
+            })
+        });
+    }
     group.finish();
 }
 

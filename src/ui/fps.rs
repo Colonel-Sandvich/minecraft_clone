@@ -25,7 +25,7 @@ fn setup(mut commands: Commands) {
     commands.spawn((
         Text::new("FPS: "),
         TextFont {
-            font_size: 20.0,
+            font_size: FontSize::Px(20.0),
             ..default()
         },
         TextColor(css::TOMATO.into()),

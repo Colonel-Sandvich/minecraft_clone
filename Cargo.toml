@@ -8,18 +8,19 @@ default = []
 turso-store = ["dep:tokio", "dep:turso"]
 
 [dependencies]
-bevy = { version = "0.18.1", features = ["wayland", "dynamic_linking"] }
+bevy = { version = "0.19.0", features = ["wayland", "dynamic_linking"] }
 #NOTE: Disabling bevy/dynamic_linking may improve the performance of this linker (mold).
-avian3d = { version = "0.6.1" }
-bevy-inspector-egui = { version = "0.36.0" }
+avian3d = { version = "0.7.0" }
+bevy-inspector-egui = { version = "0.37.0" }
 rusqlite = { version = "0.40.1", features = ["bundled"] }
 tokio = { version = "1.0", features = ["rt-multi-thread"], optional = true }
 turso = { version = "0.7.0-pre.7", default-features = false, optional = true }
 strum = { version = "0.28.0", features = ["derive"] }
 itertools = "0.15.0"
-bevy_framepace = "0.21.0"
-bevy_shader = "0.18.1"
-bevy_mesh = "0.18.1"
+bevy_shader = "0.19.0"
+bevy_mesh = "0.19.0"
+bevy-settings = "0.19.0"
+bevy_dev_tools = "0.19.0"
 bytemuck = { version = "1", features = ["derive"] }
 image = "0.25"
 serde = { version = "1", features = ["derive"] }
@@ -27,7 +28,7 @@ bincode = { version = "2", features = ["serde"] }
 
 [dev-dependencies]
 criterion = "0.8.2"
-naga = { version = "27.0.3", features = ["wgsl-in"] }
+naga = { version = "29.0.3", features = ["wgsl-in"] }
 
 [[bench]]
 name = "light_propagation"
@@ -35,6 +36,10 @@ harness = false
 
 [[bench]]
 name = "vertex_pulling"
+harness = false
+
+[[bench]]
+name = "ecs_queries"
 harness = false
 
 

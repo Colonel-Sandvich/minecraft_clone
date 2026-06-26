@@ -12,8 +12,8 @@ use bevy::{
         settings::{RenderCreation, WgpuSettings},
     },
 };
-use bevy_framepace::FramepacePlugin;
 use bevy_inspector_egui::{bevy_egui::EguiPlugin, quick::WorldInspectorPlugin};
+use bevy_settings::SettingsPlugin;
 
 use crate::{
     block::BlockPlugin,
@@ -21,11 +21,11 @@ use crate::{
     light::LightPlugin,
     memory::{MemoryTrackingPlugin, memory_profiler_enabled},
     mob::MobControllerPlugin,
-    player::PlayerPlugin,
+    player::{PlayerPlugin, cam::MouseSettings},
     textures::BlockTexturePlugin,
     ui::UIPlugin,
     world::chunk::mesh::vertex_pulling::VertexPullingPlugin,
-    world::{WorldConfig, WorldMetadata, WorldPlugin},
+    world::{WorldConfig, WorldMetadata, WorldPlugin, dimension::ViewDistance},
 };
 
 pub const FIXED_TICK_RATE_HZ: f64 = 20.0;
@@ -44,10 +44,13 @@ impl Plugin for AppPlugin {
                     ..default()
                 })
                 .set(RenderPlugin {
-                    render_creation: RenderCreation::Automatic(wgpu_settings()),
+                    render_creation: RenderCreation::Automatic(Box::new(wgpu_settings())),
                     ..default()
                 }),
         )
+        .register_type::<ViewDistance>()
+        .register_type::<MouseSettings>()
+        .add_plugins(SettingsPlugin::new("io.github.matt.minecraft_clone"))
         .add_plugins(EguiPlugin::default())
         .insert_resource(ClearColor(Srgba::hex("74b3ff").unwrap().into()))
         .add_plugins(GameStatePlugin)
@@ -77,8 +80,7 @@ impl Plugin for AppPlugin {
         .add_plugins(PhysicsPlugins::default())
         // .add_plugins(PhysicsDebugPlugin::default())
         .add_plugins((FrameTimeDiagnosticsPlugin::default(),))
-        .add_plugins(WorldInspectorPlugin::new().run_if(input_toggle_active(false, KeyCode::F5)))
-        .add_plugins(FramepacePlugin);
+        .add_plugins(WorldInspectorPlugin::new().run_if(input_toggle_active(false, KeyCode::F5)));
         if memory_profiler_enabled() {
             app.add_plugins(MemoryTrackingPlugin);
         }

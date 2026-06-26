@@ -1,4 +1,4 @@
-use bevy::prelude::*;
+use bevy::{platform::collections::HashMap, prelude::*};
 
 use super::{
     CHUNK_SIZE, Chunk, ChunkBlockCounts, ChunkCell, ChunkHasActiveFluids, ChunkNeedsMeshRebuild,
@@ -159,26 +159,41 @@ fn step_chunk_fluids(
         }
     }
 
+    let chunks_by_pos = {
+        let mut chunks_by_pos = HashMap::with_capacity(param_set.p1().iter().len());
+        chunks_by_pos.extend(
+            param_set
+                .p1()
+                .iter()
+                .map(|(entity, pos, _, _)| (pos.0, entity)),
+        );
+        chunks_by_pos
+    };
+
     // Second pass: write boundary flows into neighbor chunks
     for flow in boundary_flows {
-        for (entity, cpos, mut chunk, mut counts) in &mut param_set.p1() {
-            if cpos.0 == flow.target_pos {
-                let cell = chunk.cell_xyz(flow.x, flow.y, flow.z);
-                if !cell.is_block()
-                    && cell
-                        .as_fluid()
-                        .is_none_or(|f| !f.is_source() && flow.fluid.level() > f.level())
-                {
-                    chunk.set_cell_xyz(flow.x, flow.y, flow.z, ChunkCell::fluid(flow.fluid));
-                    *counts = chunk.compute_block_counts();
-                    commands.entity(entity).insert((
-                        ChunkHasActiveFluids,
-                        ChunkNeedsSave,
-                        ChunkNeedsMeshRebuild,
-                    ));
-                }
-                break;
-            }
+        let Some(entity) = chunks_by_pos.get(&flow.target_pos).copied() else {
+            continue;
+        };
+
+        let mut chunks_q = param_set.p1();
+        let Ok((entity, _, mut chunk, mut counts)) = chunks_q.get_mut(entity) else {
+            continue;
+        };
+
+        let cell = chunk.cell_xyz(flow.x, flow.y, flow.z);
+        if !cell.is_block()
+            && cell
+                .as_fluid()
+                .is_none_or(|f| !f.is_source() && flow.fluid.level() > f.level())
+        {
+            chunk.set_cell_xyz(flow.x, flow.y, flow.z, ChunkCell::fluid(flow.fluid));
+            *counts = chunk.compute_block_counts();
+            commands.entity(entity).insert((
+                ChunkHasActiveFluids,
+                ChunkNeedsSave,
+                ChunkNeedsMeshRebuild,
+            ));
         }
     }
 }

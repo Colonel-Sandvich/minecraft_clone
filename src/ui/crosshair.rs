@@ -28,7 +28,7 @@ fn spawn_crosshair(mut commands: Commands) {
             Crosshair,
             Text::new("+"),
             TextFont {
-                font_size: CROSSHAIR_SIZE,
+                font_size: FontSize::Px(CROSSHAIR_SIZE),
                 ..default()
             },
             TextColor(Color::WHITE),

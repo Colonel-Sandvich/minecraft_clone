@@ -8,7 +8,7 @@ impl Plugin for GameStatePlugin {
 
         app.configure_sets(
             Update,
-            Playing.run_if(in_state(GameState::Playing).or(in_state(GameState::GenWorld))),
+            Playing.run_if(in_state(GameState::Playing).or_else(in_state(GameState::GenWorld))),
         );
     }
 }
