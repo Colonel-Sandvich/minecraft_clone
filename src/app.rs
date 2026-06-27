@@ -4,7 +4,7 @@ use avian3d::PhysicsPlugins;
 #[cfg(debug_assertions)]
 use bevy::render::settings::InstanceFlags;
 use bevy::{
-    diagnostic::FrameTimeDiagnosticsPlugin,
+    diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin},
     input::common_conditions::input_toggle_active,
     prelude::*,
     render::{
@@ -24,7 +24,11 @@ use crate::{
     player::{PlayerPlugin, cam::MouseSettings},
     textures::BlockTexturePlugin,
     ui::UIPlugin,
-    world::chunk::mesh::vertex_pulling::VertexPullingPlugin,
+    world::chunk::{
+        Chunk, ChunkNeedsLightRebuild, ChunkNeedsLightUpload, ChunkNeedsMeshRebuild,
+        ChunkPerfCounters, ChunkPosition,
+        mesh::vertex_pulling::{VertexPullingMesh, VertexPullingPlugin},
+    },
     world::{WorldConfig, WorldMetadata, WorldPlugin, dimension::ViewDistance},
 };
 
@@ -80,6 +84,7 @@ impl Plugin for AppPlugin {
         .add_plugins(PhysicsPlugins::default())
         // .add_plugins(PhysicsDebugPlugin::default())
         .add_plugins((FrameTimeDiagnosticsPlugin::default(),))
+        .add_systems(Update, log_frame_perf)
         .add_plugins(WorldInspectorPlugin::new().run_if(input_toggle_active(false, KeyCode::F5)));
         if memory_profiler_enabled() {
             app.add_plugins(MemoryTrackingPlugin);
@@ -102,4 +107,92 @@ fn wgpu_settings() -> WgpuSettings {
         settings.instance_flags.insert(InstanceFlags::debugging());
     }
     settings
+}
+
+fn log_frame_perf(
+    time: Res<Time>,
+    diagnostics: Res<DiagnosticsStore>,
+    chunks: Query<(), With<Chunk>>,
+    dirty_mesh_chunks: Query<&ChunkPosition, (With<Chunk>, With<ChunkNeedsMeshRebuild>)>,
+    dirty_light_upload_chunks: Query<&ChunkPosition, (With<Chunk>, With<ChunkNeedsLightUpload>)>,
+    dirty_light_rebuild_chunks: Query<&ChunkPosition, (With<Chunk>, With<ChunkNeedsLightRebuild>)>,
+    vp_meshes: Query<&VertexPullingMesh>,
+    mut chunk_perf: Option<ResMut<ChunkPerfCounters>>,
+    mut timer: Local<Option<Timer>>,
+) {
+    let timer = timer.get_or_insert_with(|| Timer::from_seconds(5.0, TimerMode::Repeating));
+    if !timer.tick(time.delta()).just_finished() {
+        return;
+    }
+
+    let fps = diagnostics
+        .get(&FrameTimeDiagnosticsPlugin::FPS)
+        .and_then(|diagnostic| diagnostic.smoothed())
+        .unwrap_or_default();
+    let frame_ms = diagnostics
+        .get(&FrameTimeDiagnosticsPlugin::FRAME_TIME)
+        .and_then(|diagnostic| diagnostic.smoothed())
+        .unwrap_or_else(|| time.delta_secs_f64() * 1000.0);
+
+    let mut vp_layers = 0usize;
+    let mut vp_faces = 0u64;
+    for mesh in &vp_meshes {
+        vp_layers += 1;
+        vp_faces += u64::from(mesh.face_count);
+    }
+    let dirty_mesh_positions = dirty_mesh_chunks
+        .iter()
+        .map(|pos| pos.0)
+        .collect::<Vec<_>>();
+    let dirty_light_upload_positions = dirty_light_upload_chunks
+        .iter()
+        .map(|pos| pos.0)
+        .collect::<Vec<_>>();
+    let dirty_light_rebuild_positions = dirty_light_rebuild_chunks
+        .iter()
+        .map(|pos| pos.0)
+        .collect::<Vec<_>>();
+    let dirty_mesh_sample = format_position_sample(&dirty_mesh_positions);
+    let dirty_light_upload_sample = format_position_sample(&dirty_light_upload_positions);
+    let dirty_light_rebuild_sample = format_position_sample(&dirty_light_rebuild_positions);
+    let chunk_perf = chunk_perf
+        .as_deref_mut()
+        .map(ChunkPerfCounters::take)
+        .unwrap_or_default();
+
+    info!(
+        target: "perf",
+        fps = format_args!("{fps:.1}"),
+        frame_ms = format_args!("{frame_ms:.3}"),
+        chunks = chunks.iter().count(),
+        dirty_mesh = dirty_mesh_positions.len(),
+        dirty_mesh_sample = %dirty_mesh_sample,
+        dirty_light_upload = dirty_light_upload_positions.len(),
+        dirty_light_upload_sample = %dirty_light_upload_sample,
+        dirty_light_rebuild = dirty_light_rebuild_positions.len(),
+        dirty_light_rebuild_sample = %dirty_light_rebuild_sample,
+        mesh_rebuilds_5s = chunk_perf.mesh_rebuilds,
+        light_rebuild_targets_5s = chunk_perf.light_rebuild_targets,
+        light_uploads_5s = chunk_perf.light_uploads,
+        vp_layers,
+        vp_faces,
+        "frame perf"
+    );
+}
+
+fn format_position_sample(positions: &[IVec3]) -> String {
+    if positions.is_empty() {
+        return "[]".to_string();
+    }
+
+    let mut sample = positions
+        .iter()
+        .take(8)
+        .map(|pos| format!("{},{},{}", pos.x, pos.y, pos.z))
+        .collect::<Vec<_>>()
+        .join(" ");
+    if positions.len() > 8 {
+        sample.push_str(" ...");
+    }
+    format!("[{sample}]")
 }

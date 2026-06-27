@@ -21,10 +21,24 @@ pub struct ChunkPlugin;
 
 impl Plugin for ChunkPlugin {
     fn build(&self, app: &mut App) {
-        app.add_plugins((ChunkFluidPlugin, ChunkMeshPlugin));
+        app.init_resource::<ChunkPerfCounters>()
+            .add_plugins((ChunkFluidPlugin, ChunkMeshPlugin));
         if std::env::var_os("MINECRAFT_CLONE_DISABLE_CHUNK_COLLIDERS").is_none() {
             app.add_plugins(ChunkColliderPlugin);
         }
+    }
+}
+
+#[derive(Resource, Debug, Default)]
+pub struct ChunkPerfCounters {
+    pub mesh_rebuilds: usize,
+    pub light_rebuild_targets: usize,
+    pub light_uploads: usize,
+}
+
+impl ChunkPerfCounters {
+    pub fn take(&mut self) -> Self {
+        std::mem::take(self)
     }
 }
 

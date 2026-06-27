@@ -274,6 +274,8 @@ fn bench_vertex_pulling(c: &mut Criterion) {
     bench_mesh_descriptors_hybrid(c, &scenarios);
     bench_mesh_descriptors_floor(c, &scenarios);
     print_data_size_comparison(&scenarios);
+    print_bind_group_topology_comparison();
+    bench_bind_group_topology(c);
     bench_light_upload(c);
     bench_dirty_mesh_loop(c);
 }
@@ -345,6 +347,181 @@ fn print_data_size_comparison(scenarios: &[Scenario]) {
         );
     }
     println!();
+}
+
+#[derive(Clone, Copy, Debug)]
+struct BindGroupWork {
+    bind_groups: usize,
+    entries: usize,
+    draw_set_calls: usize,
+}
+
+fn total_layers(layer_counts: &[usize]) -> usize {
+    layer_counts.iter().sum()
+}
+
+fn non_empty_chunks(layer_counts: &[usize]) -> usize {
+    layer_counts.iter().filter(|&&layers| layers > 0).count()
+}
+
+fn realistic_layer_counts(chunk_count: usize) -> Vec<usize> {
+    let chunk = realistic_terrain_chunk();
+    let mut chunk_refs = HashMap::default();
+    chunk_refs.insert(IVec3::ZERO, &chunk);
+    let blocks = ChunkMeshBlocks::from_chunks(IVec3::ZERO, &chunk_refs);
+    let layers = binary::build_descriptors_hybrid(&blocks).len();
+
+    vec![layers; chunk_count]
+}
+
+fn current_mesh_update_work(layer_counts: &[usize]) -> BindGroupWork {
+    let layers = total_layers(layer_counts);
+    BindGroupWork {
+        bind_groups: layers,
+        entries: layers * 3,
+        draw_set_calls: layers * 2,
+    }
+}
+
+fn split_light_group_mesh_update_work(layer_counts: &[usize]) -> BindGroupWork {
+    let layers = total_layers(layer_counts);
+    let lights = non_empty_chunks(layer_counts);
+    BindGroupWork {
+        bind_groups: layers + lights,
+        entries: layers * 2 + lights,
+        draw_set_calls: layers * 3,
+    }
+}
+
+fn current_light_update_work(layer_counts: &[usize]) -> BindGroupWork {
+    let layers = total_layers(layer_counts);
+    BindGroupWork {
+        bind_groups: layers,
+        entries: layers * 3,
+        draw_set_calls: layers * 2,
+    }
+}
+
+fn split_light_group_light_update_work(layer_counts: &[usize]) -> BindGroupWork {
+    let layers = total_layers(layer_counts);
+    let lights = non_empty_chunks(layer_counts);
+    BindGroupWork {
+        bind_groups: lights,
+        entries: lights,
+        draw_set_calls: layers * 3,
+    }
+}
+
+fn push_current_mesh_update_entries(layer_counts: &[usize]) -> usize {
+    let mut entries = Vec::with_capacity(total_layers(layer_counts) * 3);
+    for (chunk_index, &layers) in layer_counts.iter().enumerate() {
+        for layer_index in 0..layers {
+            entries.push((0u32, chunk_index, layer_index));
+            entries.push((1u32, chunk_index, layer_index));
+            entries.push((2u32, chunk_index, layer_index));
+        }
+    }
+    black_box(entries).len()
+}
+
+fn push_split_light_group_mesh_update_entries(layer_counts: &[usize]) -> usize {
+    let mut entries =
+        Vec::with_capacity(total_layers(layer_counts) * 2 + non_empty_chunks(layer_counts));
+    for (chunk_index, &layers) in layer_counts.iter().enumerate() {
+        if layers > 0 {
+            entries.push((2u32, chunk_index, usize::MAX));
+        }
+        for layer_index in 0..layers {
+            entries.push((0u32, chunk_index, layer_index));
+            entries.push((1u32, chunk_index, layer_index));
+        }
+    }
+    black_box(entries).len()
+}
+
+fn push_current_light_update_entries(layer_counts: &[usize]) -> usize {
+    let mut entries = Vec::with_capacity(total_layers(layer_counts) * 3);
+    for (chunk_index, &layers) in layer_counts.iter().enumerate() {
+        for layer_index in 0..layers {
+            entries.push((0u32, chunk_index, layer_index));
+            entries.push((1u32, chunk_index, layer_index));
+            entries.push((2u32, chunk_index, layer_index));
+        }
+    }
+    black_box(entries).len()
+}
+
+fn push_split_light_group_light_update_entries(layer_counts: &[usize]) -> usize {
+    let mut entries = Vec::with_capacity(non_empty_chunks(layer_counts));
+    for (chunk_index, &layers) in layer_counts.iter().enumerate() {
+        if layers > 0 {
+            entries.push((2u32, chunk_index, usize::MAX));
+        }
+    }
+    black_box(entries).len()
+}
+
+fn print_bind_group_topology_comparison() {
+    println!("--- Vertex-pulling bind group topology (current vs split light group) ---");
+    println!(
+        "  {:>6} {:>7} {:>15} {:>15} {:>16} {:>16} {:>14} {:>14}",
+        "chunks",
+        "layers",
+        "cur mesh bg/e",
+        "split mesh bg/e",
+        "cur light bg/e",
+        "split light bg/e",
+        "cur draw sets",
+        "split draw sets",
+    );
+    for chunk_count in [64usize, 512, 4096] {
+        let layer_counts = realistic_layer_counts(chunk_count);
+        let layers = total_layers(&layer_counts);
+        let current_mesh = current_mesh_update_work(&layer_counts);
+        let split_mesh = split_light_group_mesh_update_work(&layer_counts);
+        let current_light = current_light_update_work(&layer_counts);
+        let split_light = split_light_group_light_update_work(&layer_counts);
+        println!(
+            "  {chunk_count:>6} {layers:>7} {cur_mesh_bg:>6}/{cur_mesh_entries:<6} {split_mesh_bg:>6}/{split_mesh_entries:<6} {cur_light_bg:>6}/{cur_light_entries:<6} {split_light_bg:>6}/{split_light_entries:<6} {cur_draw:>14} {split_draw:>14}",
+            cur_mesh_bg = current_mesh.bind_groups,
+            cur_mesh_entries = current_mesh.entries,
+            split_mesh_bg = split_mesh.bind_groups,
+            split_mesh_entries = split_mesh.entries,
+            cur_light_bg = current_light.bind_groups,
+            cur_light_entries = current_light.entries,
+            split_light_bg = split_light.bind_groups,
+            split_light_entries = split_light.entries,
+            cur_draw = current_mesh.draw_set_calls,
+            split_draw = split_mesh.draw_set_calls,
+        );
+    }
+    println!();
+}
+
+fn bench_bind_group_topology(c: &mut Criterion) {
+    let mut group = c.benchmark_group("vp_bind_group_topology");
+    for chunk_count in [64usize, 512, 4096] {
+        let layer_counts = realistic_layer_counts(chunk_count);
+        group.throughput(Throughput::Elements(total_layers(&layer_counts) as u64));
+
+        group.bench_function(
+            BenchmarkId::new("current_mesh_update_entries", chunk_count),
+            |b| b.iter(|| push_current_mesh_update_entries(black_box(&layer_counts))),
+        );
+        group.bench_function(
+            BenchmarkId::new("split_light_group_mesh_update_entries", chunk_count),
+            |b| b.iter(|| push_split_light_group_mesh_update_entries(black_box(&layer_counts))),
+        );
+        group.bench_function(
+            BenchmarkId::new("current_light_update_entries", chunk_count),
+            |b| b.iter(|| push_current_light_update_entries(black_box(&layer_counts))),
+        );
+        group.bench_function(
+            BenchmarkId::new("split_light_group_light_update_entries", chunk_count),
+            |b| b.iter(|| push_split_light_group_light_update_entries(black_box(&layer_counts))),
+        );
+    }
+    group.finish();
 }
 
 fn bench_light_upload(c: &mut Criterion) {

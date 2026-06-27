@@ -6,7 +6,7 @@ use bevy::{
 use crate::world::{
     chunk::{
         Chunk, ChunkHeightmap, ChunkLight, ChunkNeedsLightRebuild, ChunkNeedsLightUpload,
-        ChunkPosition, chunk_neighbor_offsets, light::compute_light_region,
+        ChunkPerfCounters, ChunkPosition, chunk_neighbor_offsets, light::compute_light_region,
     },
     generation::WorldMetadata,
 };
@@ -15,6 +15,7 @@ use super::{Active, Dimension};
 
 pub(crate) fn rebuild_chunk_light(
     mut commands: Commands,
+    mut perf: Option<ResMut<ChunkPerfCounters>>,
     needs_rebuild: Query<(Entity, &ChunkPosition), With<ChunkNeedsLightRebuild>>,
     all_chunks: Query<(Entity, &ChunkPosition, &Chunk, &ChunkLight, &ChunkHeightmap)>,
     dimension: Option<Single<&Dimension, With<Active>>>,
@@ -45,6 +46,9 @@ pub(crate) fn rebuild_chunk_light(
         loaded_chunks,
         metadata.height_chunks as i32,
     );
+    if let Some(perf) = perf.as_deref_mut() {
+        perf.light_rebuild_targets += targets.len();
+    }
 
     if targets.is_empty() {
         for (entity, _) in needs_rebuild.iter() {

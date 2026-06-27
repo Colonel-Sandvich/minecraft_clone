@@ -22,7 +22,7 @@ use crate::textures::{BlockTextures, TextureState};
 
 use super::{
     CHUNK_ISIZE, CHUNK_SIZE, CHUNK_VOLUME, Chunk, ChunkLight, ChunkNeedsLightUpload,
-    ChunkNeedsMeshRebuild, ChunkPosition, ambient_occlusion::AO_BRIGHTNESS,
+    ChunkNeedsMeshRebuild, ChunkPerfCounters, ChunkPosition, ambient_occlusion::AO_BRIGHTNESS,
 };
 
 pub(crate) const PADDED_CHUNK_SIZE: usize = CHUNK_SIZE + 2;
@@ -170,6 +170,7 @@ impl Plugin for ChunkMeshPlugin {
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn rebuild_chunk_meshes(
     mut commands: Commands,
+    mut perf: Option<ResMut<ChunkPerfCounters>>,
     block_textures: Res<BlockTextures>,
     block_texture_map: Res<BlockTextureMap>,
     dirty_chunks_q: Query<(&ChunkPosition, Entity), (With<Chunk>, With<ChunkNeedsMeshRebuild>)>,
@@ -265,6 +266,7 @@ fn rebuild_chunk_meshes(
     );
     let mut builds = Vec::new();
     build_queue.drain_into(&mut builds);
+    let rebuilt_count = builds.len();
     for build in builds {
         let origin = chunk_transform_q
             .get(build.entity)
@@ -285,6 +287,9 @@ fn rebuild_chunk_meshes(
         commands
             .entity(build.entity)
             .remove::<ChunkNeedsMeshRebuild>();
+    }
+    if let Some(perf) = perf.as_deref_mut() {
+        perf.mesh_rebuilds += rebuilt_count;
     }
 }
 
@@ -396,6 +401,7 @@ fn light_data_for_new_vp_child(
 
 fn upload_chunk_lights(
     mut commands: Commands,
+    mut perf: Option<ResMut<ChunkPerfCounters>>,
     dirty_chunks_q: Query<(&ChunkPosition, Entity), With<ChunkNeedsLightUpload>>,
     light_q: Query<(&ChunkPosition, &ChunkLight)>,
     children_q: Query<&Children>,
@@ -404,6 +410,7 @@ fn upload_chunk_lights(
     if dirty_chunks_q.is_empty() {
         return;
     }
+    let upload_count = dirty_chunks_q.iter().len();
 
     let mut lights_by_pos: HashMap<IVec3, &ChunkLight> =
         HashMap::with_capacity(light_q.iter().len());
@@ -433,6 +440,9 @@ fn upload_chunk_lights(
         commands
             .entity(chunk_entity)
             .remove::<ChunkNeedsLightUpload>();
+    }
+    if let Some(perf) = perf.as_deref_mut() {
+        perf.light_uploads += upload_count;
     }
 }
 
