@@ -981,8 +981,6 @@ impl Chunk {
                     }
                     if source_neighbors >= 2 {
                         self.set_cell_xyz(x, y, z, ChunkCell::fluid(profile.source()));
-                        changed = true;
-                        boundary_changed |= is_chunk_boundary_cell(x, y, z);
                         continue;
                     }
                     if source_neighbors >= 1
@@ -992,17 +990,31 @@ impl Chunk {
                             .is_some_and(|f| f.is_source() && f.ty() == profile.ty)
                     {
                         self.set_cell_xyz(x, y, z, ChunkCell::fluid(profile.source()));
-                        changed = true;
-                        boundary_changed |= is_chunk_boundary_cell(x, y, z);
                     }
                 }
             }
         }
 
-        FluidStepResult {
-            changed,
-            boundary_changed,
+        self.fluid_step_result_from(&old_cells)
+    }
+
+    pub(super) fn fluid_step_result_from(
+        &self,
+        old_cells: &[ChunkCell; CHUNK_VOLUME],
+    ) -> FluidStepResult {
+        let mut result = FluidStepResult::default();
+        for y in 0..CHUNK_SIZE {
+            for z in 0..CHUNK_SIZE {
+                for x in 0..CHUNK_SIZE {
+                    let index = chunk_linear_index(x, y, z);
+                    if old_cells[index] != self.cell_linear(index) {
+                        result.changed = true;
+                        result.boundary_changed |= is_chunk_boundary_cell(x, y, z);
+                    }
+                }
+            }
         }
+        result
     }
 
     pub fn compute_block_counts(&self) -> ChunkBlockCounts {
@@ -1142,7 +1154,7 @@ impl Chunk {
         (0..CHUNK_VOLUME).any(|index| self.hot_meta_linear(index).fluid_level > 0)
     }
 
-    fn to_cell_buffer(&self) -> [ChunkCell; CHUNK_VOLUME] {
+    pub(super) fn to_cell_buffer(&self) -> [ChunkCell; CHUNK_VOLUME] {
         std::array::from_fn(|index| self.cell_linear(index))
     }
 }
@@ -1485,6 +1497,31 @@ mod tests {
         assert!(chunk.step_fluids(&FluidProfile::WATER).changed);
 
         assert_eq!(chunk.get_cell(pos), ChunkCell::EMPTY);
+    }
+
+    #[test]
+    fn water_step_reports_changed_only_when_final_state_changes() {
+        let mut chunk = Chunk::default();
+        for x in 0..CHUNK_SIZE {
+            for z in 0..CHUNK_SIZE {
+                chunk.set_cell_xyz(x, 0, z, BlockType::Stone.into());
+            }
+        }
+        chunk.set_cell(uvec3(7, 1, 8), ChunkCell::water_source());
+        chunk.set_cell(uvec3(9, 1, 8), ChunkCell::water_source());
+
+        let mut settled = false;
+        for _ in 0..128 {
+            let before = chunk.clone();
+            let result = chunk.step_fluids(&FluidProfile::WATER);
+            assert_eq!(result.changed, before != chunk);
+            if !result.changed {
+                settled = true;
+                break;
+            }
+        }
+
+        assert!(settled, "water should settle in a finite chunk");
     }
 
     #[test]
