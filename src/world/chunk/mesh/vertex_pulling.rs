@@ -5,7 +5,8 @@
 //! descriptors via `@builtin(vertex_index)` and samples the per-chunk light buffer.
 //!
 //! Bind group 0 (per frame): view_proj + terrain texture array + texture_layers
-//! Bind group 1 (per chunk): face descriptor SSBO + chunk_origin + light_data
+//! Bind group 1 (per chunk layer): face descriptor SSBO + chunk_origin
+//! Bind group 2 (per chunk light): light_data
 
 use std::{
     any::TypeId,
@@ -249,13 +250,20 @@ impl VertexPullingLight {
     }
 }
 
+#[derive(Clone)]
+struct PreparedLightResource {
+    buffer: Buffer,
+    bind_group: BindGroup,
+}
+
 // ---------------------------------------------------------------------------
 // Render-world resources
 // ---------------------------------------------------------------------------
 
 #[derive(Component)]
 pub struct PreparedChunkVp {
-    pub bind_group: BindGroup,
+    pub mesh_bind_group: BindGroup,
+    pub light_bind_group: BindGroup,
     pub face_count: u32,
     pub material_layer: BlockMaterialLayer,
     pub chunk_origin: Vec3,
@@ -282,6 +290,7 @@ pub struct VpStaticResources {
 #[derive(Resource)]
 pub struct VpPipeline {
     pub chunk_bind_group_layout: BindGroupLayout,
+    pub light_bind_group_layout: BindGroupLayout,
     pub group0_bind_group_layout: BindGroupLayout,
     pub opaque_id: CachedRenderPipelineId,
     pub cutout_id: CachedRenderPipelineId,
@@ -401,8 +410,11 @@ fn vp_group1_entries() -> Vec<BindGroupLayoutEntry> {
     vec![
         read_only_storage_entry(0, ShaderStages::VERTEX),
         uniform_entry(1, ShaderStages::VERTEX, 16),
-        read_only_storage_entry(2, ShaderStages::VERTEX),
     ]
+}
+
+fn vp_group2_entries() -> Vec<BindGroupLayoutEntry> {
+    vec![read_only_storage_entry(0, ShaderStages::VERTEX)]
 }
 
 fn vp_pipeline_descriptor(
@@ -410,13 +422,14 @@ fn vp_pipeline_descriptor(
     shader: Handle<Shader>,
     group0_desc: BindGroupLayoutDescriptor,
     group1_desc: BindGroupLayoutDescriptor,
+    group2_desc: BindGroupLayoutDescriptor,
     alpha_to_coverage_enabled: bool,
     blend: Option<BlendState>,
     depth_write_enabled: bool,
 ) -> RenderPipelineDescriptor {
     RenderPipelineDescriptor {
         label: Some(Cow::Borrowed(label)),
-        layout: vec![group0_desc, group1_desc],
+        layout: vec![group0_desc, group1_desc, group2_desc],
         immediate_size: 0,
         vertex: VertexState {
             shader: shader.clone(),
@@ -566,7 +579,8 @@ impl<P: PhaseItem> RenderCommand<P> for DrawVertexPulled {
             return RenderCommandResult::Skip;
         };
         pass.set_bind_group(0, &globals.group0_bind_group, &[]);
-        pass.set_bind_group(1, &data.bind_group, &[]);
+        pass.set_bind_group(1, &data.mesh_bind_group, &[]);
+        pass.set_bind_group(2, &data.light_bind_group, &[]);
         pass.draw(0..data.face_count * 6, 0..1);
         RenderCommandResult::Success
     }
@@ -644,8 +658,12 @@ impl Plugin for VertexPullingPlugin {
         let group1_entries = vp_group1_entries();
         let group1_layout = render_device.create_bind_group_layout("vp_g1_chunk", &group1_entries);
 
+        let group2_entries = vp_group2_entries();
+        let group2_layout = render_device.create_bind_group_layout("vp_g2_light", &group2_entries);
+
         let group0_desc = BindGroupLayoutDescriptor::new("vp_g0_globals", &group0_entries);
         let group1_desc = BindGroupLayoutDescriptor::new("vp_g1_chunk", &group1_entries);
+        let group2_desc = BindGroupLayoutDescriptor::new("vp_g2_light", &group2_entries);
 
         let pipeline_cache = render_app.world().resource::<PipelineCache>();
 
@@ -654,6 +672,7 @@ impl Plugin for VertexPullingPlugin {
             shader.clone(),
             group0_desc.clone(),
             group1_desc.clone(),
+            group2_desc.clone(),
             false,
             None,
             true,
@@ -664,6 +683,7 @@ impl Plugin for VertexPullingPlugin {
             shader.clone(),
             group0_desc.clone(),
             group1_desc.clone(),
+            group2_desc.clone(),
             true,
             Some(BlendState::ALPHA_BLENDING),
             true,
@@ -674,6 +694,7 @@ impl Plugin for VertexPullingPlugin {
             shader,
             group0_desc,
             group1_desc,
+            group2_desc,
             false,
             Some(BlendState::ALPHA_BLENDING),
             false,
@@ -681,6 +702,7 @@ impl Plugin for VertexPullingPlugin {
 
         render_app.world_mut().insert_resource(VpPipeline {
             chunk_bind_group_layout: group1_layout,
+            light_bind_group_layout: group2_layout,
             group0_bind_group_layout: group0_layout.clone(),
             opaque_id,
             cutout_id,
@@ -1017,7 +1039,7 @@ fn prepare_gpu_data(
     );
 
     let mut mesh_prepared = HashSet::new();
-    let mut prepared_light_buffers = HashMap::new();
+    let mut prepared_light_resources = HashMap::new();
 
     // Mesh changes rebuild descriptor/origin buffers. Existing light buffers are reused unless
     // this entity's light component changed in the same extract pass.
@@ -1037,55 +1059,73 @@ fn prepare_gpu_data(
             continue;
         };
         let origin_buf = create_origin_buffer(&render_device, mesh);
-        let light_buf = match (light.as_ref(), prepared_q.get(entity).ok()) {
-            (Some(light), _) if light.is_changed() => {
-                light_buffer_for(&render_device, &mut prepared_light_buffers, light, None)
-            }
-            (Some(light), Some(prepared)) => light_buffer_for(
+        let light_resource = match (light.as_ref(), prepared_q.get(entity).ok()) {
+            (Some(light), _) if light.is_changed() => light_resource_for(
                 &render_device,
-                &mut prepared_light_buffers,
+                &pipeline,
+                &mut prepared_light_resources,
                 light,
-                Some(&prepared.light_buf),
+                None,
             ),
-            (Some(light), _) => {
-                light_buffer_for(&render_device, &mut prepared_light_buffers, light, None)
-            }
-            (None, Some(prepared)) => prepared.light_buf.clone(),
+            (Some(light), Some(prepared)) => light_resource_for(
+                &render_device,
+                &pipeline,
+                &mut prepared_light_resources,
+                light,
+                Some(PreparedLightResource {
+                    buffer: prepared.light_buf.clone(),
+                    bind_group: prepared.light_bind_group.clone(),
+                }),
+            ),
+            (Some(light), _) => light_resource_for(
+                &render_device,
+                &pipeline,
+                &mut prepared_light_resources,
+                light,
+                None,
+            ),
+            (None, Some(prepared)) => PreparedLightResource {
+                buffer: prepared.light_buf.clone(),
+                bind_group: prepared.light_bind_group.clone(),
+            },
             (None, _) => continue,
         };
-        let bind_group = create_chunk_bind_group(
-            &render_device,
-            &pipeline,
-            &desc_buf,
-            &origin_buf,
-            &light_buf,
-        );
+        let mesh_bind_group =
+            create_chunk_mesh_bind_group(&render_device, &pipeline, &desc_buf, &origin_buf);
 
         commands.entity(entity).remove::<ChunkMeshDescriptors>();
         commands.entity(entity).insert(PreparedChunkVp {
-            bind_group,
+            mesh_bind_group,
+            light_bind_group: light_resource.bind_group,
             face_count: mesh.face_count,
             material_layer: mesh.material_layer,
             chunk_origin: mesh.chunk_origin,
             desc_buf,
             origin_buf,
-            light_buf,
+            light_buf: light_resource.buffer,
         });
     }
 
     // Light-only changes reuse descriptor/origin buffers and rebuild only the light buffer plus
-    // bind group. If a mesh was prepared above, it already consumed the latest light data.
+    // its small bind group. If a mesh was prepared above, it already consumed the latest light data.
     for (entity, light) in &lights_q {
         if mesh_prepared.contains(&entity) {
             continue;
         }
 
-        let light_buf = light_buffer_for(&render_device, &mut prepared_light_buffers, &light, None);
-        let (desc_buf, origin_buf, face_count, material_layer, chunk_origin) =
+        let light_resource = light_resource_for(
+            &render_device,
+            &pipeline,
+            &mut prepared_light_resources,
+            &light,
+            None,
+        );
+        let (desc_buf, origin_buf, mesh_bind_group, face_count, material_layer, chunk_origin) =
             if let Ok(prepared) = prepared_q.get(entity) {
                 (
                     prepared.desc_buf.clone(),
                     prepared.origin_buf.clone(),
+                    prepared.mesh_bind_group.clone(),
                     prepared.face_count,
                     prepared.material_layer,
                     prepared.chunk_origin,
@@ -1098,9 +1138,14 @@ fn prepare_gpu_data(
                     commands.entity(entity).remove::<PreparedChunkVp>();
                     continue;
                 }
+                let desc_buf = create_descriptor_buffer_from_slice(&render_device, &desc.0);
+                let origin_buf = create_origin_buffer(&render_device, mesh);
+                let mesh_bind_group =
+                    create_chunk_mesh_bind_group(&render_device, &pipeline, &desc_buf, &origin_buf);
                 (
-                    create_descriptor_buffer_from_slice(&render_device, &desc.0),
-                    create_origin_buffer(&render_device, mesh),
+                    desc_buf,
+                    origin_buf,
+                    mesh_bind_group,
                     mesh.face_count,
                     mesh.material_layer,
                     mesh.chunk_origin,
@@ -1108,22 +1153,16 @@ fn prepare_gpu_data(
             } else {
                 continue;
             };
-        let bind_group = create_chunk_bind_group(
-            &render_device,
-            &pipeline,
-            &desc_buf,
-            &origin_buf,
-            &light_buf,
-        );
 
         commands.entity(entity).insert(PreparedChunkVp {
-            bind_group,
+            mesh_bind_group,
+            light_bind_group: light_resource.bind_group,
             face_count,
             material_layer,
             chunk_origin,
             desc_buf,
             origin_buf,
-            light_buf,
+            light_buf: light_resource.buffer,
         });
     }
 }
@@ -1163,36 +1202,38 @@ fn create_light_buffer(render_device: &RenderDevice, light: &VertexPullingLight)
     })
 }
 
-fn light_buffer_for(
+fn light_resource_for(
     render_device: &RenderDevice,
-    prepared_light_buffers: &mut HashMap<SharedLightDataKey, Buffer>,
+    pipeline: &VpPipeline,
+    prepared_light_resources: &mut HashMap<SharedLightDataKey, PreparedLightResource>,
     light: &VertexPullingLight,
-    reusable_existing: Option<&Buffer>,
-) -> Buffer {
+    reusable_existing: Option<PreparedLightResource>,
+) -> PreparedLightResource {
     let key = light.data_key();
-    if let Some(buffer) = prepared_light_buffers.get(&key) {
-        return buffer.clone();
+    if let Some(resource) = prepared_light_resources.get(&key) {
+        return resource.clone();
     }
 
-    if let Some(buffer) = reusable_existing {
-        prepared_light_buffers.insert(key, buffer.clone());
-        return buffer.clone();
+    if let Some(resource) = reusable_existing {
+        prepared_light_resources.insert(key, resource.clone());
+        return resource;
     }
 
     let buffer = create_light_buffer(render_device, light);
-    prepared_light_buffers.insert(key, buffer.clone());
-    buffer
+    let bind_group = create_light_bind_group(render_device, pipeline, &buffer);
+    let resource = PreparedLightResource { buffer, bind_group };
+    prepared_light_resources.insert(key, resource.clone());
+    resource
 }
 
-fn create_chunk_bind_group(
+fn create_chunk_mesh_bind_group(
     render_device: &RenderDevice,
     pipeline: &VpPipeline,
     desc_buf: &Buffer,
     origin_buf: &Buffer,
-    light_buf: &Buffer,
 ) -> BindGroup {
     render_device.create_bind_group(
-        "vp_chunk",
+        "vp_chunk_mesh",
         &pipeline.chunk_bind_group_layout,
         &[
             BindGroupEntry {
@@ -1203,11 +1244,22 @@ fn create_chunk_bind_group(
                 binding: 1,
                 resource: origin_buf.as_entire_binding(),
             },
-            BindGroupEntry {
-                binding: 2,
-                resource: light_buf.as_entire_binding(),
-            },
         ],
+    )
+}
+
+fn create_light_bind_group(
+    render_device: &RenderDevice,
+    pipeline: &VpPipeline,
+    light_buf: &Buffer,
+) -> BindGroup {
+    render_device.create_bind_group(
+        "vp_light",
+        &pipeline.light_bind_group_layout,
+        &[BindGroupEntry {
+            binding: 0,
+            resource: light_buf.as_entire_binding(),
+        }],
     )
 }
 

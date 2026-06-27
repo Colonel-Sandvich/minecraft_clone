@@ -9,10 +9,11 @@
 //   binding 6: ao_brightness uniform (vec4<f32>)
 //   binding 7: emission_factors storage (array<f32>)      // (block_type * 6 + face_dir)
 //   binding 8: terrain_visual_settings uniform
-// Bind group 1 (per chunk):
+// Bind group 1 (per chunk layer):
 //   binding 0: faces storage (array<FaceDescriptor>)
 //   binding 1: chunk_origin uniform (vec4<f32>)
-//   binding 2: light_data storage (array<u32>) // padded 18³, 4 packed light cells per u32
+// Bind group 2 (per chunk light):
+//   binding 0: light_data storage (array<u32>) // padded 18³, 4 packed light cells per u32
 
 struct FaceDescriptor {
     packed: u32,
@@ -38,7 +39,7 @@ struct TerrainVisualSettings {
 
 @group(1) @binding(0) var<storage, read> faces: array<FaceDescriptor>;
 @group(1) @binding(1) var<uniform> chunk_origin: vec4<f32>;
-@group(1) @binding(2) var<storage, read> light_data: array<u32>;
+@group(2) @binding(0) var<storage, read> light_data: array<u32>;
 
 const CORNER_OFFSETS: array<array<vec3<f32>, 4>, 6> = array(
     /* Left    */ array(vec3(0,0,1), vec3(0,0,0), vec3(0,1,1), vec3(0,1,0)),

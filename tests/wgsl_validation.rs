@@ -50,7 +50,7 @@ fn vertex_pulling_bindings_match_render_layout() {
         (0, 8),
         (1, 0),
         (1, 1),
-        (1, 2),
+        (2, 0),
     ]);
 
     assert_eq!(bindings, expected);
@@ -125,8 +125,8 @@ fn vertex_pulling_resource_metadata_matches_render_layout() {
                 kind: ResourceKind::Uniform,
             },
             ShaderResource {
-                group: 1,
-                binding: 2,
+                group: 2,
+                binding: 0,
                 name: "light_data",
                 kind: ResourceKind::ReadOnlyStorage,
             },
