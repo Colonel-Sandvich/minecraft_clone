@@ -56,7 +56,7 @@ use super::{
     CHUNK_SIZE, ChunkMeshBlocks, DIRECTION_COUNT, DIRECTION_INDEX_OFFSETS, block_mesh_flags,
     face_ao_key_from_indices, material_layer_index_from_flags, padded_chunk_index,
     should_emit_face_from_flags, should_emit_translucent_face, water_below_pair,
-    water_corner_heights,
+    water_corner_heights, water_flow_code,
 };
 
 // ---------------------------------------------------------------------------
@@ -64,7 +64,7 @@ use super::{
 // ---------------------------------------------------------------------------
 
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Default, bytemuck::Pod, bytemuck::Zeroable)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct FaceDescriptor {
     pub packed: u32,
     pub info: u32,
@@ -100,12 +100,76 @@ impl FaceDescriptor {
         self
     }
 
-    /// Mark the UP face to use the flow texture instead of still (bit 0 of `packed`).
+    /// Mark the UP face to use the flow texture and orient it by a quantized
+    /// horizontal flow direction. Bit 0 means flowing; bits 1-4 store the code.
     #[inline]
-    pub fn with_water_up_flowing(mut self) -> Self {
-        self.packed |= 1;
+    pub fn with_water_up_flow(mut self, flow_code: u32) -> Self {
+        self.packed |= 1 | ((flow_code & 0xF) << 1);
         self
     }
+
+    #[inline]
+    pub fn x(self) -> u32 {
+        (self.packed >> 27) & 0x1F
+    }
+
+    #[inline]
+    pub fn y(self) -> u32 {
+        (self.packed >> 17) & 0x1F
+    }
+
+    #[inline]
+    pub fn z(self) -> u32 {
+        (self.packed >> 22) & 0x1F
+    }
+
+    #[inline]
+    pub fn face_dir(self) -> u32 {
+        (self.packed >> 14) & 0x7
+    }
+
+    #[inline]
+    pub fn block_type(self) -> u32 {
+        self.info & 0xFF
+    }
+
+    #[inline]
+    pub fn water_up_flowing(self) -> bool {
+        self.packed & 1 != 0
+    }
+
+    #[inline]
+    pub fn water_flow_code(self) -> u32 {
+        (self.packed >> 1) & 0xF
+    }
+}
+
+pub(super) fn water_face_descriptor(
+    desc: FaceDescriptor,
+    blocks: &ChunkMeshBlocks,
+    padded_index: usize,
+    side_index: usize,
+) -> FaceDescriptor {
+    let level = blocks.get_fluid_level(padded_index);
+    let (h00, h10, h01, h11) = water_corner_heights(level, blocks, padded_index);
+    let mut desc = desc.with_corner_heights(h00, h10, h01, h11);
+    let below_idx = (padded_index as isize + DIRECTION_INDEX_OFFSETS[2]) as usize;
+    let below = unsafe { *blocks.blocks.get_unchecked(below_idx) };
+    if below == WATER_RENDER_ID {
+        let bl = blocks.get_fluid_level(below_idx);
+        let (bh00, bh10, bh01, bh11) = water_corner_heights(bl, blocks, below_idx);
+        let (lo, hi) = water_below_pair(side_index, bh00, bh10, bh01, bh11);
+        desc = desc.with_water_below(lo, hi);
+    }
+
+    if side_index == 3 {
+        let flow_code = water_flow_code(level, blocks, padded_index);
+        if flow_code != 0 || (h00 | h10 | h01 | h11) != 8 {
+            desc = desc.with_water_up_flow(flow_code);
+        }
+    }
+
+    desc
 }
 
 // ---------------------------------------------------------------------------
@@ -168,27 +232,7 @@ pub fn build_descriptors(
                             );
                             descriptors[material_layer_index_from_flags(block_flags)].push(
                                 if is_water {
-                                    let level = blocks.get_fluid_level(padded_index);
-                                    let (h00, h10, h01, h11) =
-                                        water_corner_heights(level, blocks, padded_index);
-                                    let mut desc = desc.with_corner_heights(h00, h10, h01, h11);
-                                    let below_idx = (padded_index as isize
-                                        + DIRECTION_INDEX_OFFSETS[2])
-                                        as usize;
-                                    let below = unsafe { *blocks.blocks.get_unchecked(below_idx) };
-                                    if below == WATER_RENDER_ID {
-                                        let bl = blocks.get_fluid_level(below_idx);
-                                        let (bh00, bh10, bh01, bh11) =
-                                            water_corner_heights(bl, blocks, below_idx);
-                                        let (lo, hi) =
-                                            water_below_pair(side_index, bh00, bh10, bh01, bh11);
-                                        desc = desc.with_water_below(lo, hi);
-                                    }
-                                    // UP face uses flow texture unless all 4 corners are 8
-                                    if side_index == 3 && (h00 | h10 | h01 | h11) != 8 {
-                                        desc = desc.with_water_up_flowing();
-                                    }
-                                    desc
+                                    water_face_descriptor(desc, blocks, padded_index, side_index)
                                 } else {
                                     desc
                                 },
@@ -685,7 +729,7 @@ impl Plugin for VertexPullingPlugin {
             group1_desc.clone(),
             group2_desc.clone(),
             true,
-            Some(BlendState::ALPHA_BLENDING),
+            None,
             true,
         ));
 

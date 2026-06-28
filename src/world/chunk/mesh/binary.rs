@@ -22,12 +22,11 @@ use crate::block::{
     WATER_RENDER_ID,
 };
 
-use super::vertex_pulling::FaceDescriptor;
+use super::vertex_pulling::{FaceDescriptor, water_face_descriptor};
 use super::{
     CHUNK_SIZE, DIRECTION_INDEX_OFFSETS, PADDED_CHUNK_SIZE, block_mesh_flags,
     face_ao_key_from_indices, material_layer_index_from_flags, padded_chunk_index,
-    should_emit_face_from_flags, should_emit_translucent_face, vertex_ao_key, water_below_pair,
-    water_corner_heights,
+    should_emit_face_from_flags, should_emit_translucent_face, vertex_ao_key,
 };
 
 /// A packed 18×18 bitmask stored across 6 u64 words (324 bits).
@@ -574,26 +573,7 @@ fn push_descriptors_non_full_cube(
                         );
                         descriptors[material_layer_index_from_flags(block_flags)].push(
                             if is_water {
-                                let level = blocks.get_fluid_level(padded_index);
-                                let (h00, h10, h01, h11) =
-                                    water_corner_heights(level, blocks, padded_index);
-                                let mut desc = desc.with_corner_heights(h00, h10, h01, h11);
-                                let below_idx =
-                                    (padded_index as isize + DIRECTION_INDEX_OFFSETS[2]) as usize;
-                                let below = unsafe { *blocks.blocks.get_unchecked(below_idx) };
-                                if below == WATER_RENDER_ID {
-                                    let bl = blocks.get_fluid_level(below_idx);
-                                    let (bh00, bh10, bh01, bh11) =
-                                        water_corner_heights(bl, blocks, below_idx);
-                                    let (lo, hi) =
-                                        water_below_pair(side_index, bh00, bh10, bh01, bh11);
-                                    desc = desc.with_water_below(lo, hi);
-                                }
-                                // UP face uses flow texture unless all 4 corners are 8
-                                if side_index == 3 && (h00 | h10 | h01 | h11) != 8 {
-                                    desc = desc.with_water_up_flowing();
-                                }
-                                desc
+                                water_face_descriptor(desc, blocks, padded_index, side_index)
                             } else {
                                 desc
                             },

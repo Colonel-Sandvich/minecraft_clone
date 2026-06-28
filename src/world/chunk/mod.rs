@@ -1,6 +1,7 @@
 pub mod ambient_occlusion;
 pub mod collider;
 mod fluid;
+mod fluid_sim;
 pub mod light;
 pub mod mesh;
 
@@ -893,119 +894,13 @@ impl Chunk {
 
     pub fn step_fluids(&mut self, profile: &FluidProfile) -> FluidStepResult {
         let old_cells = self.to_cell_buffer();
-        let mut next_cells = old_cells;
 
-        for y in 0..CHUNK_SIZE {
-            for z in 0..CHUNK_SIZE {
-                for x in 0..CHUNK_SIZE {
-                    let index = chunk_linear_index(x, y, z);
-                    if old_cells[index].as_fluid().is_some() {
-                        next_cells[index] = ChunkCell::EMPTY;
-                    }
-                }
-            }
-        }
-
-        for y in 0..CHUNK_SIZE {
-            for z in 0..CHUNK_SIZE {
-                for x in 0..CHUNK_SIZE {
-                    let index = chunk_linear_index(x, y, z);
-                    let Some(fluid) = old_cells[index].as_fluid() else {
-                        continue;
-                    };
-                    if fluid.ty() != profile.ty {
-                        continue;
-                    }
-
-                    if fluid.is_source() {
-                        write_fluid(&mut next_cells, x, y, z, profile.source());
-                    }
-
-                    if y > 0 && fluid_can_occupy(old_cells[chunk_linear_index(x, y - 1, z)]) {
-                        write_fluid(&mut next_cells, x, y - 1, z, profile.falling());
-                        continue;
-                    }
-
-                    let Some(next_fluid) = profile.decayed_flow(fluid) else {
-                        continue;
-                    };
-                    for (nx, nz) in horizontal_neighbors(x, z) {
-                        if fluid_can_occupy(old_cells[chunk_linear_index(nx, y, nz)]) {
-                            write_fluid(&mut next_cells, nx, y, nz, next_fluid);
-                        }
-                    }
-                }
-            }
-        }
-
-        let mut changed = false;
-        let mut boundary_changed = false;
-        for y in 0..CHUNK_SIZE {
-            for z in 0..CHUNK_SIZE {
-                for x in 0..CHUNK_SIZE {
-                    let index = chunk_linear_index(x, y, z);
-                    if old_cells[index] != next_cells[index] {
-                        changed = true;
-                        boundary_changed |= is_chunk_boundary_cell(x, y, z);
-                        self.set_cell_linear(index, next_cells[index]);
-                    }
-                }
-            }
-        }
-
-        if !profile.creates_sources {
-            return FluidStepResult {
-                changed,
-                boundary_changed,
-            };
-        }
-
-        // Source creation pass: a flowing fluid becomes a source if:
-        //   a) >=2 source neighbors horizontally AND block below is solid/source
-        //   b) >=1 source neighbor horizontally AND source vertically above
-        //      AND block below is solid/source (flowing-down source creation)
-        for y in 0..CHUNK_SIZE {
-            for z in 0..CHUNK_SIZE {
-                for x in 0..CHUNK_SIZE {
-                    let current = self.cell_xyz(x, y, z);
-                    let Some(fluid) = current.as_fluid() else {
-                        continue;
-                    };
-                    if fluid.is_source() || fluid.ty() != profile.ty {
-                        continue;
-                    }
-                    let source_neighbors = horizontal_neighbors(x, z)
-                        .filter(|&(nx, nz)| {
-                            self.cell_xyz(nx, y, nz)
-                                .as_fluid()
-                                .is_some_and(|f| f.is_source() && f.ty() == profile.ty)
-                        })
-                        .count();
-                    let below = if y > 0 {
-                        old_cells[chunk_linear_index(x, y - 1, z)]
-                    } else {
-                        ChunkCell::EMPTY
-                    };
-                    let below_ok = below.is_block()
-                        || below
-                            .as_fluid()
-                            .is_some_and(|f| f.is_source() && f.ty() == profile.ty);
-                    if !below_ok {
-                        continue;
-                    }
-                    if source_neighbors >= 2 {
-                        self.set_cell_xyz(x, y, z, ChunkCell::fluid(profile.source()));
-                        continue;
-                    }
-                    if source_neighbors >= 1
-                        && y + 1 < CHUNK_SIZE
-                        && old_cells[chunk_linear_index(x, y + 1, z)]
-                            .as_fluid()
-                            .is_some_and(|f| f.is_source() && f.ty() == profile.ty)
-                    {
-                        self.set_cell_xyz(x, y, z, ChunkCell::fluid(profile.source()));
-                    }
-                }
+        let snapshot = fluid_sim::FluidSnapshot::from_chunk(IVec3::ZERO, self);
+        let step = fluid_sim::simulate_fluid_step(&snapshot, &[IVec3::ZERO], *profile);
+        for update in step.updates {
+            let (chunk_pos, local) = fluid_sim::world_to_chunk_local(update.pos);
+            if chunk_pos == IVec3::ZERO {
+                self.set_cell(local, update.cell);
             }
         }
 
@@ -1171,43 +1066,6 @@ impl Chunk {
     pub(super) fn to_cell_buffer(&self) -> [ChunkCell; CHUNK_VOLUME] {
         std::array::from_fn(|index| self.cell_linear(index))
     }
-}
-
-fn fluid_can_occupy(cell: ChunkCell) -> bool {
-    !cell.is_block()
-}
-
-fn write_fluid(
-    cells: &mut [ChunkCell; CHUNK_VOLUME],
-    x: usize,
-    y: usize,
-    z: usize,
-    fluid: FluidState,
-) {
-    let current = &mut cells[chunk_linear_index(x, y, z)];
-    if !fluid_can_occupy(*current) {
-        return;
-    }
-    let current_fluid = current.as_fluid();
-    if current_fluid.is_none()
-        || fluid.is_source()
-        || current_fluid.is_some_and(|current| {
-            !current.is_source() && fluid.level().get() > current.level().get()
-        })
-    {
-        *current = ChunkCell::fluid(fluid);
-    }
-}
-
-fn horizontal_neighbors(x: usize, z: usize) -> impl Iterator<Item = (usize, usize)> {
-    [
-        (x.checked_sub(1), Some(z)),
-        ((x + 1 < CHUNK_SIZE).then_some(x + 1), Some(z)),
-        (Some(x), z.checked_sub(1)),
-        (Some(x), (z + 1 < CHUNK_SIZE).then_some(z + 1)),
-    ]
-    .into_iter()
-    .filter_map(|(x, z)| Some((x?, z?)))
 }
 
 fn is_chunk_boundary_cell(x: usize, y: usize, z: usize) -> bool {

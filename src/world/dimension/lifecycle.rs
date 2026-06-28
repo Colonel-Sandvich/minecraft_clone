@@ -196,9 +196,11 @@ fn mark_loaded_neighbor_meshes_dirty(commands: &mut Commands, dimension: &Dimens
             continue;
         };
 
-        commands
-            .entity(entity)
-            .insert((ChunkNeedsMeshRebuild, ChunkNeedsLightUpload));
+        commands.entity(entity).insert((
+            ChunkNeedsMeshRebuild,
+            ChunkNeedsLightUpload,
+            ChunkHasActiveFluids,
+        ));
     }
 
     mark_loaded_light_column_dirty(commands, dimension, pos);
@@ -345,12 +347,27 @@ mod tests {
         );
         assert!(
             world
+                .get::<ChunkHasActiveFluids>(chunks[&face_neighbor])
+                .is_some()
+        );
+        assert!(
+            world
                 .get::<ChunkNeedsMeshRebuild>(chunks[&diagonal_neighbor])
                 .is_some()
         );
         assert!(
             world
+                .get::<ChunkHasActiveFluids>(chunks[&diagonal_neighbor])
+                .is_some()
+        );
+        assert!(
+            world
                 .get::<ChunkNeedsMeshRebuild>(chunks[&non_neighbor])
+                .is_none()
+        );
+        assert!(
+            world
+                .get::<ChunkHasActiveFluids>(chunks[&non_neighbor])
                 .is_none()
         );
     }

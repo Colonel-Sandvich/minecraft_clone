@@ -263,7 +263,9 @@ fn mark_boundary_neighbor_meshes_dirty(
             continue;
         };
 
-        commands.entity(entity).insert(ChunkNeedsMeshRebuild);
+        commands
+            .entity(entity)
+            .insert((ChunkNeedsMeshRebuild, ChunkHasActiveFluids));
     }
 }
 

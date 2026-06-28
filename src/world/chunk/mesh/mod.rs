@@ -567,6 +567,69 @@ pub(crate) fn water_below_pair(
     }
 }
 
+/// Quantized horizontal water-flow direction for top-face UV orientation.
+///
+/// Codes are zero for still/no horizontal flow, then clockwise in X/Z space:
+/// `1=+X`, `2=+X+Z`, `3=+Z`, `4=-X+Z`, `5=-X`, `6=-X-Z`, `7=-Z`, `8=+X-Z`.
+pub(crate) fn water_flow_code(
+    self_level: u8,
+    blocks: &ChunkMeshBlocks,
+    padded_index: usize,
+) -> u32 {
+    let mut dx = 0i32;
+    let mut dz = 0i32;
+    for (offset, vx, vz) in [
+        (-1isize, -1, 0),
+        (1, 1, 0),
+        (-(PADDED_CHUNK_SIZE as isize), 0, -1),
+        (PADDED_CHUNK_SIZE as isize, 0, 1),
+    ] {
+        let neighbor_index = (padded_index as isize + offset) as usize;
+        let neighbor = unsafe { *blocks.blocks.get_unchecked(neighbor_index) };
+        let neighbor_level = if neighbor == WATER_RENDER_ID {
+            blocks.get_fluid_level(neighbor_index)
+        } else if neighbor == 0 {
+            0
+        } else {
+            continue;
+        };
+
+        let drop = self_level.saturating_sub(neighbor_level) as i32;
+        if drop > 0 {
+            dx += vx * drop;
+            dz += vz * drop;
+        }
+    }
+
+    quantized_water_flow_code(dx, dz)
+}
+
+fn quantized_water_flow_code(dx: i32, dz: i32) -> u32 {
+    if dx == 0 && dz == 0 {
+        return 0;
+    }
+
+    let ax = dx.abs();
+    let az = dz.abs();
+    let sx = dx.signum();
+    let sz = dz.signum();
+
+    if az * 2 <= ax {
+        return if sx > 0 { 1 } else { 5 };
+    }
+    if ax * 2 <= az {
+        return if sz > 0 { 3 } else { 7 };
+    }
+
+    match (sx, sz) {
+        (1, 1) => 2,
+        (-1, 1) => 4,
+        (-1, -1) => 6,
+        (1, -1) => 8,
+        _ => 0,
+    }
+}
+
 #[inline(always)]
 pub(crate) fn face_ao_key_from_indices(
     blocks: &ChunkMeshBlocks,

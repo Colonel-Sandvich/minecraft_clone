@@ -7,7 +7,7 @@ use crate::block::{
     BlockMaterialLayer, BlockType, WATER_RENDER_ID, from_render_id, render_id_for_block,
 };
 use crate::quad::Direction;
-use crate::world::chunk::mesh::vertex_pulling;
+use crate::world::chunk::mesh::{binary, vertex_pulling};
 use crate::world::chunk::{Chunk, ChunkCell, ChunkLight, ChunkNeedsLightUpload};
 
 use super::{
@@ -493,6 +493,46 @@ fn vertex_pulling_descriptors_match_reference_face_counts() {
 
         assert_eq!(reference_faces, descriptor_faces, "{}", case.name);
     }
+}
+
+#[test]
+fn water_top_descriptor_packs_flow_direction() {
+    let mut chunk = Chunk::default();
+    chunk.set_cell_xyz(8, 1, 8, ChunkCell::water_source());
+    chunk.set_cell_xyz(9, 1, 8, ChunkCell::water_flow(7));
+    chunk.set_cell_xyz(7, 1, 8, block_cell(BlockType::Stone));
+    chunk.set_cell_xyz(8, 1, 7, block_cell(BlockType::Stone));
+    chunk.set_cell_xyz(8, 1, 9, block_cell(BlockType::Stone));
+
+    let blocks = ChunkMeshBlocks::from_chunk(&chunk);
+    let descriptor = vertex_pulling::build_descriptors(&blocks)
+        .into_iter()
+        .flat_map(|(_, descriptors)| descriptors)
+        .find(|desc| {
+            desc.block_type() == WATER_RENDER_ID as u32
+                && desc.x() == 8
+                && desc.y() == 1
+                && desc.z() == 8
+                && desc.face_dir() == Direction::Up as u32
+        })
+        .expect("source water top face should be emitted");
+
+    assert!(descriptor.water_up_flowing());
+    assert_eq!(descriptor.water_flow_code(), 1);
+}
+
+#[test]
+fn hybrid_mesher_matches_scalar_water_flow_descriptors() {
+    let mut chunk = Chunk::default();
+    chunk.set_cell_xyz(8, 1, 8, ChunkCell::water_source());
+    chunk.set_cell_xyz(9, 1, 8, ChunkCell::water_flow(7));
+    chunk.set_cell_xyz(8, 1, 9, ChunkCell::water_flow(6));
+
+    let blocks = ChunkMeshBlocks::from_chunk(&chunk);
+    assert_eq!(
+        vertex_pulling::build_descriptors(&blocks),
+        binary::build_descriptors_hybrid(&blocks)
+    );
 }
 
 // ---------------------------------------------------------------------------

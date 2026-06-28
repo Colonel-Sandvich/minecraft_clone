@@ -111,6 +111,7 @@ struct VertexOutput {
     @location(4) @interpolate(flat) ao_key: u32,
     @location(5) light: vec2<f32>,
     @location(6) @interpolate(flat) water_up_flow: u32,
+    @location(7) @interpolate(flat) water_flow_code: u32,
 }
 
 @vertex
@@ -130,7 +131,8 @@ fn vertex(@builtin(vertex_index) vid: u32) -> VertexOutput {
     let corner_heights = desc.info >> 16;
     let water_below_lo = (desc.packed >> 6) & 0xFu;
     let water_below_hi = (desc.packed >> 10) & 0xFu;
-    let water_up_flow = desc.packed & 1u;  // bit 0 → override UP-face texture to flow
+    let water_up_flow = desc.packed & 1u;  // bit 0 -> override UP-face texture to flow
+    let water_flow_code = (desc.packed >> 1) & 0xFu;
 
     let ao0 = ao_key & 0x3u;
     let ao1 = (ao_key >> 2u) & 0x3u;
@@ -152,7 +154,7 @@ fn vertex(@builtin(vertex_index) vid: u32) -> VertexOutput {
     let world_pos = local_pos + chunk_origin.xyz;
     let clip_pos = view_proj * vec4(world_pos, 1.0);
 
-    return VertexOutput(clip_pos, world_pos, NORMALS[face_dir], block_type, face_dir, ao_key, light, water_up_flow);
+    return VertexOutput(clip_pos, world_pos, NORMALS[face_dir], block_type, face_dir, ao_key, light, water_up_flow, water_flow_code);
 }
 
 fn padded_coord(value: i32) -> u32 {
@@ -237,6 +239,26 @@ fn face_ao_brightness(ao_key: u32, face_dir: u32, block_uv: vec2<f32>) -> f32 {
     }
 }
 
+fn water_flow_direction(code: u32) -> vec2<f32> {
+    switch code {
+        case 1u: { return vec2(1.0, 0.0); }
+        case 2u: { return normalize(vec2(1.0, 1.0)); }
+        case 3u: { return vec2(0.0, 1.0); }
+        case 4u: { return normalize(vec2(-1.0, 1.0)); }
+        case 5u: { return vec2(-1.0, 0.0); }
+        case 6u: { return normalize(vec2(-1.0, -1.0)); }
+        case 7u: { return vec2(0.0, -1.0); }
+        case 8u: { return normalize(vec2(1.0, -1.0)); }
+        default: { return vec2(0.0, 1.0); }
+    }
+}
+
+fn orient_water_flow_uv(face_uv: vec2<f32>, flow_code: u32) -> vec2<f32> {
+    let flow = water_flow_direction(flow_code);
+    let across = vec2(-flow.y, flow.x);
+    return vec2(dot(face_uv, across), dot(face_uv, flow));
+}
+
 @fragment
 fn fragment(@location(0) world_pos: vec3<f32>,
             @location(1) world_normal: vec3<f32>,
@@ -244,7 +266,8 @@ fn fragment(@location(0) world_pos: vec3<f32>,
             @location(3) @interpolate(flat) face_dir: u32,
             @location(4) @interpolate(flat) ao_key: u32,
             @location(5) light: vec2<f32>,
-            @location(6) @interpolate(flat) water_up_flow: u32) -> @location(0) vec4<f32> {
+            @location(6) @interpolate(flat) water_up_flow: u32,
+            @location(7) @interpolate(flat) water_flow_code: u32) -> @location(0) vec4<f32> {
     let n = abs(world_normal);
     let wp = world_pos;
     var face_uv: vec2<f32>;
@@ -255,7 +278,12 @@ fn fragment(@location(0) world_pos: vec3<f32>,
     } else {
         face_uv = vec2(wp.x, 1.0 - wp.y);
     }
-    let block_uv = fract(face_uv);
+    let geom_uv = fract(face_uv);
+    var sample_face_uv = face_uv;
+    if water_up_flow == 1u && face_dir == 3u && water_flow_code != 0u {
+        sample_face_uv = orient_water_flow_uv(face_uv, water_flow_code);
+    }
+    let block_uv = fract(sample_face_uv);
 
     let lookup_face = select(face_dir, 0u, water_up_flow == 1u && face_dir == 3u);
     let lookup = block_type * 6u + lookup_face;
@@ -269,14 +297,14 @@ fn fragment(@location(0) world_pos: vec3<f32>,
         terrain_sampler,
         block_uv,
         layer,
-        dpdx(face_uv),
-        dpdy(face_uv),
+        dpdx(sample_face_uv),
+        dpdy(sample_face_uv),
     );
     let tint = tint_colors[lookup];
 
     let emissive = clamp(emission_factors[lookup], 0.0, 1.0);
     let face_brightness = mix(FACE_BRIGHTNESS[face_dir], 1.0, emissive);
-    let ao = mix(face_ao_brightness(ao_key, face_dir, block_uv), 1.0, emissive);
+    let ao = mix(face_ao_brightness(ao_key, face_dir, geom_uv), 1.0, emissive);
     let light_color = max(combined_light_color(light) * ao * face_brightness, vec3(LIGHT_FLOOR * face_brightness));
 
     let shaded_color = tex_color.rgb * tint.rgb * light_color;

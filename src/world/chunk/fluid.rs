@@ -1,8 +1,10 @@
-use bevy::{platform::collections::HashMap, prelude::*};
+use bevy::prelude::*;
+use std::collections::{HashMap, HashSet};
 
 use super::{
-    CHUNK_SIZE, CHUNK_VOLUME, Chunk, ChunkBlockCounts, ChunkCell, ChunkHasActiveFluids,
-    ChunkNeedsMeshRebuild, ChunkNeedsSave, ChunkPosition, FluidProfile, FluidState,
+    CHUNK_VOLUME, Chunk, ChunkBlockCounts, ChunkCell, ChunkHasActiveFluids, ChunkNeedsMeshRebuild,
+    ChunkNeedsSave, ChunkPosition, FluidProfile, chunk_neighbor_offsets,
+    fluid_sim::{FluidSnapshot, simulate_fluid_step, world_to_chunk_local},
 };
 
 pub(crate) struct ChunkFluidPlugin;
@@ -22,6 +24,9 @@ impl Default for FluidStepBudget {
 #[derive(Resource, Debug, Default)]
 struct FluidTickCounter(u32);
 
+#[derive(Debug, Default)]
+struct FluidScanCursor(usize);
+
 impl Plugin for ChunkFluidPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<FluidStepBudget>()
@@ -39,12 +44,21 @@ fn step_chunk_fluids(
     mut commands: Commands,
     budget: Res<FluidStepBudget>,
     counter: Res<FluidTickCounter>,
+    mut scan_cursor: Local<FluidScanCursor>,
     mut param_set: ParamSet<(
-        Query<
-            (Entity, &ChunkPosition, &mut Chunk, &mut ChunkBlockCounts),
-            With<ChunkHasActiveFluids>,
-        >,
-        Query<(Entity, &ChunkPosition, &mut Chunk, &mut ChunkBlockCounts)>,
+        Query<(
+            Entity,
+            &ChunkPosition,
+            &Chunk,
+            Option<&ChunkHasActiveFluids>,
+        )>,
+        Query<(
+            Entity,
+            &ChunkPosition,
+            &mut Chunk,
+            &mut ChunkBlockCounts,
+            Option<&ChunkHasActiveFluids>,
+        )>,
     )>,
 ) {
     // Water in Minecraft spreads at 1 block per 5 ticks (4/sec).
@@ -52,142 +66,80 @@ fn step_chunk_fluids(
         return;
     }
 
-    // Collect boundary flows so we can write them in a second pass
-    // without borrow conflicts.
-    struct BoundaryFlow {
-        target_pos: IVec3,
-        x: usize,
-        y: usize,
-        z: usize,
-        fluid: FluidState,
+    if budget.0 == 0 {
+        return;
     }
-    let mut boundary_flows: Vec<BoundaryFlow> = Vec::new();
+
+    let mut chunks_by_pos = HashMap::new();
+    let mut snapshot_chunks = HashMap::new();
+    let mut active_source_chunks = Vec::new();
+    let mut inactive_source_chunks = Vec::new();
+
+    for (entity, pos, chunk, active) in &param_set.p0() {
+        chunks_by_pos.insert(pos.0, entity);
+        snapshot_chunks.insert(pos.0, Box::new(chunk.to_cell_buffer()));
+        if active.is_some() && chunk.has_fluids() {
+            active_source_chunks.push(pos.0);
+        } else if chunk.has_fluids() {
+            inactive_source_chunks.push(pos.0);
+        } else if active.is_some() {
+            commands.entity(entity).remove::<ChunkHasActiveFluids>();
+        }
+    }
+
+    if active_source_chunks.is_empty() && inactive_source_chunks.is_empty() {
+        scan_cursor.0 = 0;
+        return;
+    }
+
+    active_source_chunks.sort_by_key(|pos| (pos.x, pos.y, pos.z));
+    inactive_source_chunks.sort_by_key(|pos| (pos.x, pos.y, pos.z));
+    let source_chunks = select_source_chunks(
+        active_source_chunks,
+        &inactive_source_chunks,
+        budget.0,
+        &mut scan_cursor,
+    );
+    if source_chunks.is_empty() {
+        return;
+    }
+    let processed_entities = source_chunks
+        .iter()
+        .filter_map(|pos| chunks_by_pos.get(pos).copied())
+        .collect::<HashSet<_>>();
+
+    let snapshot = FluidSnapshot::new(snapshot_chunks);
+    let step = simulate_fluid_step(&snapshot, &source_chunks, FluidProfile::WATER);
+    if step.is_empty() {
+        for entity in processed_entities {
+            commands.entity(entity).remove::<ChunkHasActiveFluids>();
+        }
+        return;
+    }
+
     let mut old_cells_by_entity: HashMap<Entity, Box<[ChunkCell; CHUNK_VOLUME]>> = HashMap::new();
-
-    let mut stepped = 0;
-    for (entity, pos, mut chunk, _) in &mut param_set.p0() {
-        if stepped >= budget.0 {
-            break;
-        }
-        stepped += 1;
-
-        old_cells_by_entity.insert(entity, Box::new(chunk.to_cell_buffer()));
-        let profile = FluidProfile::WATER;
-        let result = chunk.step_fluids(&profile);
-
-        if result.boundary_changed {
-            // Collect cross-chunk boundary flows for this chunk
-            let cp = pos.0;
-            for y in 0..CHUNK_SIZE {
-                for z in 0..CHUNK_SIZE {
-                    for x in 0..CHUNK_SIZE {
-                        let Some(fluid) = chunk.cell_xyz(x, y, z).as_fluid() else {
-                            continue;
-                        };
-                        if fluid.ty() != profile.ty {
-                            continue;
-                        }
-
-                        // Horizontal boundary: water at x=0 → flow to -X neighbor
-                        if x == 0 {
-                            if let Some(next_fluid) = profile.decayed_flow(fluid) {
-                                boundary_flows.push(BoundaryFlow {
-                                    target_pos: cp + IVec3::NEG_X,
-                                    x: CHUNK_SIZE - 1,
-                                    y,
-                                    z,
-                                    fluid: next_fluid,
-                                });
-                            }
-                        }
-                        if x == CHUNK_SIZE - 1 {
-                            if let Some(next_fluid) = profile.decayed_flow(fluid) {
-                                boundary_flows.push(BoundaryFlow {
-                                    target_pos: cp + IVec3::X,
-                                    x: 0,
-                                    y,
-                                    z,
-                                    fluid: next_fluid,
-                                });
-                            }
-                        }
-                        // Horizontal boundary: water at z=0 → flow to -Z neighbor
-                        if z == 0 {
-                            if let Some(next_fluid) = profile.decayed_flow(fluid) {
-                                boundary_flows.push(BoundaryFlow {
-                                    target_pos: cp + IVec3::NEG_Z,
-                                    x,
-                                    y,
-                                    z: CHUNK_SIZE - 1,
-                                    fluid: next_fluid,
-                                });
-                            }
-                        }
-                        if z == CHUNK_SIZE - 1 {
-                            if let Some(next_fluid) = profile.decayed_flow(fluid) {
-                                boundary_flows.push(BoundaryFlow {
-                                    target_pos: cp + IVec3::Z,
-                                    x,
-                                    y,
-                                    z: 0,
-                                    fluid: next_fluid,
-                                });
-                            }
-                        }
-                        // Vertical boundary: water at y=0 → flow down to -Y neighbor
-                        if y == 0 {
-                            boundary_flows.push(BoundaryFlow {
-                                target_pos: cp + IVec3::NEG_Y,
-                                x,
-                                y: CHUNK_SIZE - 1,
-                                z,
-                                fluid: profile.falling(),
-                            });
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    let chunks_by_pos = {
-        let mut chunks_by_pos = HashMap::with_capacity(param_set.p1().iter().len());
-        chunks_by_pos.extend(
-            param_set
-                .p1()
-                .iter()
-                .map(|(entity, pos, _, _)| (pos.0, entity)),
-        );
-        chunks_by_pos
-    };
-
-    // Second pass: write boundary flows into neighbor chunks
-    for flow in boundary_flows {
-        let Some(entity) = chunks_by_pos.get(&flow.target_pos).copied() else {
+    for update in step.updates {
+        let (chunk_pos, local) = world_to_chunk_local(update.pos);
+        let Some(entity) = chunks_by_pos.get(&chunk_pos).copied() else {
             continue;
         };
 
         let mut chunks_q = param_set.p1();
-        let Ok((entity, _, mut chunk, _)) = chunks_q.get_mut(entity) else {
+        let Ok((_, _, mut chunk, _, _)) = chunks_q.get_mut(entity) else {
             continue;
         };
-
-        let cell = chunk.cell_xyz(flow.x, flow.y, flow.z);
-        if !cell.is_block()
-            && cell
-                .as_fluid()
-                .is_none_or(|f| !f.is_source() && flow.fluid.level() > f.level())
-        {
-            old_cells_by_entity
-                .entry(entity)
-                .or_insert_with(|| Box::new(chunk.to_cell_buffer()));
-            chunk.set_cell_xyz(flow.x, flow.y, flow.z, ChunkCell::fluid(flow.fluid));
-        }
+        old_cells_by_entity
+            .entry(entity)
+            .or_insert_with(|| Box::new(chunk.to_cell_buffer()));
+        chunk.set_cell(local, update.cell);
     }
+
+    let changed_entities = old_cells_by_entity.keys().copied().collect::<HashSet<_>>();
+    let mut neighbor_mesh_dirty = HashSet::new();
 
     for (entity, old_cells) in old_cells_by_entity {
         let mut chunks_q = param_set.p1();
-        let Ok((entity, _, chunk, mut counts)) = chunks_q.get_mut(entity) else {
+        let Ok((_, pos, chunk, mut counts, _)) = chunks_q.get_mut(entity) else {
             continue;
         };
         let result = chunk.fluid_step_result_from(&old_cells);
@@ -203,14 +155,56 @@ fn step_chunk_fluids(
         } else {
             entity_commands.remove::<ChunkHasActiveFluids>();
         }
+
+        if result.boundary_changed {
+            for offset in chunk_neighbor_offsets() {
+                let Some(entity) = chunks_by_pos.get(&(pos.0 + offset)).copied() else {
+                    continue;
+                };
+                neighbor_mesh_dirty.insert(entity);
+            }
+        }
     }
+
+    for entity in processed_entities.difference(&changed_entities) {
+        commands.entity(*entity).remove::<ChunkHasActiveFluids>();
+    }
+
+    for entity in neighbor_mesh_dirty {
+        commands.entity(entity).insert(ChunkNeedsMeshRebuild);
+    }
+}
+
+fn select_source_chunks(
+    active_source_chunks: Vec<IVec3>,
+    inactive_source_chunks: &[IVec3],
+    budget: usize,
+    cursor: &mut FluidScanCursor,
+) -> Vec<IVec3> {
+    let mut selected = active_source_chunks
+        .into_iter()
+        .take(budget)
+        .collect::<Vec<_>>();
+    let remaining = budget.saturating_sub(selected.len());
+    if remaining == 0 || inactive_source_chunks.is_empty() {
+        return selected;
+    }
+
+    let start = cursor.0 % inactive_source_chunks.len();
+    let count = remaining.min(inactive_source_chunks.len());
+    selected.extend(
+        (0..count)
+            .map(|index| inactive_source_chunks[(start + index) % inactive_source_chunks.len()]),
+    );
+    cursor.0 = (start + count) % inactive_source_chunks.len();
+    selected
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::block::BlockType;
-    use crate::world::chunk::ChunkCell;
+    use crate::world::chunk::{CHUNK_SIZE, ChunkCell};
 
     #[test]
     fn fluid_step_marks_changed_chunks_dirty_and_updates_counts() {
@@ -333,6 +327,35 @@ mod tests {
         assert_scene_settles(&mut app, 100);
     }
 
+    #[test]
+    fn inactive_boundary_source_flows_into_later_loaded_chunk() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(FluidStepBudget(16))
+            .insert_resource(FluidTickCounter(0))
+            .add_systems(Update, step_chunk_fluids);
+
+        spawn_flat_chunk(
+            &mut app,
+            IVec3::ZERO,
+            Some((
+                uvec3(CHUNK_SIZE as u32 - 1, 1, 8),
+                ChunkCell::water_source(),
+            )),
+        );
+        assert_scene_settles(&mut app, 100);
+        assert!(active_fluid_chunk_positions(app.world_mut()).is_empty());
+
+        spawn_flat_chunk(&mut app, IVec3::X, None);
+        mark_chunks_with_fluids_active(&mut app);
+        app.update();
+
+        assert_eq!(
+            get_cell(&mut app, IVec3::X, uvec3(0, 1, 8)),
+            ChunkCell::water_flow(7)
+        );
+    }
+
     fn assert_scene_settles(app: &mut App, max_steps: usize) {
         let mut last_dirty_positions = Vec::new();
         let mut last_active_positions = Vec::new();
@@ -393,6 +416,15 @@ mod tests {
         *counts = chunk.compute_block_counts();
         drop(chunk);
         world.entity_mut(entity).insert(ChunkHasActiveFluids);
+    }
+
+    fn get_cell(app: &mut App, chunk_pos: IVec3, cell_pos: UVec3) -> ChunkCell {
+        let world = app.world_mut();
+        let mut query = world.query::<(&ChunkPosition, &Chunk)>();
+        query
+            .iter(world)
+            .find_map(|(pos, chunk)| (pos.0 == chunk_pos).then(|| chunk.get_cell(cell_pos)))
+            .expect("chunk should exist")
     }
 
     fn mark_chunks_with_fluids_active(app: &mut App) {
