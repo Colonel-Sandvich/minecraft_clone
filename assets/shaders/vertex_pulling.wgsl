@@ -134,6 +134,7 @@ fn vertex(@builtin(vertex_index) vid: u32) -> VertexOutput {
     let water_below_hi = (desc.packed >> 10) & 0xFu;
     let water_up_flow = desc.packed & 1u;  // bit 0 -> override UP-face texture to flow
     let water_flow_code = (desc.packed >> 1) & 0xFu;
+    let water_geometry = (desc.packed >> 5) & 1u;
 
     let ao0 = ao_key & 0x3u;
     let ao1 = (ao_key >> 2u) & 0x3u;
@@ -145,7 +146,7 @@ fn vertex(@builtin(vertex_index) vid: u32) -> VertexOutput {
     }
 
     var offset = CORNER_OFFSETS[face_dir][qi];
-    if corner_heights != 0u {
+    if water_geometry != 0u {
         offset.y = water_vertex_height(face_dir, qi, corner_heights, water_below_lo, water_below_hi);
     }
     let local_pos = vec3<f32>(f32(x) + offset.x, f32(y) + offset.y, f32(z) + offset.z);

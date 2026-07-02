@@ -522,6 +522,28 @@ fn water_top_descriptor_packs_flow_direction() {
 }
 
 #[test]
+fn shallow_water_descriptor_marks_zero_height_water_geometry() {
+    let mut chunk = Chunk::default();
+    chunk.set_cell_xyz(8, 1, 8, ChunkCell::water_flow(1));
+
+    let blocks = ChunkMeshBlocks::from_chunk(&chunk);
+    let descriptor = vertex_pulling::build_descriptors(&blocks)
+        .into_iter()
+        .flat_map(|(_, descriptors)| descriptors)
+        .find(|desc| {
+            desc.block_type() == WATER_RENDER_ID as u32
+                && desc.x() == 8
+                && desc.y() == 1
+                && desc.z() == 8
+                && desc.face_dir() == Direction::Up as u32
+        })
+        .expect("shallow water top face should be emitted");
+
+    assert_eq!(descriptor.info >> 16, 0);
+    assert!(descriptor.has_water_geometry());
+}
+
+#[test]
 fn water_corner_heights_use_vanilla_ninths_and_full_columns() {
     let mut chunk = Chunk::default();
     for x in 7..=9 {

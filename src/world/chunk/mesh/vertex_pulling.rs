@@ -63,6 +63,8 @@ use super::{
     water_corner_heights, water_flow_code,
 };
 
+const WATER_GEOMETRY_BIT: u32 = 1 << 5;
+
 // ---------------------------------------------------------------------------
 // Face descriptor (8 bytes, GPU-visible via bytemuck)
 // ---------------------------------------------------------------------------
@@ -87,9 +89,11 @@ impl FaceDescriptor {
     /// Layout: `h00:4 h10:4 h01:4 h11:4` where:
     ///   h00 = corner at (x+0, z+0)  h10 = corner at (x+1, z+0)
     ///   h01 = corner at (x+0, z+1)  h11 = corner at (x+1, z+1)
-    /// Non-water blocks keep these at zero (the shader treats 0 as full-block).
+    /// Sets an explicit water-geometry bit because all four packed heights may
+    /// legitimately be zero for very shallow water.
     #[inline]
     pub fn with_corner_heights(mut self, h00: u32, h10: u32, h01: u32, h11: u32) -> Self {
+        self.packed |= WATER_GEOMETRY_BIT;
         self.info |= (h00 & 0xF) << 16 | (h10 & 0xF) << 20 | (h01 & 0xF) << 24 | (h11 & 0xF) << 28;
         self
     }
@@ -145,6 +149,11 @@ impl FaceDescriptor {
     #[inline]
     pub fn water_flow_code(self) -> u32 {
         (self.packed >> 1) & 0xF
+    }
+
+    #[inline]
+    pub fn has_water_geometry(self) -> bool {
+        self.packed & WATER_GEOMETRY_BIT != 0
     }
 }
 
