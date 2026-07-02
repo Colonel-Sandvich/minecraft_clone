@@ -12,7 +12,7 @@ use crate::world::chunk::{Chunk, ChunkCell, ChunkLight, ChunkNeedsLightUpload};
 
 use super::{
     CHUNK_ISIZE, CHUNK_SIZE, ChunkMeshBlocks, ChunkNeedsMeshRebuild, ChunkPosition,
-    VertexPullingLight, face_ao_from_indices, padded_chunk_index,
+    VertexPullingLight, face_ao_from_indices, padded_chunk_index, water_corner_heights,
 };
 
 // Mirrors the removed mod.rs VERTEX_OFFSETS — only needed in test AO helpers.
@@ -519,6 +519,24 @@ fn water_top_descriptor_packs_flow_direction() {
 
     assert!(descriptor.water_up_flowing());
     assert_eq!(descriptor.water_flow_code(), 1);
+}
+
+#[test]
+fn water_corner_heights_use_vanilla_ninths_and_full_columns() {
+    let mut chunk = Chunk::default();
+    for x in 7..=9 {
+        for z in 7..=9 {
+            chunk.set_cell_xyz(x, 1, z, ChunkCell::water_source());
+        }
+    }
+
+    let blocks = ChunkMeshBlocks::from_chunk(&chunk);
+    let center = padded_chunk_index(9, 2, 9);
+    assert_eq!(water_corner_heights(8, &blocks, center), (8, 8, 8, 8));
+
+    chunk.set_cell_xyz(8, 2, 8, ChunkCell::water_source());
+    let blocks = ChunkMeshBlocks::from_chunk(&chunk);
+    assert_eq!(water_corner_heights(8, &blocks, center), (9, 9, 9, 9));
 }
 
 #[test]

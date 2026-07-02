@@ -50,8 +50,12 @@ use bevy::{
     },
 };
 
-use crate::block::{BLOCK_FLAG_TRANSLUCENT, BlockMaterialLayer, RENDER_ID_COUNT, WATER_RENDER_ID};
+use crate::{
+    block::{BLOCK_FLAG_TRANSLUCENT, BlockMaterialLayer, RENDER_ID_COUNT, WATER_RENDER_ID},
+    world::dimension::Dimension,
+};
 
+use super::super::{Chunk, ChunkCell, fluid_sim::world_to_chunk_local};
 use super::{
     CHUNK_SIZE, ChunkMeshBlocks, DIRECTION_COUNT, DIRECTION_INDEX_OFFSETS, block_mesh_flags,
     face_ao_key_from_indices, material_layer_index_from_flags, padded_chunk_index,
@@ -79,7 +83,7 @@ impl FaceDescriptor {
         }
     }
 
-    /// Pack 4 corner water heights (0–8 each) into the upper 16 bits of `info`.
+    /// Pack 4 corner water heights (0-9 ninths) into the upper 16 bits of `info`.
     /// Layout: `h00:4 h10:4 h01:4 h11:4` where:
     ///   h00 = corner at (x+0, z+0)  h10 = corner at (x+1, z+0)
     ///   h01 = corner at (x+0, z+1)  h11 = corner at (x+1, z+1)
@@ -90,7 +94,7 @@ impl FaceDescriptor {
         self
     }
 
-    /// Set water surface heights for the cell directly below (0–8 each).
+    /// Set water surface heights for the cell directly below (0-9 ninths).
     /// Two values because the bottom-left and bottom-right vertices of a side
     /// face need to extend to different lower-surface heights along the shared
     /// edge. Stored in `packed` bits 6-9 (lo) and 10-13 (hi).
@@ -467,6 +471,7 @@ fn vp_pipeline_descriptor(
     group0_desc: BindGroupLayoutDescriptor,
     group1_desc: BindGroupLayoutDescriptor,
     group2_desc: BindGroupLayoutDescriptor,
+    cull_mode: Option<Face>,
     alpha_to_coverage_enabled: bool,
     blend: Option<BlendState>,
     depth_write_enabled: bool,
@@ -485,7 +490,7 @@ fn vp_pipeline_descriptor(
             topology: PrimitiveTopology::TriangleList,
             strip_index_format: None,
             front_face: FrontFace::Ccw,
-            cull_mode: Some(Face::Back),
+            cull_mode,
             unclipped_depth: false,
             polygon_mode: PolygonMode::Fill,
             conservative: false,
@@ -525,7 +530,12 @@ pub struct TerrainVisualSettings {
     pub fog_start: f32,
     pub fog_end: f32,
     pub fog_strength: f32,
+    pub screen_tint_strength: f32,
 }
+
+const MINECRAFT_WATER_FOG_START: f32 = -8.0;
+const MINECRAFT_WATER_FOG_END: f32 = 96.0;
+const MINECRAFT_UNDERWATER_OVERLAY_ALPHA: f32 = 0.1;
 
 impl Default for TerrainVisualSettings {
     fn default() -> Self {
@@ -536,6 +546,7 @@ impl Default for TerrainVisualSettings {
             fog_start: 220.0,
             fog_end: 560.0,
             fog_strength: 1.0,
+            screen_tint_strength: 0.0,
         }
     }
 }
@@ -577,7 +588,7 @@ impl TerrainVisualSettingsUniform {
                 settings.fog_color.x,
                 settings.fog_color.y,
                 settings.fog_color.z,
-                0.0,
+                settings.screen_tint_strength,
             ],
             camera_position: [camera_position.x, camera_position.y, camera_position.z, 0.0],
             fog_params: [
@@ -659,7 +670,10 @@ impl Plugin for VertexPullingPlugin {
             ExtractResourcePlugin::<TerrainVisualSettings>::default(),
             ExtractResourcePlugin::<VpAnimationClock>::default(),
         ));
-        app.add_systems(Update, update_vp_animation_clock);
+        app.add_systems(
+            Update,
+            (update_vp_animation_clock, update_camera_fluid_visuals),
+        );
 
         let Some(render_app) = app.get_sub_app_mut(RenderApp) else {
             return;
@@ -717,6 +731,7 @@ impl Plugin for VertexPullingPlugin {
             group0_desc.clone(),
             group1_desc.clone(),
             group2_desc.clone(),
+            Some(Face::Back),
             false,
             None,
             true,
@@ -728,6 +743,7 @@ impl Plugin for VertexPullingPlugin {
             group0_desc.clone(),
             group1_desc.clone(),
             group2_desc.clone(),
+            Some(Face::Back),
             true,
             None,
             true,
@@ -739,6 +755,7 @@ impl Plugin for VertexPullingPlugin {
             group0_desc,
             group1_desc,
             group2_desc,
+            None,
             false,
             Some(BlendState::ALPHA_BLENDING),
             false,
@@ -857,6 +874,102 @@ impl Plugin for VertexPullingPlugin {
 
 fn update_vp_animation_clock(time: Res<Time>, mut clock: ResMut<VpAnimationClock>) {
     clock.seconds = time.elapsed_secs_wrapped();
+}
+
+fn update_camera_fluid_visuals(
+    mut settings: ResMut<TerrainVisualSettings>,
+    mut clear_color: ResMut<ClearColor>,
+    cameras: Query<&GlobalTransform, With<Camera3d>>,
+    dimensions: Query<&Dimension>,
+    chunks: Query<&Chunk>,
+) {
+    let underwater = cameras.iter().next().is_some_and(|camera| {
+        let Some(dimension) = dimensions.iter().next() else {
+            return false;
+        };
+        camera_is_underwater(camera.translation(), dimension, &chunks)
+    });
+
+    if underwater {
+        settings.fog_color = minecraft_water_fog_color();
+        settings.fog_start = MINECRAFT_WATER_FOG_START;
+        settings.fog_end = MINECRAFT_WATER_FOG_END;
+        settings.fog_strength = 1.0;
+        settings.screen_tint_strength = MINECRAFT_UNDERWATER_OVERLAY_ALPHA;
+        clear_color.0 = Color::srgb(
+            settings.fog_color.x,
+            settings.fog_color.y,
+            settings.fog_color.z,
+        );
+    } else {
+        let defaults = TerrainVisualSettings::default();
+        settings.fog_color = defaults.fog_color;
+        settings.fog_start = defaults.fog_start;
+        settings.fog_end = defaults.fog_end;
+        settings.fog_strength = defaults.fog_strength;
+        settings.screen_tint_strength = 0.0;
+        clear_color.0 = default_clear_color();
+    }
+}
+
+fn camera_is_underwater(
+    camera_position: Vec3,
+    dimension: &Dimension,
+    chunks: &Query<&Chunk>,
+) -> bool {
+    let world_pos = camera_position.floor().as_ivec3();
+    let Some(fluid) =
+        chunk_cell_at_world(dimension, chunks, world_pos).and_then(ChunkCell::as_fluid)
+    else {
+        return false;
+    };
+    let water_above = chunk_cell_at_world(dimension, chunks, world_pos + IVec3::Y)
+        .and_then(ChunkCell::as_fluid)
+        .is_some_and(|above| above.ty() == fluid.ty());
+    camera_y_is_below_fluid_surface(
+        camera_position.y,
+        world_pos.y,
+        fluid.level().get(),
+        water_above,
+    )
+}
+
+fn chunk_cell_at_world(
+    dimension: &Dimension,
+    chunks: &Query<&Chunk>,
+    world_pos: IVec3,
+) -> Option<ChunkCell> {
+    let (chunk_pos, local) = world_to_chunk_local(world_pos);
+    chunks
+        .get(dimension.chunk_entity(chunk_pos)?)
+        .ok()
+        .map(|chunk| chunk.get_cell(local))
+}
+
+fn camera_y_is_below_fluid_surface(
+    camera_y: f32,
+    cell_y: i32,
+    fluid_level: u8,
+    water_above: bool,
+) -> bool {
+    let local_y = camera_y - cell_y as f32;
+    local_y <= water_surface_height_fraction(fluid_level, water_above)
+}
+
+fn water_surface_height_fraction(fluid_level: u8, water_above: bool) -> f32 {
+    if water_above {
+        return 1.0;
+    }
+    f32::from(fluid_level.min(8)) / 9.0
+}
+
+fn minecraft_water_fog_color() -> Vec3 {
+    // Vanilla default water fog color: 0x050533.
+    vec3(5.0 / 255.0, 5.0 / 255.0, 0x33 as f32 / 255.0)
+}
+
+fn default_clear_color() -> Color {
+    Color::srgb(0x74 as f32 / 255.0, 0xB3 as f32 / 255.0, 1.0)
 }
 
 fn extract_changed_vp_data(
@@ -1391,5 +1504,24 @@ fn queue_vp_meshes(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn water_surface_height_uses_vanilla_ninths() {
+        assert!((water_surface_height_fraction(8, false) - 8.0 / 9.0).abs() < f32::EPSILON);
+        assert!((water_surface_height_fraction(4, false) - 4.0 / 9.0).abs() < f32::EPSILON);
+        assert_eq!(water_surface_height_fraction(8, true), 1.0);
+    }
+
+    #[test]
+    fn camera_submersion_respects_water_surface_height() {
+        assert!(camera_y_is_below_fluid_surface(10.85, 10, 8, false));
+        assert!(!camera_y_is_below_fluid_surface(10.90, 10, 8, false));
+        assert!(camera_y_is_below_fluid_surface(10.99, 10, 8, true));
     }
 }

@@ -23,7 +23,7 @@ struct FaceDescriptor {
 struct TerrainVisualSettings {
     sky_light_color: vec4<f32>,
     block_light_color: vec4<f32>,
-    fog_color: vec4<f32>,
+    fog_color: vec4<f32>, // rgb=fog/tint color, a=screen tint strength
     camera_position: vec4<f32>,
     fog_params: vec4<f32>, // x=start, y=end, z=strength, w=animation seconds
 }
@@ -72,7 +72,8 @@ const TRI_TO_QUAD_B: array<u32, 6> = array(0u, 3u, 1u, 0u, 2u, 3u);
 
 // Per-corner water height indices. 0xFFu means "bottom vertex, height 0".
 // Corner heights are packed in desc.info as: h00(0-3) | h10(4-7) | h01(8-11) | h11(12-15)
-// where h00 = corner at (x+0,z+0), h10 = at (x+1,z+0), h01 = at (x+0,z+1), h11 = at (x+1,z+1).
+// Values are vanilla-style ninths: 8/9 own fluid height, 9/9 when water exists above.
+// h00 = corner at (x+0,z+0), h10 = at (x+1,z+0), h01 = at (x+0,z+1), h11 = at (x+1,z+1).
 const CORNER_HT_INDEX: array<array<u32, 4>, 6> = array(
     array(0xFFu, 0xFFu, 2u, 0u), // Left:    top corners at h01, h00
     array(0xFFu, 0xFFu, 1u, 3u), // Right:   top corners at h10, h11
@@ -87,12 +88,12 @@ fn water_vertex_height(face_dir: u32, qi: u32, corner_heights: u32, wb_lo: u32, 
     if index == 0xFFu {
         let bt = select(wb_lo, wb_hi, qi == 1u);
         if bt > 0u {
-            return f32(bt) / 8.0 - 1.0;
+            return f32(bt) / 9.0 - 1.0;
         }
         return 0.0;
     }
     let height = (corner_heights >> (index * 4u)) & 0xFu;
-    return f32(height) / 8.0;
+    return f32(height) / 9.0;
 }
 
 const LIGHT_FLOOR: f32 = 0.05;
@@ -309,7 +310,9 @@ fn fragment(@location(0) world_pos: vec3<f32>,
 
     let shaded_color = tex_color.rgb * tint.rgb * light_color;
     let fogged_color = apply_distance_fog(shaded_color, world_pos);
-    let color = vec4(fogged_color, tex_color.a * tint.a);
+    let screen_tint = clamp(terrain_visuals.fog_color.a, 0.0, 1.0);
+    let final_rgb = mix(fogged_color, terrain_visuals.fog_color.rgb, screen_tint);
+    let color = vec4(final_rgb, tex_color.a * tint.a);
     if tex_color.a < 0.5 {
         discard;
     }

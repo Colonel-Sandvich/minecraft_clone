@@ -506,10 +506,10 @@ pub(crate) fn should_emit_translucent_face(
 
 /// Compute the 4 corner water heights for a water cell's top surface.
 ///
-/// Each corner height is the average of the water levels in the four cells
-/// that meet at that corner (Minecraft-style corner interpolation). This
-/// ensures adjacent water blocks compute the same height for shared vertices,
-/// preventing surface gaps.
+/// Heights are packed in vanilla-style ninths: flowing/source water owns up to
+/// 8/9 of a block, while any water directly above forces the column to 9/9.
+/// Corners use the vanilla weighted average: heights >= 0.8 are weighted x10,
+/// air contributes 0, and solid/non-water cells are ignored.
 ///
 /// Returns (h00, h10, h01, h11) where:
 ///   h00 = corner at (x+0, z+0)  h10 = corner at (x+1, z+0)
@@ -525,26 +525,80 @@ pub(crate) fn water_corner_heights(
     let p1 = base + 1;
     let nz = base - pcs;
     let pz = base + pcs;
-    let h00 = water_corner_4(self_level, blocks, n1, nz, n1 - pcs);
-    let h10 = water_corner_4(self_level, blocks, p1, nz, p1 - pcs);
-    let h01 = water_corner_4(self_level, blocks, n1, pz, n1 + pcs);
-    let h11 = water_corner_4(self_level, blocks, p1, pz, p1 + pcs);
-    (h00 as u32, h10 as u32, h01 as u32, h11 as u32)
+    let self_height = water_height_at(blocks, base).unwrap_or_else(|| self_level.min(8) as i32);
+    if self_height >= 9 {
+        return (9, 9, 9, 9);
+    }
+    let h00 = water_corner_height(self_height, blocks, n1, nz, n1 - pcs);
+    let h10 = water_corner_height(self_height, blocks, p1, nz, p1 - pcs);
+    let h01 = water_corner_height(self_height, blocks, n1, pz, n1 + pcs);
+    let h11 = water_corner_height(self_height, blocks, p1, pz, p1 + pcs);
+    (h00, h10, h01, h11)
 }
 
-/// Average of self_level + up to 3 other cells at the given offsets.
-/// Only cells containing water contribute; non-water neighbours are skipped.
-fn water_corner_4(self_level: u8, blocks: &ChunkMeshBlocks, o1: isize, o2: isize, o3: isize) -> u8 {
-    let mut sum = self_level as u32;
-    let mut count = 1u32;
-    for &offset in &[o1, o2, o3] {
-        let cell = unsafe { *blocks.blocks.get_unchecked(offset as usize) };
-        if cell == WATER_RENDER_ID {
-            sum += blocks.get_fluid_level(offset as usize) as u32;
-            count += 1;
-        }
+fn water_corner_height(
+    self_height: i32,
+    blocks: &ChunkMeshBlocks,
+    adjacent_a: isize,
+    adjacent_b: isize,
+    diagonal: isize,
+) -> u32 {
+    let adjacent_a = water_height_at(blocks, adjacent_a);
+    let adjacent_b = water_height_at(blocks, adjacent_b);
+
+    if adjacent_a == Some(9) || adjacent_b == Some(9) {
+        return 9;
     }
-    ((sum + count / 2) / count) as u8
+
+    let mut weighted = WeightedWaterHeight::default();
+    if adjacent_a.is_some_and(|height| height > 0) || adjacent_b.is_some_and(|height| height > 0) {
+        let diagonal = water_height_at(blocks, diagonal);
+        if diagonal == Some(9) {
+            return 9;
+        }
+        weighted.add(diagonal);
+    }
+
+    weighted.add(Some(self_height));
+    weighted.add(adjacent_a);
+    weighted.add(adjacent_b);
+    weighted.average()
+}
+
+fn water_height_at(blocks: &ChunkMeshBlocks, padded_index: isize) -> Option<i32> {
+    let index = padded_index as usize;
+    let cell = unsafe { *blocks.blocks.get_unchecked(index) };
+    if cell == WATER_RENDER_ID {
+        let above_index = (padded_index + DIRECTION_INDEX_OFFSETS[3]) as usize;
+        let above = unsafe { *blocks.blocks.get_unchecked(above_index) };
+        if above == WATER_RENDER_ID {
+            return Some(9);
+        }
+        return Some(blocks.get_fluid_level(index).min(8) as i32);
+    }
+    (cell == 0).then_some(0)
+}
+
+#[derive(Default)]
+struct WeightedWaterHeight {
+    total: i32,
+    weight: i32,
+}
+
+impl WeightedWaterHeight {
+    fn add(&mut self, height: Option<i32>) {
+        let Some(height) = height else { return };
+        let weight = if height >= 8 { 10 } else { 1 };
+        self.total += height * weight;
+        self.weight += weight;
+    }
+
+    fn average(self) -> u32 {
+        if self.weight == 0 {
+            return 0;
+        }
+        ((self.total + self.weight / 2) / self.weight).clamp(0, 9) as u32
+    }
 }
 
 /// Return the (lo, hi) lower-water corner height pair for a given side-index
