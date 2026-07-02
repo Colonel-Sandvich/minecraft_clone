@@ -24,9 +24,10 @@ use crate::block::{
 
 use super::vertex_pulling::{FaceDescriptor, water_face_descriptor};
 use super::{
-    CHUNK_SIZE, DIRECTION_INDEX_OFFSETS, PADDED_CHUNK_SIZE, block_mesh_flags,
-    face_ao_key_from_indices, material_layer_index_from_flags, padded_chunk_index,
-    should_emit_face_from_flags, should_emit_translucent_face, vertex_ao_key,
+    CHUNK_SIZE, DIRECTION_COUNT, DIRECTION_INDEX_OFFSETS, FACE_AO_ORDERS, FACE_AO_SAMPLE_COUNT,
+    FACE_AO_SAMPLE_OFFSETS, PADDED_CHUNK_LAYER_SIZE, PADDED_CHUNK_SIZE, block_mesh_flags,
+    face_ao_key_from_indices, face_ao_key_from_sample_bits, material_layer_index_from_flags,
+    padded_chunk_index, should_emit_face_from_flags, should_emit_translucent_face,
 };
 
 /// A packed 18×18 bitmask stored across 6 u64 words (324 bits).
@@ -242,6 +243,60 @@ impl BinaryFaceMasks {
     }
 }
 
+const FACE_AO_MASK_OFFSETS: [[isize; FACE_AO_SAMPLE_COUNT]; DIRECTION_COUNT] = [
+    face_ao_mask_offsets(0),
+    face_ao_mask_offsets(1),
+    face_ao_mask_offsets(2),
+    face_ao_mask_offsets(3),
+    face_ao_mask_offsets(4),
+    face_ao_mask_offsets(5),
+];
+
+const fn face_ao_mask_offsets(side: usize) -> [isize; FACE_AO_SAMPLE_COUNT] {
+    let mut offsets = [0; FACE_AO_SAMPLE_COUNT];
+    let mut i = 0;
+    while i < FACE_AO_SAMPLE_COUNT {
+        offsets[i] = project_face_ao_offset(side, FACE_AO_SAMPLE_OFFSETS[side][i]);
+        i += 1;
+    }
+    offsets
+}
+
+const fn project_face_ao_offset(side: usize, offset: isize) -> isize {
+    let tangent = offset - DIRECTION_INDEX_OFFSETS[side];
+    match side {
+        0 | 1 => div_exact(tangent, PADDED_CHUNK_SIZE as isize),
+        2 | 3 => {
+            let (dx, dz) = split_minor_major_offset(tangent, PADDED_CHUNK_SIZE as isize);
+            dx * PADDED_CHUNK_SIZE as isize + dz
+        }
+        4 | 5 => {
+            let (dx, dy) = split_minor_major_offset(tangent, PADDED_CHUNK_LAYER_SIZE as isize);
+            dx * PADDED_CHUNK_SIZE as isize + dy
+        }
+        _ => panic!("invalid face side"),
+    }
+}
+
+const fn div_exact(value: isize, divisor: isize) -> isize {
+    if value % divisor != 0 {
+        panic!("invalid AO offset");
+    }
+    value / divisor
+}
+
+const fn split_minor_major_offset(tangent: isize, major_stride: isize) -> (isize, isize) {
+    if tangent % major_stride == 0 {
+        (0, tangent / major_stride)
+    } else if (tangent - 1) % major_stride == 0 {
+        (1, (tangent - 1) / major_stride)
+    } else if (tangent + 1) % major_stride == 0 {
+        (-1, (tangent + 1) / major_stride)
+    } else {
+        panic!("invalid AO offset");
+    }
+}
+
 /// AO key from pre-built occluder bitmasks, avoiding 8 array loads + 8 flag
 /// lookups per visible face. Uses `bit = y*18+z` (X faces), `bit = x*18+z`
 /// (Y faces), `bit = x*18+y` (Z faces) plus axis-specific neighbour offsets.
@@ -267,17 +322,16 @@ fn face_ao_key_from_masks(
         _ => &masks.occluder_z[z + 1],
     };
 
-    // 8 AO corner-sample offsets (dy·18+dz for X/Y faces, dx·18+dy for Z)
-    let offsets: &[isize; 8] = match side {
-        0 => &[-18, 18, 1, -1, -17, -19, 19, 17], // -X, ab
-        1 => &[-18, 18, -1, 1, -19, -17, 17, 19], // +X, ab
-        2 => &[-18, 18, 1, -1, -17, -19, 19, 17], // -Y, ba
-        3 => &[-18, 18, 1, -1, -17, 17, 19, -19], // +Y, ab
-        4 => &[-18, 18, -1, 1, -19, 19, 17, -17], // -Z, ba
-        _ => &[-18, 18, -1, 1, 17, 19, -19, -17], // +Z, ba
-    };
-
-    let [a0, a1, b0, b1, c00, c01, c10, c11] = *offsets;
+    let [
+        a0_off,
+        a1_off,
+        b0_off,
+        b1_off,
+        c00_off,
+        c01_off,
+        c10_off,
+        c11_off,
+    ] = FACE_AO_MASK_OFFSETS[side];
 
     #[inline(always)]
     fn ao_bit(plane: &PlaneBits, bit: usize) -> u32 {
@@ -285,27 +339,17 @@ fn face_ao_key_from_masks(
     }
 
     let b = bit as isize;
-    let a0 = ao_bit(mask, (b + a0) as usize);
-    let a1 = ao_bit(mask, (b + a1) as usize);
-    let b0 = ao_bit(mask, (b + b0) as usize);
-    let b1 = ao_bit(mask, (b + b1) as usize);
-    let c00 = ao_bit(mask, (b + c00) as usize);
-    let c01 = ao_bit(mask, (b + c01) as usize);
-    let c10 = ao_bit(mask, (b + c10) as usize);
-    let c11 = ao_bit(mask, (b + c11) as usize);
-
-    // `ab` packing (sides 0, 1, 3) vs `ba` packing (sides 2, 4, 5)
-    if side == 2 || side == 4 || side == 5 {
-        vertex_ao_key(a0, b0, c00)
-            | (vertex_ao_key(a1, b0, c10) << 2)
-            | (vertex_ao_key(a0, b1, c01) << 4)
-            | (vertex_ao_key(a1, b1, c11) << 6)
-    } else {
-        vertex_ao_key(a0, b0, c00)
-            | (vertex_ao_key(a0, b1, c01) << 2)
-            | (vertex_ao_key(a1, b0, c10) << 4)
-            | (vertex_ao_key(a1, b1, c11) << 6)
-    }
+    face_ao_key_from_sample_bits(
+        FACE_AO_ORDERS[side],
+        ao_bit(mask, (b + a0_off) as usize),
+        ao_bit(mask, (b + a1_off) as usize),
+        ao_bit(mask, (b + b0_off) as usize),
+        ao_bit(mask, (b + b1_off) as usize),
+        ao_bit(mask, (b + c00_off) as usize),
+        ao_bit(mask, (b + c01_off) as usize),
+        ao_bit(mask, (b + c10_off) as usize),
+        ao_bit(mask, (b + c11_off) as usize),
+    )
 }
 
 /// Run binary full-cube face meshing and return descriptors.
@@ -622,7 +666,8 @@ pub fn build_descriptors_hybrid(
 mod tests {
     use super::*;
     use crate::block::{
-        BLOCK_FLAG_FULL_CUBE, BLOCK_FLAG_RENDERED, BlockType, WATER_RENDER_ID, render_id_for_block,
+        BLOCK_FLAG_FULL_CUBE, BLOCK_FLAG_RENDERED, BlockMaterialLayer, BlockType, WATER_RENDER_ID,
+        render_id_for_block,
     };
     use crate::world::chunk::mesh::{
         CHUNK_SIZE, ChunkMeshBlocks, PADDED_CHUNK_VOLUME, block_mesh_flags, padded_chunk_index,
@@ -663,6 +708,29 @@ mod tests {
         };
         result.compute_full_cube_cells();
         result
+    }
+
+    fn descriptor_keys(
+        descriptors_by_layer: Vec<(BlockMaterialLayer, Vec<FaceDescriptor>)>,
+    ) -> Vec<(usize, u32, u32)> {
+        let mut keys = descriptors_by_layer
+            .into_iter()
+            .flat_map(|(layer, descriptors)| {
+                descriptors
+                    .into_iter()
+                    .map(move |desc| (layer.index(), desc.packed, desc.info))
+            })
+            .collect::<Vec<_>>();
+        keys.sort_unstable();
+        keys
+    }
+
+    fn assert_binary_descriptors_match_scalar(blocks: &ChunkMeshBlocks, label: &str) {
+        let scalar =
+            descriptor_keys(crate::world::chunk::mesh::vertex_pulling::build_descriptors(blocks));
+        let binary = descriptor_keys(build_descriptors_binary(blocks));
+
+        assert_eq!(binary, scalar, "{label}");
     }
 
     #[test]
@@ -706,6 +774,26 @@ mod tests {
         let result = build_descriptors_binary(&padded);
         let total: usize = result.iter().map(|(_, d)| d.len()).sum();
         assert_eq!(total, 6, "single stone should emit 6 faces");
+    }
+
+    #[test]
+    fn binary_full_cube_ao_descriptors_match_scalar() {
+        let stone = render_id_for_block(BlockType::Stone);
+        let target = padded_chunk_index(8, 8, 8);
+
+        for side in 0..DIRECTION_COUNT {
+            for sample in 0..FACE_AO_SAMPLE_COUNT {
+                let mut kinds = [0u16; PADDED_CHUNK_VOLUME];
+                kinds[target] = stone;
+                kinds[(target as isize + FACE_AO_SAMPLE_OFFSETS[side][sample]) as usize] = stone;
+
+                let padded = make_padded(&kinds);
+                assert_binary_descriptors_match_scalar(
+                    &padded,
+                    &format!("side={side} sample={sample}"),
+                );
+            }
+        }
     }
 
     #[test]

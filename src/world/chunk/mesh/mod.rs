@@ -40,6 +40,32 @@ pub(crate) const DIRECTION_INDEX_OFFSETS: [isize; DIRECTION_COUNT] = [
 ];
 pub(crate) const VERTEX_AO: [u32; 8] = [3, 2, 2, 0, 2, 1, 1, 0];
 
+pub(crate) const FACE_AO_SAMPLE_COUNT: usize = 8;
+
+#[derive(Clone, Copy)]
+pub(crate) enum FaceAoOrder {
+    Ab,
+    Ba,
+}
+
+pub(crate) const FACE_AO_ORDERS: [FaceAoOrder; DIRECTION_COUNT] = [
+    FaceAoOrder::Ab,
+    FaceAoOrder::Ab,
+    FaceAoOrder::Ba,
+    FaceAoOrder::Ab,
+    FaceAoOrder::Ba,
+    FaceAoOrder::Ba,
+];
+
+pub(crate) const FACE_AO_SAMPLE_OFFSETS: [[isize; FACE_AO_SAMPLE_COUNT]; DIRECTION_COUNT] = [
+    [-325, 323, 17, -19, -307, -343, 341, 305],
+    [-323, 325, -17, 19, -341, -305, 307, 343],
+    [-325, -323, -306, -342, -307, -343, -305, -341],
+    [323, 325, 342, 306, 341, 305, 343, 307],
+    [-19, -17, -342, 306, -343, 305, -341, 307],
+    [19, 17, -306, 342, -305, 343, -307, 341],
+];
+
 #[inline(always)]
 pub(crate) fn block_mesh_flags(rid: u16) -> u8 {
     match rid {
@@ -58,46 +84,6 @@ pub(crate) const fn material_layer_index_from_flags(flags: u8) -> usize {
     } else {
         BlockMaterialLayer::Opaque.index()
     }
-}
-
-// Each face has 4 AO corners but only 8 unique sample cells. These macros encode
-// the two corner-order layouts used by the six face directions and avoid the old
-// 12 block-classification loads per face. `indexed_face_ao_matches_reference...`
-// guards the numeric offsets and corner ordering.
-macro_rules! ao_key_ab {
-    ($blocks:expr, $padded_index:expr, $a0:expr, $a1:expr, $b0:expr, $b1:expr, $c00:expr, $c01:expr, $c10:expr, $c11:expr) => {{
-        let a0 = block_occludes_ambient_light_bit($blocks, $padded_index, $a0);
-        let a1 = block_occludes_ambient_light_bit($blocks, $padded_index, $a1);
-        let b0 = block_occludes_ambient_light_bit($blocks, $padded_index, $b0);
-        let b1 = block_occludes_ambient_light_bit($blocks, $padded_index, $b1);
-        let c00 = block_occludes_ambient_light_bit($blocks, $padded_index, $c00);
-        let c01 = block_occludes_ambient_light_bit($blocks, $padded_index, $c01);
-        let c10 = block_occludes_ambient_light_bit($blocks, $padded_index, $c10);
-        let c11 = block_occludes_ambient_light_bit($blocks, $padded_index, $c11);
-
-        vertex_ao_key(a0, b0, c00)
-            | (vertex_ao_key(a0, b1, c01) << 2)
-            | (vertex_ao_key(a1, b0, c10) << 4)
-            | (vertex_ao_key(a1, b1, c11) << 6)
-    }};
-}
-
-macro_rules! ao_key_ba {
-    ($blocks:expr, $padded_index:expr, $a0:expr, $a1:expr, $b0:expr, $b1:expr, $c00:expr, $c01:expr, $c10:expr, $c11:expr) => {{
-        let a0 = block_occludes_ambient_light_bit($blocks, $padded_index, $a0);
-        let a1 = block_occludes_ambient_light_bit($blocks, $padded_index, $a1);
-        let b0 = block_occludes_ambient_light_bit($blocks, $padded_index, $b0);
-        let b1 = block_occludes_ambient_light_bit($blocks, $padded_index, $b1);
-        let c00 = block_occludes_ambient_light_bit($blocks, $padded_index, $c00);
-        let c01 = block_occludes_ambient_light_bit($blocks, $padded_index, $c01);
-        let c10 = block_occludes_ambient_light_bit($blocks, $padded_index, $c10);
-        let c11 = block_occludes_ambient_light_bit($blocks, $padded_index, $c11);
-
-        vertex_ao_key(a0, b0, c00)
-            | (vertex_ao_key(a1, b0, c10) << 2)
-            | (vertex_ao_key(a0, b1, c01) << 4)
-            | (vertex_ao_key(a1, b1, c11) << 6)
-    }};
 }
 
 fn drop_uploaded_descriptors(
@@ -690,68 +676,46 @@ pub(crate) fn face_ao_key_from_indices(
     padded_index: usize,
     side_index: usize,
 ) -> u32 {
-    match side_index {
-        0 => ao_key_ab!(
-            blocks,
-            padded_index,
-            -325,
-            323,
-            17,
-            -19,
-            -307,
-            -343,
-            341,
-            305
-        ),
-        1 => ao_key_ab!(
-            blocks,
-            padded_index,
-            -323,
-            325,
-            -17,
-            19,
-            -341,
-            -305,
-            307,
-            343
-        ),
-        2 => ao_key_ba!(
-            blocks,
-            padded_index,
-            -325,
-            -323,
-            -306,
-            -342,
-            -307,
-            -343,
-            -305,
-            -341
-        ),
-        3 => ao_key_ab!(blocks, padded_index, 323, 325, 342, 306, 341, 305, 343, 307),
-        4 => ao_key_ba!(
-            blocks,
-            padded_index,
-            -19,
-            -17,
-            -342,
-            306,
-            -343,
-            305,
-            -341,
-            307
-        ),
-        _ => ao_key_ba!(
-            blocks,
-            padded_index,
-            19,
-            17,
-            -306,
-            342,
-            -305,
-            343,
-            -307,
-            341
-        ),
+    let [a0, a1, b0, b1, c00, c01, c10, c11] = FACE_AO_SAMPLE_OFFSETS[side_index];
+
+    face_ao_key_from_sample_bits(
+        FACE_AO_ORDERS[side_index],
+        block_occludes_ambient_light_bit(blocks, padded_index, a0),
+        block_occludes_ambient_light_bit(blocks, padded_index, a1),
+        block_occludes_ambient_light_bit(blocks, padded_index, b0),
+        block_occludes_ambient_light_bit(blocks, padded_index, b1),
+        block_occludes_ambient_light_bit(blocks, padded_index, c00),
+        block_occludes_ambient_light_bit(blocks, padded_index, c01),
+        block_occludes_ambient_light_bit(blocks, padded_index, c10),
+        block_occludes_ambient_light_bit(blocks, padded_index, c11),
+    )
+}
+
+#[inline(always)]
+pub(crate) fn face_ao_key_from_sample_bits(
+    order: FaceAoOrder,
+    a0: u32,
+    a1: u32,
+    b0: u32,
+    b1: u32,
+    c00: u32,
+    c01: u32,
+    c10: u32,
+    c11: u32,
+) -> u32 {
+    match order {
+        FaceAoOrder::Ab => {
+            vertex_ao_key(a0, b0, c00)
+                | (vertex_ao_key(a0, b1, c01) << 2)
+                | (vertex_ao_key(a1, b0, c10) << 4)
+                | (vertex_ao_key(a1, b1, c11) << 6)
+        }
+        FaceAoOrder::Ba => {
+            vertex_ao_key(a0, b0, c00)
+                | (vertex_ao_key(a1, b0, c10) << 2)
+                | (vertex_ao_key(a0, b1, c01) << 4)
+                | (vertex_ao_key(a1, b1, c11) << 6)
+        }
     }
 }
 
