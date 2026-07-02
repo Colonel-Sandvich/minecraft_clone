@@ -38,6 +38,7 @@ The first target is intentionally modest: simple full-block water visuals, persi
 - `fluids.md`: fluid state, levels, propagation, persistence, and chunk boundaries.
 - `blocks_and_assets.md`: block definitions, textures, gameplay hooks, and tinted glass readiness.
 - `water_flow_rendering_research.md`: Minecraft water propagation/rendering research and rewrite notes.
+- `minecraft_water_rendering_research.md`: concrete 1.21.4 water mesh, level, fog, overlay, and stutter findings.
 
 ## First Implementation Slice
 
