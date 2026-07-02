@@ -24,9 +24,6 @@ impl Default for FluidStepBudget {
 #[derive(Resource, Debug, Default)]
 struct FluidTickCounter(u32);
 
-#[derive(Debug, Default)]
-struct FluidScanCursor(usize);
-
 impl Plugin for ChunkFluidPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<FluidStepBudget>()
@@ -44,7 +41,6 @@ fn step_chunk_fluids(
     mut commands: Commands,
     budget: Res<FluidStepBudget>,
     counter: Res<FluidTickCounter>,
-    mut scan_cursor: Local<FluidScanCursor>,
     mut param_set: ParamSet<(
         Query<(
             Entity,
@@ -71,42 +67,36 @@ fn step_chunk_fluids(
     }
 
     let mut chunks_by_pos = HashMap::new();
-    let mut snapshot_chunks = HashMap::new();
     let mut active_source_chunks = Vec::new();
-    let mut inactive_source_chunks = Vec::new();
 
     for (entity, pos, chunk, active) in &param_set.p0() {
         chunks_by_pos.insert(pos.0, entity);
-        snapshot_chunks.insert(pos.0, Box::new(chunk.to_cell_buffer()));
-        if active.is_some() && chunk.has_fluids() {
-            active_source_chunks.push(pos.0);
-        } else if chunk.has_fluids() {
-            inactive_source_chunks.push(pos.0);
-        } else if active.is_some() {
-            commands.entity(entity).remove::<ChunkHasActiveFluids>();
+        if active.is_some() {
+            if chunk.has_fluids() {
+                active_source_chunks.push(pos.0);
+            } else {
+                commands.entity(entity).remove::<ChunkHasActiveFluids>();
+            }
         }
     }
 
-    if active_source_chunks.is_empty() && inactive_source_chunks.is_empty() {
-        scan_cursor.0 = 0;
+    if active_source_chunks.is_empty() {
         return;
     }
 
     active_source_chunks.sort_by_key(|pos| (pos.x, pos.y, pos.z));
-    inactive_source_chunks.sort_by_key(|pos| (pos.x, pos.y, pos.z));
-    let source_chunks = select_source_chunks(
-        active_source_chunks,
-        &inactive_source_chunks,
-        budget.0,
-        &mut scan_cursor,
-    );
-    if source_chunks.is_empty() {
-        return;
-    }
+    let source_chunks = active_source_chunks
+        .into_iter()
+        .take(budget.0)
+        .collect::<Vec<_>>();
+    let source_chunks = expand_with_fluid_neighbors(source_chunks, &chunks_by_pos, &param_set.p0());
     let processed_entities = source_chunks
         .iter()
         .filter_map(|pos| chunks_by_pos.get(pos).copied())
         .collect::<HashSet<_>>();
+
+    let snapshot_chunks =
+        snapshot_chunks_for_sources(&source_chunks, &chunks_by_pos, &param_set.p0());
 
     let snapshot = FluidSnapshot::new(snapshot_chunks);
     let step = simulate_fluid_step(&snapshot, &source_chunks, FluidProfile::WATER);
@@ -175,29 +165,62 @@ fn step_chunk_fluids(
     }
 }
 
-fn select_source_chunks(
+fn expand_with_fluid_neighbors(
     active_source_chunks: Vec<IVec3>,
-    inactive_source_chunks: &[IVec3],
-    budget: usize,
-    cursor: &mut FluidScanCursor,
+    chunks_by_pos: &HashMap<IVec3, Entity>,
+    chunks_q: &Query<(
+        Entity,
+        &ChunkPosition,
+        &Chunk,
+        Option<&ChunkHasActiveFluids>,
+    )>,
 ) -> Vec<IVec3> {
-    let mut selected = active_source_chunks
-        .into_iter()
-        .take(budget)
-        .collect::<Vec<_>>();
-    let remaining = budget.saturating_sub(selected.len());
-    if remaining == 0 || inactive_source_chunks.is_empty() {
-        return selected;
+    let mut selected = active_source_chunks.clone();
+    let mut seen = selected.iter().copied().collect::<HashSet<_>>();
+    for chunk in active_source_chunks {
+        for offset in chunk_neighbor_offsets() {
+            let neighbor = chunk + offset;
+            let Some(entity) = chunks_by_pos.get(&neighbor).copied() else {
+                continue;
+            };
+            let Ok((_, _, neighbor_chunk, _)) = chunks_q.get(entity) else {
+                continue;
+            };
+            if neighbor_chunk.has_fluids() && seen.insert(neighbor) {
+                selected.push(neighbor);
+            }
+        }
+    }
+    selected.sort_by_key(|pos| (pos.x, pos.y, pos.z));
+    selected
+}
+
+fn snapshot_chunks_for_sources(
+    source_chunks: &[IVec3],
+    chunks_by_pos: &HashMap<IVec3, Entity>,
+    chunks_q: &Query<(
+        Entity,
+        &ChunkPosition,
+        &Chunk,
+        Option<&ChunkHasActiveFluids>,
+    )>,
+) -> HashMap<IVec3, Box<[ChunkCell; CHUNK_VOLUME]>> {
+    let mut snapshot_positions = HashSet::new();
+    for chunk in source_chunks {
+        snapshot_positions.insert(*chunk);
+        for offset in chunk_neighbor_offsets() {
+            snapshot_positions.insert(*chunk + offset);
+        }
     }
 
-    let start = cursor.0 % inactive_source_chunks.len();
-    let count = remaining.min(inactive_source_chunks.len());
-    selected.extend(
-        (0..count)
-            .map(|index| inactive_source_chunks[(start + index) % inactive_source_chunks.len()]),
-    );
-    cursor.0 = (start + count) % inactive_source_chunks.len();
-    selected
+    snapshot_positions
+        .into_iter()
+        .filter_map(|pos| {
+            let entity = chunks_by_pos.get(&pos).copied()?;
+            let (_, _, chunk, _) = chunks_q.get(entity).ok()?;
+            Some((pos, Box::new(chunk.to_cell_buffer())))
+        })
+        .collect()
 }
 
 #[cfg(test)]
