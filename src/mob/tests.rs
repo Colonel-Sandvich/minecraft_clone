@@ -448,7 +448,7 @@ fn ecs_release_from_walk_terminal_decays_and_snaps() {
     t.tick_n(20);
 
     let distance = t.sim_pos().z - start.z;
-    let horizontal_speed = vec2(t.vel().x, t.vel().z).length();
+    let horizontal_speed = t.vel().xz().length();
     assert!(
         horizontal_speed <= SNAP_THRESHOLD,
         "horizontal_speed={horizontal_speed} distance={distance} grounded={}",

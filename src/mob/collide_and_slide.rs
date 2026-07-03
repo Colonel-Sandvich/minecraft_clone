@@ -134,7 +134,7 @@ fn collide_and_slide(
     time: &Res<Time<Fixed>>,
 ) -> (Vec3, bool) {
     let mut vdt = *velocity * time.delta_secs();
-    let intended_xz = vec3(vdt.x, 0.0, vdt.z);
+    let intended_xz = vdt.with_y(0.0);
     let original_position = position;
     let original_velocity = *velocity;
 
@@ -148,7 +148,7 @@ fn collide_and_slide(
             break;
         }
 
-        let y_target_distance = vec3(0.0, vdt.y, 0.0);
+        let y_target_distance = Vec3::Y * vdt.y;
         let (distance, hit_data, direction) = shapecast(
             spatial_query,
             collider,
@@ -171,7 +171,7 @@ fn collide_and_slide(
             vdt.y = 0.0;
         }
 
-        let xz_target_distance = vec3(vdt.x, 0.0, vdt.z);
+        let xz_target_distance = vdt.with_y(0.0);
         let (distance, hit_data, direction) = shapecast(
             spatial_query,
             collider,

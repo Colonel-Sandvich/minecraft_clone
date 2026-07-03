@@ -147,11 +147,10 @@ pub fn oak_tree_candidates_for_source_chunk(
 pub fn oak_tree_blocks(tree: OakTree) -> Vec<(IVec3, BlockType)> {
     let mut blocks = Vec::new();
 
-    for y in tree.origin.y..tree.origin.y + tree.trunk_height {
-        blocks.push((ivec3(tree.origin.x, y, tree.origin.z), BlockType::OakLog));
+    for dy in 0..tree.trunk_height {
+        blocks.push((tree.origin + IVec3::Y * dy, BlockType::OakLog));
     }
 
-    let canopy_centre_y = tree.origin.y + tree.trunk_height - 1;
     for dy in -2_i32..=2 {
         let radius = if dy.abs() == 2 {
             1
@@ -168,7 +167,7 @@ pub fn oak_tree_blocks(tree: OakTree) -> Vec<(IVec3, BlockType)> {
                 }
 
                 blocks.push((
-                    ivec3(tree.origin.x + dx, canopy_centre_y + dy, tree.origin.z + dz),
+                    ivec3(dx, tree.trunk_height - 1 + dy, dz) + tree.origin,
                     BlockType::OakLeaves,
                 ));
             }

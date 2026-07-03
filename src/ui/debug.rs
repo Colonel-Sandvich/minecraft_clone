@@ -114,12 +114,8 @@ fn update_debug_text(
         .unwrap_or(0.0);
 
     let pos = player_q.translation;
-    let bx = pos.x.floor() as i32;
-    let by = pos.y.floor() as i32;
-    let bz = pos.z.floor() as i32;
-    let cx = (pos.x / CHUNK_ISIZE as f32).floor() as i32;
-    let cy = (pos.y / CHUNK_ISIZE as f32).floor() as i32;
-    let cz = (pos.z / CHUNK_ISIZE as f32).floor() as i32;
+    let block = pos.floor().as_ivec3();
+    let chunk = (pos / CHUNK_ISIZE as f32).floor().as_ivec3();
 
     let (cam_transform, cam_global) = *cam_q;
     let light_world = cam_global.translation().floor().as_ivec3() + IVec3::NEG_Y;
@@ -155,6 +151,12 @@ fn update_debug_text(
         x = pos.x,
         y = pos.y,
         z = pos.z,
+        bx = block.x,
+        by = block.y,
+        bz = block.z,
+        cx = chunk.x,
+        cy = chunk.y,
+        cz = chunk.z,
         ft_sky = current_sky,
         ft_block = current_block,
         facing = facing,
@@ -293,11 +295,7 @@ fn update_light_label_positions(
     let (camera, cam_transform) = *camera_q;
 
     for (pos, mut node) in &mut labels {
-        let world = Vec3::new(
-            pos.0.x as f32 + 0.5,
-            pos.0.y as f32 + 0.5,
-            pos.0.z as f32 + 0.5,
-        );
+        let world = pos.0.as_vec3() + Vec3::splat(0.5);
         let screen = match camera.world_to_viewport(cam_transform, world) {
             Ok(vp) => vp,
             Err(_) => Vec2::new(-9999.0, -9999.0),
@@ -319,8 +317,9 @@ fn draw_chunk_borders(
         return;
     }
 
-    let pcx = (player_q.translation.x / CHUNK_ISIZE as f32).floor() as i32;
-    let pcz = (player_q.translation.z / CHUNK_ISIZE as f32).floor() as i32;
+    let player_chunk = (player_q.translation / CHUNK_ISIZE as f32)
+        .floor()
+        .as_ivec3();
 
     let vd = view_distance.chunks();
     let s = CHUNK_ISIZE as f32;
@@ -328,13 +327,13 @@ fn draw_chunk_borders(
 
     for chunk_pos in &chunks {
         let pos = chunk_pos.0;
-        let dx = (pos.x - pcx).abs();
-        let dz = (pos.z - pcz).abs();
+        let dx = (pos.x - player_chunk.x).abs();
+        let dz = (pos.z - player_chunk.z).abs();
         if dx > vd || dz > vd {
             continue;
         }
 
-        let o = Vec3::new(pos.x as f32 * s, pos.y as f32 * s, pos.z as f32 * s);
+        let o = pos.as_vec3() * s;
         let (x, y, z) = (Vec3::X * s, Vec3::Y * s, Vec3::Z * s);
 
         gizmos.line(o, o + x, color);
