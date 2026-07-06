@@ -156,32 +156,48 @@ impl FaceDescriptor {
     }
 }
 
-pub(super) fn water_face_descriptor(
-    desc: FaceDescriptor,
-    blocks: &ChunkMeshBlocks,
-    padded_index: usize,
-    side_index: usize,
-) -> FaceDescriptor {
-    let level = blocks.get_fluid_level(padded_index);
-    let (h00, h10, h01, h11) = water_corner_heights(level, blocks, padded_index);
-    let mut desc = desc.with_corner_heights(h00, h10, h01, h11);
-    let below_idx = (padded_index as isize + DIRECTION_INDEX_OFFSETS[2]) as usize;
-    let below = unsafe { *blocks.blocks.get_unchecked(below_idx) };
-    if below == WATER_RENDER_ID {
-        let bl = blocks.get_fluid_level(below_idx);
-        let (bh00, bh10, bh01, bh11) = water_corner_heights(bl, blocks, below_idx);
-        let (lo, hi) = water_below_pair(side_index, bh00, bh10, bh01, bh11);
-        desc = desc.with_water_below(lo, hi);
-    }
+pub(super) struct WaterDescriptorData {
+    packed_by_side: [u32; DIRECTION_COUNT],
+    info: u32,
+}
 
-    if side_index == 3 {
+impl WaterDescriptorData {
+    pub(super) fn from_cell(blocks: &ChunkMeshBlocks, padded_index: usize) -> Self {
+        let level = blocks.get_fluid_level(padded_index);
+        let (h00, h10, h01, h11) = water_corner_heights(level, blocks, padded_index);
+        let corner_descriptor = FaceDescriptor::default().with_corner_heights(h00, h10, h01, h11);
+        let mut packed_by_side = [corner_descriptor.packed; DIRECTION_COUNT];
+
+        let below_idx = (padded_index as isize + DIRECTION_INDEX_OFFSETS[2]) as usize;
+        let below = unsafe { *blocks.blocks.get_unchecked(below_idx) };
+        if below == WATER_RENDER_ID {
+            let below_level = blocks.get_fluid_level(below_idx);
+            let (bh00, bh10, bh01, bh11) = water_corner_heights(below_level, blocks, below_idx);
+            for (side_index, packed) in packed_by_side.iter_mut().enumerate() {
+                let (lo, hi) = water_below_pair(side_index, bh00, bh10, bh01, bh11);
+                *packed |= FaceDescriptor::default().with_water_below(lo, hi).packed;
+            }
+        }
+
         let flow_code = water_flow_code(level, blocks, padded_index);
         if flow_code != 0 || (h00 | h10 | h01 | h11) != 8 {
-            desc = desc.with_water_up_flow(flow_code);
+            packed_by_side[3] |= FaceDescriptor::default()
+                .with_water_up_flow(flow_code)
+                .packed;
+        }
+
+        Self {
+            packed_by_side,
+            info: corner_descriptor.info,
         }
     }
 
-    desc
+    #[inline(always)]
+    pub(super) fn apply(&self, mut desc: FaceDescriptor, side_index: usize) -> FaceDescriptor {
+        desc.packed |= self.packed_by_side[side_index];
+        desc.info |= self.info;
+        desc
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -209,6 +225,7 @@ pub fn build_descriptors(
 
                 if block_flags != 0 {
                     let is_water = block == WATER_RENDER_ID;
+                    let mut water_data = None;
 
                     for side_index in 0..DIRECTION_COUNT {
                         let neighbor_index =
@@ -244,7 +261,11 @@ pub fn build_descriptors(
                             );
                             descriptors[material_layer_index_from_flags(block_flags)].push(
                                 if is_water {
-                                    water_face_descriptor(desc, blocks, padded_index, side_index)
+                                    water_data
+                                        .get_or_insert_with(|| {
+                                            WaterDescriptorData::from_cell(blocks, padded_index)
+                                        })
+                                        .apply(desc, side_index)
                                 } else {
                                     desc
                                 },

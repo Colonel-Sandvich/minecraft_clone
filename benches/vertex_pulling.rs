@@ -210,6 +210,33 @@ fn realistic_terrain_chunk() -> Chunk {
     chunk
 }
 
+fn water_surface_chunk() -> Chunk {
+    let mut chunk = Chunk::default();
+    for x in 0..CHUNK_SIZE {
+        for z in 0..CHUNK_SIZE {
+            let level = ((x * 3 + z * 5) % 8 + 1) as u8;
+            chunk.set_cell_xyz(x, 7, z, ChunkCell::water_flow(level));
+        }
+    }
+    chunk
+}
+
+fn exposed_water_columns_chunk() -> Chunk {
+    let mut chunk = Chunk::default();
+    for x in 0..CHUNK_SIZE {
+        for z in 0..CHUNK_SIZE {
+            if (x + z) % 2 != 0 {
+                continue;
+            }
+            for y in 0..CHUNK_SIZE {
+                let level = ((x * 3 + y * 5 + z * 7) % 8 + 1) as u8;
+                chunk.set_cell_xyz(x, y, z, ChunkCell::water_flow(level));
+            }
+        }
+    }
+    chunk
+}
+
 // ---------------------------------------------------------------------------
 // Data size helpers
 // ---------------------------------------------------------------------------
@@ -273,10 +300,33 @@ fn bench_vertex_pulling(c: &mut Criterion) {
     bench_mesh_descriptors_scalar(c, &scenarios);
     bench_mesh_descriptors_hybrid(c, &scenarios);
     bench_mesh_descriptors_floor(c, &scenarios);
+    bench_water_shape_descriptors(c);
     print_data_size_comparison(&scenarios);
     print_bind_group_topology_comparison();
     bench_light_upload(c);
     bench_dirty_mesh_loop(c);
+}
+
+fn bench_water_shape_descriptors(c: &mut Criterion) {
+    let chunks = [
+        ("surface_16x16", water_surface_chunk()),
+        ("realistic_pond", realistic_terrain_chunk()),
+        ("exposed_columns", exposed_water_columns_chunk()),
+    ];
+    let mut group = c.benchmark_group("vp_water_shape");
+
+    for (name, chunk) in chunks {
+        let chunks = [(IVec3::ZERO, chunk)];
+        let chunk_refs = chunks.iter().map(|(p, c)| (*p, c)).collect();
+        let blocks = ChunkMeshBlocks::from_chunks(IVec3::ZERO, &chunk_refs);
+        let face_count = vp_face_count(&binary::build_descriptors_hybrid(&blocks));
+        group.throughput(Throughput::Elements(face_count as u64));
+        group.bench_function(BenchmarkId::new("hybrid", name), move |b| {
+            b.iter(|| black_box(binary::build_descriptors_hybrid(black_box(&blocks))))
+        });
+    }
+
+    group.finish();
 }
 
 fn bench_mesh_descriptors_scalar(c: &mut Criterion, scenarios: &[Scenario]) {

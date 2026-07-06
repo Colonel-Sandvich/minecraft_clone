@@ -22,7 +22,7 @@ use crate::block::{
     WATER_RENDER_ID,
 };
 
-use super::vertex_pulling::{FaceDescriptor, water_face_descriptor};
+use super::vertex_pulling::{FaceDescriptor, WaterDescriptorData};
 use super::{
     CHUNK_SIZE, DIRECTION_COUNT, DIRECTION_INDEX_OFFSETS, FACE_AO_ORDERS, FACE_AO_SAMPLE_COUNT,
     FACE_AO_SAMPLE_OFFSETS, PADDED_CHUNK_LAYER_SIZE, PADDED_CHUNK_SIZE, block_mesh_flags,
@@ -593,6 +593,7 @@ fn push_descriptors_non_full_cube(
                 }
 
                 let is_water = block == WATER_RENDER_ID;
+                let mut water_data = None;
 
                 for (side_index, offset) in DIRECTION_INDEX_OFFSETS.iter().copied().enumerate() {
                     let neighbor_index = (padded_index as isize + offset) as usize;
@@ -617,7 +618,11 @@ fn push_descriptors_non_full_cube(
                         );
                         descriptors[material_layer_index_from_flags(block_flags)].push(
                             if is_water {
-                                water_face_descriptor(desc, blocks, padded_index, side_index)
+                                water_data
+                                    .get_or_insert_with(|| {
+                                        WaterDescriptorData::from_cell(blocks, padded_index)
+                                    })
+                                    .apply(desc, side_index)
                             } else {
                                 desc
                             },

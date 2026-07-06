@@ -12,7 +12,8 @@ use crate::world::chunk::{Chunk, ChunkCell, ChunkLight, ChunkNeedsLightUpload};
 
 use super::{
     CHUNK_ISIZE, CHUNK_SIZE, ChunkMeshBlocks, ChunkNeedsMeshRebuild, ChunkPosition,
-    VertexPullingLight, face_ao_from_indices, padded_chunk_index, water_corner_heights,
+    VertexPullingLight, face_ao_from_indices, padded_chunk_index, water_below_pair,
+    water_corner_heights,
 };
 
 // Mirrors the removed mod.rs VERTEX_OFFSETS — only needed in test AO helpers.
@@ -559,6 +560,43 @@ fn water_corner_heights_use_vanilla_ninths_and_full_columns() {
     chunk.set_cell_xyz(8, 2, 8, ChunkCell::water_source());
     let blocks = ChunkMeshBlocks::from_chunk(&chunk);
     assert_eq!(water_corner_heights(8, &blocks, center), (9, 9, 9, 9));
+}
+
+#[test]
+fn water_side_descriptors_use_precomputed_below_corner_pairs() {
+    let mut chunk = Chunk::default();
+    chunk.set_cell_xyz(8, 1, 8, ChunkCell::water_flow(3));
+    chunk.set_cell_xyz(7, 1, 8, ChunkCell::water_flow(7));
+    chunk.set_cell_xyz(8, 1, 7, ChunkCell::water_source());
+    chunk.set_cell_xyz(8, 2, 8, ChunkCell::water_source());
+
+    let blocks = ChunkMeshBlocks::from_chunk(&chunk);
+    let below_index = padded_chunk_index(9, 2, 9);
+    let below_level = blocks.get_fluid_level(below_index);
+    let (h00, h10, h01, h11) = water_corner_heights(below_level, &blocks, below_index);
+    let descriptors = vertex_pulling::build_descriptors(&blocks)
+        .into_iter()
+        .flat_map(|(_, descriptors)| descriptors)
+        .filter(|desc| {
+            desc.block_type() == WATER_RENDER_ID as u32
+                && desc.x() == 8
+                && desc.y() == 2
+                && desc.z() == 8
+        })
+        .collect::<Vec<_>>();
+
+    for side_index in [0usize, 1, 4, 5] {
+        let descriptor = descriptors
+            .iter()
+            .find(|desc| desc.face_dir() == side_index as u32)
+            .expect("exposed water side should be emitted");
+        let expected = water_below_pair(side_index, h00, h10, h01, h11);
+        let actual = (
+            (descriptor.packed >> 6) & 0xF,
+            (descriptor.packed >> 10) & 0xF,
+        );
+        assert_eq!(actual, expected, "side {side_index}");
+    }
 }
 
 #[test]
