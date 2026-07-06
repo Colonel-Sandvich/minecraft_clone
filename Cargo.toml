@@ -29,6 +29,7 @@ bincode = { version = "2", features = ["serde"] }
 [dev-dependencies]
 criterion = "0.8.2"
 naga = { version = "29.0.3", features = ["wgsl-in"] }
+wgpu = { version = "29.0.3", default-features = false, features = ["wgsl", "dx12", "metal", "vulkan", "naga-ir"] }
 
 [[bench]]
 name = "light_propagation"
@@ -40,6 +41,10 @@ harness = false
 
 [[bench]]
 name = "ecs_queries"
+harness = false
+
+[[bench]]
+name = "vp_gpu_bind_groups"
 harness = false
 
 
