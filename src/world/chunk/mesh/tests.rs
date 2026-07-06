@@ -4,7 +4,8 @@ use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
 
 use crate::block::{
-    BlockMaterialLayer, BlockType, WATER_RENDER_ID, from_render_id, render_id_for_block,
+    BlockMaterialLayer, BlockType, RENDER_ID_COUNT, WATER_RENDER_ID, from_render_id,
+    render_id_for_block,
 };
 use crate::quad::Direction;
 use crate::world::chunk::mesh::{binary, vertex_pulling};
@@ -12,7 +13,7 @@ use crate::world::chunk::{Chunk, ChunkCell, ChunkLight, ChunkNeedsLightUpload};
 
 use super::{
     CHUNK_ISIZE, CHUNK_SIZE, ChunkMeshBlocks, ChunkNeedsMeshRebuild, ChunkPosition,
-    VertexPullingLight, face_ao_from_indices, padded_chunk_index, water_below_pair,
+    VertexPullingLight, VpTextureState, face_ao_from_indices, padded_chunk_index, water_below_pair,
     water_corner_heights,
 };
 
@@ -435,12 +436,72 @@ fn mesh_rebuild_new_layer_child_reuses_existing_light_data() {
     );
 }
 
+#[derive(Resource, Default)]
+struct VpTextureStateChangeCount(usize);
+
+fn count_vp_texture_state_changes(
+    texture_state: Option<Res<VpTextureState>>,
+    mut changes: ResMut<VpTextureStateChangeCount>,
+) {
+    if texture_state.is_some_and(|state| state.is_changed()) {
+        changes.0 += 1;
+    }
+}
+
+#[test]
+fn vp_texture_state_only_changes_with_texture_resources() {
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins)
+        .insert_resource(test_texture_map())
+        .insert_resource(crate::textures::BlockTextures::test_handles())
+        .init_resource::<VpTextureStateChangeCount>()
+        .add_systems(
+            Update,
+            (super::sync_vp_texture_state, count_vp_texture_state_changes).chain(),
+        );
+
+    app.update();
+
+    let entry_count = RENDER_ID_COUNT * super::DIRECTION_COUNT;
+    let texture_state = app.world().resource::<VpTextureState>();
+    assert_eq!(texture_state.texture_layers.len(), entry_count);
+    assert_eq!(texture_state.tint_colors.len(), entry_count);
+    assert_eq!(texture_state.emission_factors.len(), entry_count);
+    assert_eq!(app.world().resource::<VpTextureStateChangeCount>().0, 1);
+
+    app.update();
+    assert_eq!(
+        app.world().resource::<VpTextureStateChangeCount>().0,
+        1,
+        "unrelated frames must not recreate the texture state"
+    );
+
+    let stone_rid = render_id_for_block(BlockType::Stone);
+    let stone_path = crate::block::render_id_to_texture_path(stone_rid, Direction::Up);
+    app.world_mut()
+        .resource_mut::<crate::block::BlockTextureMap>()
+        .0
+        .insert(
+            stone_path.to_owned(),
+            crate::block::BlockTextureAnimation::new(crate::block::BlockTextureLayer::new(123), 4),
+        );
+
+    app.update();
+
+    let up_index = Direction::iter()
+        .position(|side| side == Direction::Up)
+        .unwrap();
+    let stone_up_index = stone_rid as usize * super::DIRECTION_COUNT + up_index;
+    assert_eq!(
+        app.world().resource::<VpTextureState>().texture_layers[stone_up_index],
+        super::pack_texture_layer(crate::block::BlockTextureLayer::new(123), 4)
+    );
+    assert_eq!(app.world().resource::<VpTextureStateChangeCount>().0, 2);
+}
+
 fn mesh_rebuild_app() -> App {
     let mut app = App::new();
     app.add_plugins(MinimalPlugins)
-        .init_resource::<Assets<Mesh>>()
-        .insert_resource(test_texture_map())
-        .insert_resource(crate::textures::BlockTextures::test_handles())
         .add_systems(Update, super::rebuild_chunk_meshes);
     app
 }

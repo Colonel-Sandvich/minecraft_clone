@@ -15,7 +15,7 @@ use strum::IntoEnumIterator;
 use crate::block::{
     BLOCK_FLAG_CUTOUT, BLOCK_FLAG_EMITS_INTERNAL_FACES, BLOCK_FLAG_FULL_CUBE, BLOCK_FLAG_RENDERED,
     BLOCK_FLAG_TRANSLUCENT, BlockMaterialLayer, BlockTextureLayer, BlockTextureMap, BlockType,
-    RENDER_ID_COUNT, WATER_RENDER_ID, from_render_id, render_id_for_block, render_id_to_colour,
+    RENDER_ID_COUNT, WATER_RENDER_ID, from_render_id, render_id_to_colour,
 };
 use crate::quad::Direction;
 use crate::textures::{BlockTextures, TextureState};
@@ -102,48 +102,13 @@ pub struct ChunkMeshPlugin;
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
 struct ChunkMaterialLayerMarker(BlockMaterialLayer);
 
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct BlockMeshTables {
-    pub(crate) texture_layers: [[BlockTextureLayer; DIRECTION_COUNT]; RENDER_ID_COUNT],
-    pub(crate) texture_frame_counts: [[u32; DIRECTION_COUNT]; RENDER_ID_COUNT],
-    pub(crate) colors: [[Vec4; DIRECTION_COUNT]; RENDER_ID_COUNT],
-}
-
-impl BlockMeshTables {
-    pub(crate) fn from_texture_map(block_texture_map: &BlockTextureMap) -> Self {
-        let mut texture_layers = [[BlockTextureLayer::default(); DIRECTION_COUNT]; RENDER_ID_COUNT];
-        let mut texture_frame_counts = [[1u32; DIRECTION_COUNT]; RENDER_ID_COUNT];
-        let mut colors = [[Vec4::ZERO; DIRECTION_COUNT]; RENDER_ID_COUNT];
-
-        for block in BlockType::iter() {
-            let rid = render_id_for_block(block) as usize;
-            for (side_index, side) in Direction::iter().enumerate() {
-                let animation = block_texture_map.block_to_texture_animation(block, side);
-                texture_layers[rid][side_index] = animation.base_layer();
-                texture_frame_counts[rid][side_index] = animation.frame_count();
-                colors[rid][side_index] = render_id_to_colour(rid as u16, side);
-            }
-        }
-
-        let water = WATER_RENDER_ID as usize;
-        for (side_index, side) in Direction::iter().enumerate() {
-            let animation = block_texture_map.render_id_to_texture_animation(WATER_RENDER_ID, side);
-            texture_layers[water][side_index] = animation.base_layer();
-            texture_frame_counts[water][side_index] = animation.frame_count();
-            colors[water][side_index] = render_id_to_colour(WATER_RENDER_ID, side);
-        }
-
-        Self {
-            texture_layers,
-            texture_frame_counts,
-            colors,
-        }
-    }
-}
-
 impl Plugin for ChunkMeshPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(
+            PreUpdate,
+            sync_vp_texture_state.run_if(in_state(TextureState::Finished)),
+        )
+        .add_systems(
             FixedPreUpdate,
             (rebuild_chunk_meshes, upload_chunk_lights)
                 .chain()
@@ -153,12 +118,64 @@ impl Plugin for ChunkMeshPlugin {
     }
 }
 
+fn sync_vp_texture_state(
+    mut commands: Commands,
+    block_textures: Res<BlockTextures>,
+    block_texture_map: Res<BlockTextureMap>,
+    current: Option<Res<VpTextureState>>,
+) {
+    if current.is_some() && !block_textures.is_changed() && !block_texture_map.is_changed() {
+        return;
+    }
+
+    commands.insert_resource(build_vp_texture_state(&block_textures, &block_texture_map));
+}
+
+fn build_vp_texture_state(
+    block_textures: &BlockTextures,
+    block_texture_map: &BlockTextureMap,
+) -> VpTextureState {
+    let entry_count = RENDER_ID_COUNT * DIRECTION_COUNT;
+    let mut texture_layers = Vec::with_capacity(entry_count);
+    let mut tint_colors = Vec::with_capacity(entry_count);
+    let mut emission_factors = Vec::with_capacity(entry_count);
+
+    for rid in 0..RENDER_ID_COUNT as u16 {
+        let emission = match rid {
+            0 | WATER_RENDER_ID => 0.0,
+            _ => f32::from(from_render_id(rid).unwrap().light_emission()) / 15.0,
+        };
+
+        for side in Direction::iter() {
+            if rid == 0 {
+                texture_layers.push(pack_texture_layer(BlockTextureLayer::default(), 1));
+                tint_colors.push([0.0; 4]);
+            } else {
+                let animation = block_texture_map.render_id_to_texture_animation(rid, side);
+                let color = render_id_to_colour(rid, side);
+                texture_layers.push(pack_texture_layer(
+                    animation.base_layer(),
+                    animation.frame_count(),
+                ));
+                tint_colors.push([color.x, color.y, color.z, color.w]);
+            }
+            emission_factors.push(emission);
+        }
+    }
+
+    VpTextureState {
+        terrain_texture_handle: block_textures.terrain.clone(),
+        texture_layers,
+        tint_colors,
+        emission_factors,
+        ao_brightness: AO_BRIGHTNESS,
+    }
+}
+
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn rebuild_chunk_meshes(
     mut commands: Commands,
     mut perf: Option<ResMut<ChunkPerfCounters>>,
-    block_textures: Res<BlockTextures>,
-    block_texture_map: Res<BlockTextureMap>,
     dirty_chunks_q: Query<(&ChunkPosition, Entity), (With<Chunk>, With<ChunkNeedsMeshRebuild>)>,
     all_chunks_q: Query<(&ChunkPosition, &Chunk)>,
     light_q: Query<(&ChunkPosition, &ChunkLight)>,
@@ -184,44 +201,6 @@ fn rebuild_chunk_meshes(
                 .map(|(pos, chunk)| (pos.0, chunk)),
         );
     }
-
-    let tables = BlockMeshTables::from_texture_map(&block_texture_map);
-    let texture_layers: Vec<u32> = (0..RENDER_ID_COUNT)
-        .flat_map(|bt| {
-            (0..DIRECTION_COUNT).map(move |dir| {
-                pack_texture_layer(
-                    tables.texture_layers[bt][dir],
-                    tables.texture_frame_counts[bt][dir],
-                )
-            })
-        })
-        .collect();
-    let tint_colors: Vec<[f32; 4]> = (0..RENDER_ID_COUNT)
-        .flat_map(|bt| {
-            (0..DIRECTION_COUNT).map(move |dir| {
-                let c = tables.colors[bt][dir];
-                [c.x, c.y, c.z, c.w]
-            })
-        })
-        .collect();
-    let emission_factors: Vec<f32> = (0..RENDER_ID_COUNT)
-        .flat_map(|rid| {
-            let emission = if rid == 0 || rid == WATER_RENDER_ID as usize {
-                0.0
-            } else {
-                f32::from(from_render_id(rid as u16).unwrap().light_emission()) / 15.0
-            };
-            (0..DIRECTION_COUNT).map(move |_| emission)
-        })
-        .collect();
-    let texture_state = VpTextureState {
-        terrain_texture_handle: block_textures.terrain.clone(),
-        texture_layers,
-        tint_colors,
-        emission_factors,
-        ao_brightness: AO_BRIGHTNESS,
-    };
-    commands.insert_resource(texture_state);
 
     let mut lights_by_pos: HashMap<IVec3, &ChunkLight> =
         HashMap::with_capacity(light_q.iter().len());

@@ -343,17 +343,21 @@ pub struct PreparedChunkVp {
 
 #[derive(Resource)]
 pub struct VpGlobals {
-    pub group0_bind_group: BindGroup,
+    group0_bind_group: BindGroup,
+    frame_buffers: Option<VpFrameBuffers>,
+    texture_state_dirty: bool,
 }
 
-#[derive(Resource, Default)]
-pub struct VpStaticResources {
-    pub texture_layers_buf: Option<Buffer>,
-    pub tint_colors_buf: Option<Buffer>,
-    pub emission_factors_buf: Option<Buffer>,
-    pub ao_brightness_buf: Option<Buffer>,
-    pub visual_settings_buf: Option<Buffer>,
-    pub view_proj_buf: Option<Buffer>,
+struct VpFrameBuffers {
+    view_proj: Buffer,
+    visual_settings: Buffer,
+}
+
+struct VpTextureBuffers {
+    texture_layers: Buffer,
+    tint_colors: Buffer,
+    emission_factors: Buffer,
+    ao_brightness: Buffer,
 }
 
 #[derive(Resource)]
@@ -699,7 +703,6 @@ impl Plugin for VertexPullingPlugin {
                 ExtractSchedule,
                 (extract_changed_vp_data, extract_changed_vp_lights),
             )
-            .init_resource::<VpStaticResources>()
             .add_systems(
                 Render,
                 (
@@ -777,7 +780,7 @@ impl Plugin for VertexPullingPlugin {
             translucent_id,
         });
 
-        // Create placeholder group 0 bind group (replaced each frame)
+        // Create a placeholder group 0 bind group for frames before the terrain image is ready.
         let dummy_buf = render_device.create_buffer_with_data(&BufferInitDescriptor {
             label: Some("vp_g0_dummy_view_proj"),
             contents: &[0u8; 64],
@@ -871,6 +874,8 @@ impl Plugin for VertexPullingPlugin {
         );
         render_app.world_mut().insert_resource(VpGlobals {
             group0_bind_group: dummy_group0,
+            frame_buffers: None,
+            texture_state_dirty: true,
         });
     }
 }
@@ -1009,6 +1014,100 @@ fn extract_changed_vp_lights(
     );
 }
 
+fn create_vp_frame_buffers(
+    render_device: &RenderDevice,
+    view_proj: Mat4,
+    visual_settings: &TerrainVisualSettingsUniform,
+) -> VpFrameBuffers {
+    VpFrameBuffers {
+        view_proj: render_device.create_buffer_with_data(&BufferInitDescriptor {
+            label: Some("vp_view_proj"),
+            contents: bytemuck::cast_slice(view_proj.as_ref()),
+            usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+        }),
+        visual_settings: render_device.create_buffer_with_data(&BufferInitDescriptor {
+            label: Some("vp_visual_settings"),
+            contents: bytemuck::bytes_of(visual_settings),
+            usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+        }),
+    }
+}
+
+fn create_vp_texture_buffers(
+    render_device: &RenderDevice,
+    texture_state: &VpTextureState,
+) -> VpTextureBuffers {
+    VpTextureBuffers {
+        texture_layers: render_device.create_buffer_with_data(&BufferInitDescriptor {
+            label: Some("vp_texture_layers"),
+            contents: bytemuck::cast_slice(&texture_state.texture_layers),
+            usage: BufferUsages::STORAGE,
+        }),
+        tint_colors: render_device.create_buffer_with_data(&BufferInitDescriptor {
+            label: Some("vp_tint_colors"),
+            contents: bytemuck::cast_slice(&texture_state.tint_colors),
+            usage: BufferUsages::STORAGE,
+        }),
+        emission_factors: render_device.create_buffer_with_data(&BufferInitDescriptor {
+            label: Some("vp_emission_factors"),
+            contents: bytemuck::cast_slice(&texture_state.emission_factors),
+            usage: BufferUsages::STORAGE,
+        }),
+        ao_brightness: render_device.create_buffer_with_data(&BufferInitDescriptor {
+            label: Some("vp_ao_brightness"),
+            contents: bytemuck::cast_slice(&texture_state.ao_brightness),
+            usage: BufferUsages::UNIFORM,
+        }),
+    }
+}
+
+fn create_vp_global_bind_group(
+    render_device: &RenderDevice,
+    pipeline: &VpPipeline,
+    gpu_image: &GpuImage,
+    frame_buffers: &VpFrameBuffers,
+    texture_buffers: &VpTextureBuffers,
+) -> BindGroup {
+    render_device.create_bind_group(
+        "vp_g0_globals",
+        &pipeline.group0_bind_group_layout,
+        &[
+            BindGroupEntry {
+                binding: 0,
+                resource: frame_buffers.view_proj.as_entire_binding(),
+            },
+            BindGroupEntry {
+                binding: 1,
+                resource: BindingResource::TextureView(&gpu_image.texture_view),
+            },
+            BindGroupEntry {
+                binding: 2,
+                resource: BindingResource::Sampler(&gpu_image.sampler),
+            },
+            BindGroupEntry {
+                binding: 4,
+                resource: texture_buffers.texture_layers.as_entire_binding(),
+            },
+            BindGroupEntry {
+                binding: 5,
+                resource: texture_buffers.tint_colors.as_entire_binding(),
+            },
+            BindGroupEntry {
+                binding: 6,
+                resource: texture_buffers.ao_brightness.as_entire_binding(),
+            },
+            BindGroupEntry {
+                binding: 7,
+                resource: texture_buffers.emission_factors.as_entire_binding(),
+            },
+            BindGroupEntry {
+                binding: 8,
+                resource: frame_buffers.visual_settings.as_entire_binding(),
+            },
+        ],
+    )
+}
+
 fn prepare_gpu_data(
     mut commands: Commands,
     render_device: Res<RenderDevice>,
@@ -1028,7 +1127,6 @@ fn prepare_gpu_data(
     visual_settings: Option<Res<TerrainVisualSettings>>,
     animation_clock: Option<Res<VpAnimationClock>>,
     mut globals: ResMut<VpGlobals>,
-    mut static_res: ResMut<VpStaticResources>,
 ) {
     let Some(pipeline) = pipeline else { return };
 
@@ -1056,151 +1154,45 @@ fn prepare_gpu_data(
     let visual_settings_uniform =
         TerrainVisualSettingsUniform::new(visual_settings, camera_position, animation_seconds);
 
-    let Some(texture_state) = texture_state.as_deref() else {
+    let Some(texture_state) = texture_state else {
         return;
     };
-    let Some(gpu_image) = gpu_images.get(&texture_state.terrain_texture_handle) else {
-        return;
-    };
+    if texture_state.is_changed() {
+        globals.texture_state_dirty = true;
+    }
 
-    // Create static buffers once and keep them forever
-    if static_res.view_proj_buf.is_none() {
-        static_res.texture_layers_buf = Some(render_device.create_buffer_with_data(
-            &BufferInitDescriptor {
-                label: Some("vp_texture_layers"),
-                contents: bytemuck::cast_slice(&texture_state.texture_layers),
-                usage: BufferUsages::STORAGE,
-            },
-        ));
-
-        let tints_flat: Vec<f32> = texture_state
-            .tint_colors
-            .iter()
-            .flat_map(|c| [c[0], c[1], c[2], c[3]])
-            .collect();
-        static_res.tint_colors_buf = Some(render_device.create_buffer_with_data(
-            &BufferInitDescriptor {
-                label: Some("vp_tint_colors"),
-                contents: bytemuck::cast_slice(&tints_flat),
-                usage: BufferUsages::STORAGE,
-            },
-        ));
-
-        static_res.emission_factors_buf = Some(render_device.create_buffer_with_data(
-            &BufferInitDescriptor {
-                label: Some("vp_emission_factors"),
-                contents: bytemuck::cast_slice(&texture_state.emission_factors),
-                usage: BufferUsages::STORAGE,
-            },
-        ));
-
-        static_res.view_proj_buf = Some(render_device.create_buffer_with_data(
-            &BufferInitDescriptor {
-                label: Some("vp_view_proj"),
-                contents: bytemuck::cast_slice(view_proj.as_ref()),
-                usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
-            },
-        ));
-
-        static_res.ao_brightness_buf = Some(render_device.create_buffer_with_data(
-            &BufferInitDescriptor {
-                label: Some("vp_ao_brightness"),
-                contents: bytemuck::cast_slice(&texture_state.ao_brightness),
-                usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
-            },
-        ));
-
-        static_res.visual_settings_buf = Some(render_device.create_buffer_with_data(
-            &BufferInitDescriptor {
-                label: Some("vp_visual_settings"),
-                contents: bytemuck::bytes_of(&visual_settings_uniform),
-                usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
-            },
-        ));
-
-        let group0_entries: [BindGroupEntry; 8] = [
-            BindGroupEntry {
-                binding: 0,
-                resource: static_res
-                    .view_proj_buf
-                    .as_ref()
-                    .unwrap()
-                    .as_entire_binding(),
-            },
-            BindGroupEntry {
-                binding: 1,
-                resource: BindingResource::TextureView(&gpu_image.texture_view),
-            },
-            BindGroupEntry {
-                binding: 2,
-                resource: BindingResource::Sampler(&gpu_image.sampler),
-            },
-            BindGroupEntry {
-                binding: 4,
-                resource: static_res
-                    .texture_layers_buf
-                    .as_ref()
-                    .unwrap()
-                    .as_entire_binding(),
-            },
-            BindGroupEntry {
-                binding: 5,
-                resource: static_res
-                    .tint_colors_buf
-                    .as_ref()
-                    .unwrap()
-                    .as_entire_binding(),
-            },
-            BindGroupEntry {
-                binding: 6,
-                resource: static_res
-                    .ao_brightness_buf
-                    .as_ref()
-                    .unwrap()
-                    .as_entire_binding(),
-            },
-            BindGroupEntry {
-                binding: 7,
-                resource: static_res
-                    .emission_factors_buf
-                    .as_ref()
-                    .unwrap()
-                    .as_entire_binding(),
-            },
-            BindGroupEntry {
-                binding: 8,
-                resource: static_res
-                    .visual_settings_buf
-                    .as_ref()
-                    .unwrap()
-                    .as_entire_binding(),
-            },
-        ];
-
-        globals.group0_bind_group = render_device.create_bind_group(
-            "vp_g0_globals",
-            &pipeline.group0_bind_group_layout,
-            &group0_entries,
-        );
-    } else {
-        // Update view_proj buffer in-place (same buffer, same bind group)
+    if let Some(frame_buffers) = globals.frame_buffers.as_ref() {
         render_queue.0.write_buffer(
-            static_res.view_proj_buf.as_ref().unwrap(),
+            &frame_buffers.view_proj,
             0,
             bytemuck::cast_slice(view_proj.as_ref()),
         );
+        render_queue.0.write_buffer(
+            &frame_buffers.visual_settings,
+            0,
+            bytemuck::bytes_of(&visual_settings_uniform),
+        );
+    } else {
+        globals.frame_buffers = Some(create_vp_frame_buffers(
+            &render_device,
+            view_proj,
+            &visual_settings_uniform,
+        ));
     }
 
-    render_queue.0.write_buffer(
-        static_res.ao_brightness_buf.as_ref().unwrap(),
-        0,
-        bytemuck::cast_slice(&texture_state.ao_brightness),
-    );
-    render_queue.0.write_buffer(
-        static_res.visual_settings_buf.as_ref().unwrap(),
-        0,
-        bytemuck::bytes_of(&visual_settings_uniform),
-    );
+    if globals.texture_state_dirty
+        && let Some(gpu_image) = gpu_images.get(&texture_state.terrain_texture_handle)
+    {
+        let texture_buffers = create_vp_texture_buffers(&render_device, &texture_state);
+        globals.group0_bind_group = create_vp_global_bind_group(
+            &render_device,
+            &pipeline,
+            gpu_image,
+            globals.frame_buffers.as_ref().unwrap(),
+            &texture_buffers,
+        );
+        globals.texture_state_dirty = false;
+    }
 
     let mut mesh_prepared = HashSet::new();
     let mut light_buffers_by_data = HashMap::new();
