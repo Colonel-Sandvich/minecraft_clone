@@ -4,27 +4,10 @@ use bevy::prelude::*;
 use crate::block::{BLOCK_FLAG_FULL_CUBE, BLOCK_FLAG_RENDERED};
 
 use super::{
-    CHUNK_ISIZE, CHUNK_SIZE, CHUNK_VOLUME, Chunk, PADDED_CHUNK_SIZE, PADDED_CHUNK_VOLUME,
-    block_mesh_flags, padded_chunk_index,
+    CHUNK_ISIZE, CHUNK_SIZE, CHUNK_VOLUME, Chunk, PADDED_CHUNK_VOLUME, padded_chunk_index,
 };
 
 use super::super::chunk_neighbor_offsets;
-
-/// One entry in the pre-computed full-cube-cell list.
-///
-/// `yz_bit`, `xz_bit`, `xy_bit` are the plane bit indices (0..324).
-/// `x`, `y`, `z` are padded coordinates (0..18) used for plane-indexing
-/// and the `is_center` check.
-#[derive(Copy, Clone, Debug)]
-#[repr(C)]
-pub(crate) struct FullCubeCell {
-    pub yz_bit: u16,
-    pub xz_bit: u16,
-    pub xy_bit: u16,
-    pub x: u8,
-    pub y: u8,
-    pub z: u8,
-}
 
 pub struct ChunkMeshBlocks {
     pub(crate) blocks: Box<[u16; PADDED_CHUNK_VOLUME]>,
@@ -32,7 +15,6 @@ pub struct ChunkMeshBlocks {
     pub(crate) center_rendered_blocks: u16,
     pub(crate) center_full_cube_blocks: u16,
     pub(crate) neighbor_face_shells_full_cube: bool,
-    pub(crate) full_cube_cells: Box<[FullCubeCell]>,
 }
 
 impl ChunkMeshBlocks {
@@ -40,7 +22,6 @@ impl ChunkMeshBlocks {
     pub fn from_chunk(chunk: &Chunk) -> Self {
         let mut blocks = Self::empty();
         blocks.copy_center_chunk(chunk);
-        compute_full_cube_cells_impl(&blocks.blocks, &mut blocks.full_cube_cells);
         blocks
     }
 
@@ -79,7 +60,6 @@ impl ChunkMeshBlocks {
             center_rendered_blocks: 0,
             center_full_cube_blocks: 0,
             neighbor_face_shells_full_cube: false,
-            full_cube_cells: Vec::new().into_boxed_slice(),
         }
     }
 
@@ -161,11 +141,6 @@ impl ChunkMeshBlocks {
         self.center_rendered_blocks > self.center_full_cube_blocks
     }
 
-    #[allow(dead_code)]
-    pub(crate) fn compute_full_cube_cells(&mut self) {
-        compute_full_cube_cells_impl(&self.blocks, &mut self.full_cube_cells);
-    }
-
     pub(crate) fn center_is_all_full_cube(&self) -> bool {
         self.center_full_cube_blocks as usize == CHUNK_VOLUME
     }
@@ -211,37 +186,4 @@ fn source_range_for_neighbor_axis(delta: i32) -> std::ops::Range<usize> {
 
 fn is_in_padded_chunk(value: i32) -> bool {
     (-1..=CHUNK_ISIZE).contains(&value)
-}
-
-/// Pre-compute the packed (x, y, z) coordinates of every full-cube cell in
-/// the padded neighbourhood.  `BinaryFaceMasks::from_padded` iterates this
-/// list instead of scanning all 5 832 cells, skipping the 93%+ of cells that
-/// are air or non-full-cube.
-pub(crate) fn compute_full_cube_cells_impl(
-    cells: &[u16; PADDED_CHUNK_VOLUME],
-    out: &mut Box<[FullCubeCell]>,
-) {
-    let pad = PADDED_CHUNK_SIZE;
-    let mut entries: Vec<FullCubeCell> = Vec::with_capacity(4096);
-    for x in 0..pad {
-        for y in 0..pad {
-            for z in 0..pad {
-                let idx = padded_chunk_index(x, y, z);
-                let flags = block_mesh_flags(cells[idx]);
-                if flags & (BLOCK_FLAG_RENDERED | BLOCK_FLAG_FULL_CUBE)
-                    == (BLOCK_FLAG_RENDERED | BLOCK_FLAG_FULL_CUBE)
-                {
-                    entries.push(FullCubeCell {
-                        yz_bit: (y * pad + z) as u16,
-                        xz_bit: (x * pad + z) as u16,
-                        xy_bit: (x * pad + y) as u16,
-                        x: x as u8,
-                        y: y as u8,
-                        z: z as u8,
-                    });
-                }
-            }
-        }
-    }
-    *out = entries.into_boxed_slice();
 }

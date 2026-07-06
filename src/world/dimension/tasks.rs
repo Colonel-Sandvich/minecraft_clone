@@ -129,7 +129,7 @@ pub struct ChunkSpawnBudget(pub usize);
 
 impl Default for ChunkSpawnBudget {
     fn default() -> Self {
-        Self(16)
+        Self(32)
     }
 }
 

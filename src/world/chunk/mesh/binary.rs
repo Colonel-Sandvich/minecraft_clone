@@ -22,7 +22,7 @@ use crate::block::{
     WATER_RENDER_ID,
 };
 
-use super::vertex_pulling::{FaceDescriptor, WaterDescriptorData};
+use super::vertex_pulling::{FaceDescriptor, WaterDescriptorData, descriptor_capacity_estimate};
 use super::{
     CHUNK_SIZE, DIRECTION_COUNT, DIRECTION_INDEX_OFFSETS, FACE_AO_ORDERS, FACE_AO_SAMPLE_COUNT,
     FACE_AO_SAMPLE_OFFSETS, PADDED_CHUNK_LAYER_SIZE, PADDED_CHUNK_SIZE, block_mesh_flags,
@@ -364,7 +364,8 @@ pub fn build_descriptors_binary(
         return Vec::new();
     }
 
-    let mut descriptors = Vec::with_capacity(blocks.center_rendered_blocks as usize);
+    let mut descriptors =
+        Vec::with_capacity(descriptor_capacity_estimate(blocks.center_full_cube_blocks));
     push_descriptors_binary(blocks, &mut descriptors);
 
     if descriptors.is_empty() {
@@ -654,7 +655,16 @@ pub fn build_descriptors_hybrid(
     }
 
     let mut descriptors: [Vec<FaceDescriptor>; BlockMaterialLayer::COUNT] =
-        std::array::from_fn(|_| Vec::with_capacity(blocks.center_rendered_blocks as usize));
+        std::array::from_fn(|_| Vec::new());
+    descriptors[BlockMaterialLayer::Opaque.index()] =
+        Vec::with_capacity(descriptor_capacity_estimate(blocks.center_full_cube_blocks));
+    let non_full_cube_cells = blocks
+        .center_rendered_blocks
+        .saturating_sub(blocks.center_full_cube_blocks);
+    let non_full_cube_capacity = descriptor_capacity_estimate(non_full_cube_cells);
+    descriptors[BlockMaterialLayer::Cutout.index()] = Vec::with_capacity(non_full_cube_capacity);
+    descriptors[BlockMaterialLayer::Translucent.index()] =
+        Vec::with_capacity(non_full_cube_capacity);
     push_descriptors_binary(blocks, &mut descriptors[BlockMaterialLayer::Opaque.index()]);
     push_descriptors_non_full_cube(blocks, &mut descriptors);
 
@@ -677,6 +687,7 @@ mod tests {
     use crate::world::chunk::mesh::{
         CHUNK_SIZE, ChunkMeshBlocks, PADDED_CHUNK_VOLUME, block_mesh_flags, padded_chunk_index,
     };
+    use crate::world::chunk::{Chunk, ChunkCell};
 
     fn make_padded(kinds: &[u16]) -> ChunkMeshBlocks {
         let mut blocks = Box::new([0u16; PADDED_CHUNK_VOLUME]);
@@ -703,16 +714,13 @@ mod tests {
                 }
             }
         }
-        let mut result = ChunkMeshBlocks {
+        ChunkMeshBlocks {
             blocks,
             fluid_levels,
             center_rendered_blocks: center_rendered,
             center_full_cube_blocks: center_full,
             neighbor_face_shells_full_cube: false,
-            full_cube_cells: Vec::new().into_boxed_slice(),
-        };
-        result.compute_full_cube_cells();
-        result
+        }
     }
 
     fn descriptor_keys(
@@ -877,6 +885,27 @@ mod tests {
             hybrid_total, scalar_total,
             "hybrid water+stone must match scalar"
         );
+    }
+
+    #[test]
+    fn hybrid_dense_non_full_cube_matches_scalar() {
+        let mut chunk = Chunk::default();
+        for x in 0..CHUNK_SIZE {
+            for z in 0..CHUNK_SIZE {
+                chunk.set_cell_xyz(x, 7, z, ChunkCell::water_source());
+            }
+        }
+
+        let blocks = ChunkMeshBlocks::from_chunk(&chunk);
+        assert!(
+            blocks.has_non_full_cube_rendered(),
+            "water sheet should use the non-full-cube path"
+        );
+
+        let scalar =
+            descriptor_keys(crate::world::chunk::mesh::vertex_pulling::build_descriptors(&blocks));
+        let hybrid = descriptor_keys(build_descriptors_hybrid(&blocks));
+        assert_eq!(hybrid, scalar);
     }
 
     // This function compares hybrid output against scalar for correctness.

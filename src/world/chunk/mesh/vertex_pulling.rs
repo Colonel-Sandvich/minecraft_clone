@@ -204,6 +204,12 @@ impl WaterDescriptorData {
 // Padded chunk blocks → non-greedy FaceDescriptors (per material layer)
 // ---------------------------------------------------------------------------
 
+/// Worst-case sparse-cell estimate, capped at the outer faces of a dense chunk.
+/// Chunks with many internal exposed faces can still grow beyond this naturally.
+pub(super) fn descriptor_capacity_estimate(rendered_cells: u16) -> usize {
+    (usize::from(rendered_cells) * DIRECTION_COUNT).min(DIRECTION_COUNT * CHUNK_SIZE * CHUNK_SIZE)
+}
+
 pub fn build_descriptors(
     blocks: &ChunkMeshBlocks,
 ) -> Vec<(BlockMaterialLayer, Vec<FaceDescriptor>)> {
@@ -211,9 +217,9 @@ pub fn build_descriptors(
         return Vec::new();
     }
 
-    let capacity = blocks.center_rendered_blocks as usize;
+    let layer_capacity = descriptor_capacity_estimate(blocks.center_rendered_blocks);
     let mut descriptors: [Vec<FaceDescriptor>; BlockMaterialLayer::COUNT] =
-        std::array::from_fn(|_| Vec::with_capacity(capacity));
+        std::array::from_fn(|_| Vec::with_capacity(layer_capacity));
 
     for y in 0..CHUNK_SIZE {
         for z in 0..CHUNK_SIZE {
@@ -282,8 +288,7 @@ pub fn build_descriptors(
     BlockMaterialLayer::ALL
         .into_iter()
         .filter_map(|layer| {
-            let mut layer_descriptors = std::mem::take(&mut descriptors[layer.index()]);
-            layer_descriptors.shrink_to_fit();
+            let layer_descriptors = std::mem::take(&mut descriptors[layer.index()]);
             (!layer_descriptors.is_empty()).then_some((layer, layer_descriptors))
         })
         .collect()
