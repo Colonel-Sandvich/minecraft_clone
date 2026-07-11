@@ -9,6 +9,7 @@ mod fluid_sim;
 mod invalidation;
 pub mod light;
 pub mod mesh;
+mod mutation;
 pub(crate) mod neighborhood;
 mod state;
 
@@ -34,6 +35,7 @@ pub use invalidation::{
     ChunkColumn, ChunkInvalidationEffects, ChunkInvalidationPlan, classify_cell_delta,
 };
 pub use light::{ChunkHeightmap, ChunkLight};
+pub use mutation::ChunkEditor;
 pub use state::{
     AIR_CELL_STATE_ID, CELL_REGISTRY, CellDelta, CellRegistry, CellStateId, ChunkCell, FluidForm,
     FluidLevel, FluidProfile, FluidState, FluidType, HotCellMeta,
