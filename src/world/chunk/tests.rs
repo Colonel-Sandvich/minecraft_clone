@@ -1,6 +1,6 @@
 use bevy::prelude::*;
 
-use crate::block::{BlockStateId, BlockType};
+use crate::block::BlockType;
 
 use super::*;
 
@@ -46,13 +46,13 @@ fn chunk_uses_u8_palette_storage_for_common_chunks() {
 }
 
 #[test]
-fn chunk_can_set_cells_by_block_state_id() {
+fn chunk_can_set_cells_by_cell_state_id() {
     let mut chunk = Chunk::default();
     let pos = uvec3(4, 5, 6);
     let state = ChunkCell::block(BlockType::Glowstone).state_id();
 
     assert_eq!(
-        chunk.set_state(pos, state, &BLOCK_REGISTRY),
+        chunk.set_state(pos, state, &CELL_REGISTRY),
         Some(CellDelta {
             old: ChunkCell::EMPTY,
             new: BlockType::Glowstone.into(),
@@ -61,7 +61,7 @@ fn chunk_can_set_cells_by_block_state_id() {
     assert_eq!(chunk.state_id(pos), state);
     assert_eq!(chunk.hot_meta(pos).light_emission, 15);
     assert_eq!(
-        chunk.set_state(pos, BlockStateId(u32::MAX), &BLOCK_REGISTRY),
+        chunk.set_state(pos, CellStateId(u32::MAX), &CELL_REGISTRY),
         None
     );
 }

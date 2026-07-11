@@ -28,15 +28,15 @@ pub use coords::{
     CHUNK_ISIZE, CHUNK_SIZE, CHUNK_VOLUME, ChunkBlockPos, ChunkIndex, ChunkPos,
     InvalidLocalBlockPos, LocalBlockPos, WorldBlockPos, chunk_linear_index,
 };
-pub use data::{BlockIterator, CellStorage, Chunk, ChunkPalette, PaletteEntry};
+pub use data::{CellStorage, Chunk, ChunkCellIter, ChunkPalette, PaletteEntry};
 pub use fluid_sim::FluidStepResult;
 pub use invalidation::{
     ChunkColumn, ChunkInvalidationEffects, ChunkInvalidationPlan, classify_cell_delta,
 };
 pub use light::{ChunkHeightmap, ChunkLight};
 pub use state::{
-    AIR_BLOCK_STATE_ID, BLOCK_REGISTRY, BlockRegistry, CellDelta, ChunkCell, FluidForm, FluidLevel,
-    FluidProfile, FluidState, FluidType,
+    AIR_CELL_STATE_ID, CELL_REGISTRY, CellDelta, CellRegistry, CellStateId, ChunkCell, FluidForm,
+    FluidLevel, FluidProfile, FluidState, FluidType, HotCellMeta,
 };
 
 pub(crate) use neighborhood::{chunk_neighbor_offsets, chunk_neighbor_offsets_for_block};

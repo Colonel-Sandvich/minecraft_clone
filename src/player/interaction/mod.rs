@@ -5,7 +5,6 @@ use avian3d::{
 use bevy::{color::palettes::basic, input::InputSystems, prelude::*};
 
 use crate::{
-    block::{BlockUpdateKind, BlockUpdateMessage},
     ui::Hotbar,
     world::{
         ACTOR_LAYER, WORLD_LAYER,
@@ -162,7 +161,6 @@ fn apply_block_interaction_requests(
     dimension: Single<&Dimension>,
     mut chunks: Query<&mut Chunk>,
     mut meta_q: Query<&mut ChunkContentCounts>,
-    mut block_updates: MessageWriter<BlockUpdateMessage>,
     mut hotbar: ResMut<Hotbar>,
     spatial_query: SpatialQuery,
 ) {
@@ -191,11 +189,6 @@ fn apply_block_interaction_requests(
                 }
                 mark_chunk_fluid_activity(&mut commands, chunk_entity, &chunk);
 
-                block_updates.write(BlockUpdateMessage {
-                    chunk: chunk_entity,
-                    pos,
-                    kind: BlockUpdateKind::Break,
-                });
                 commands.entity(chunk_entity).insert((
                     ChunkNeedsSave,
                     ChunkNeedsMeshRebuild,
@@ -227,13 +220,6 @@ fn apply_block_interaction_requests(
                 }
                 mark_chunk_fluid_activity(&mut commands, chunk_entity, &chunk);
 
-                if let Some(block) = cell.as_block() {
-                    block_updates.write(BlockUpdateMessage {
-                        chunk: chunk_entity,
-                        pos,
-                        kind: BlockUpdateKind::Place(block),
-                    });
-                }
                 commands.entity(chunk_entity).insert((
                     ChunkNeedsSave,
                     ChunkNeedsMeshRebuild,

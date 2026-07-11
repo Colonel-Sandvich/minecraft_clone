@@ -1,17 +1,20 @@
 use bevy::prelude::*;
 
-use crate::block::{BlockStateId, BlockType, HotBlockStateMeta};
+use crate::block::BlockType;
 
 use super::{
     components::ChunkContentCounts,
     coords::{CHUNK_ISIZE, CHUNK_SIZE, CHUNK_VOLUME, chunk_linear_index},
-    state::{AIR_BLOCK_STATE_ID, BLOCK_REGISTRY, BlockRegistry, CellDelta, ChunkCell, FluidState},
+    state::{
+        AIR_CELL_STATE_ID, CELL_REGISTRY, CellDelta, CellRegistry, CellStateId, ChunkCell,
+        FluidState, HotCellMeta,
+    },
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PaletteEntry {
-    pub state: BlockStateId,
-    pub hot: HotBlockStateMeta,
+    pub state: CellStateId,
+    pub hot: HotCellMeta,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -23,8 +26,8 @@ impl Default for ChunkPalette {
     fn default() -> Self {
         Self {
             entries: vec![PaletteEntry {
-                state: AIR_BLOCK_STATE_ID,
-                hot: HotBlockStateMeta::AIR,
+                state: AIR_CELL_STATE_ID,
+                hot: HotCellMeta::AIR,
             }],
         }
     }
@@ -45,7 +48,7 @@ impl ChunkPalette {
         ChunkCell::from_state_id(self.entry(index).state).expect("invalid state in chunk palette")
     }
 
-    fn index_for_state(&self, state: BlockStateId) -> Option<u32> {
+    fn index_for_state(&self, state: CellStateId) -> Option<u32> {
         self.entries
             .iter()
             .position(|entry| entry.state == state)
@@ -61,7 +64,7 @@ impl ChunkPalette {
         let index = self.entries.len() as u32;
         self.entries.push(PaletteEntry {
             state,
-            hot: BLOCK_REGISTRY
+            hot: CELL_REGISTRY
                 .hot_meta(state)
                 .expect("state id from chunk cell must be valid"),
         });
@@ -222,7 +225,7 @@ impl Chunk {
     }
 
     #[inline(always)]
-    pub fn state_id(&self, pos: UVec3) -> BlockStateId {
+    pub fn state_id(&self, pos: UVec3) -> CellStateId {
         self.state_id_linear(chunk_linear_index(
             pos.x as usize,
             pos.y as usize,
@@ -231,22 +234,22 @@ impl Chunk {
     }
 
     #[inline(always)]
-    pub fn state_id_linear(&self, index: usize) -> BlockStateId {
+    pub fn state_id_linear(&self, index: usize) -> CellStateId {
         self.palette.entry(self.cells.get_linear(index)).state
     }
 
     #[inline(always)]
-    pub fn hot_meta(&self, pos: UVec3) -> HotBlockStateMeta {
+    pub fn hot_meta(&self, pos: UVec3) -> HotCellMeta {
         self.hot_meta_xyz(pos.x as usize, pos.y as usize, pos.z as usize)
     }
 
     #[inline(always)]
-    pub fn hot_meta_xyz(&self, x: usize, y: usize, z: usize) -> HotBlockStateMeta {
+    pub fn hot_meta_xyz(&self, x: usize, y: usize, z: usize) -> HotCellMeta {
         self.hot_meta_linear(chunk_linear_index(x, y, z))
     }
 
     #[inline(always)]
-    pub fn hot_meta_linear(&self, index: usize) -> HotBlockStateMeta {
+    pub fn hot_meta_linear(&self, index: usize) -> HotCellMeta {
         self.palette.entry(self.cells.get_linear(index)).hot
     }
 
@@ -274,8 +277,8 @@ impl Chunk {
     pub fn set_state(
         &mut self,
         pos: UVec3,
-        state: BlockStateId,
-        registry: &BlockRegistry,
+        state: CellStateId,
+        registry: &CellRegistry,
     ) -> Option<CellDelta> {
         registry.cell(state).map(|cell| self.set_cell(pos, cell))
     }
@@ -353,8 +356,8 @@ impl Chunk {
         counts
     }
 
-    pub fn iter(&self) -> BlockIterator<'_> {
-        BlockIterator {
+    pub fn iter(&self) -> ChunkCellIter<'_> {
+        ChunkCellIter {
             chunk: self,
             index: 0,
         }
@@ -379,12 +382,12 @@ impl Chunk {
     }
 }
 
-pub struct BlockIterator<'a> {
+pub struct ChunkCellIter<'a> {
     chunk: &'a Chunk,
     index: usize,
 }
 
-impl Iterator for BlockIterator<'_> {
+impl Iterator for ChunkCellIter<'_> {
     type Item = (ChunkCell, (usize, usize, usize));
 
     fn next(&mut self) -> Option<Self::Item> {

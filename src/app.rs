@@ -16,7 +16,6 @@ use bevy_inspector_egui::{bevy_egui::EguiPlugin, quick::WorldInspectorPlugin};
 use bevy_settings::SettingsPlugin;
 
 use crate::{
-    block::BlockPlugin,
     game_state::GameStatePlugin,
     light::LightPlugin,
     memory::{MemoryTrackingPlugin, memory_profiler_enabled},
@@ -60,7 +59,6 @@ impl Plugin for AppPlugin {
         .add_plugins(LightPlugin)
         .add_plugins(MobControllerPlugin)
         .add_plugins(PlayerPlugin)
-        .add_plugins(BlockPlugin)
         .add_plugins(BlockTexturePlugin)
         .insert_resource({
             let metadata = WorldMetadata::default();

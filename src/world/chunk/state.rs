@@ -4,24 +4,68 @@ use bevy::prelude::Reflect;
 use strum::{Display, EnumCount, EnumString};
 
 use crate::block::{
-    BLOCK_FLAG_FULL_CUBE, BLOCK_FLAG_RENDERED, BlockStateId, BlockType, HotBlockStateMeta,
+    BLOCK_FLAG_FULL_CUBE, BLOCK_FLAG_RENDERED, BLOCK_FLAG_TRANSLUCENT, BlockType, WATER_RENDER_ID,
+    render_id_for_block,
 };
 
-pub const AIR_BLOCK_STATE_ID: BlockStateId = BlockStateId(0);
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct CellStateId(pub u32);
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct HotCellMeta {
+    pub render_id: u16,
+    pub mesh_flags: u8,
+    pub light_opacity: u8,
+    pub light_emission: u8,
+    pub fluid_level: u8,
+}
+
+impl HotCellMeta {
+    pub const AIR: Self = Self {
+        render_id: 0,
+        mesh_flags: 0,
+        light_opacity: 0,
+        light_emission: 0,
+        fluid_level: 0,
+    };
+
+    pub const fn for_block(block: BlockType) -> Self {
+        Self {
+            render_id: render_id_for_block(block),
+            mesh_flags: block.mesh_flags(),
+            light_opacity: block.light_opacity(),
+            light_emission: block.light_emission(),
+            fluid_level: 0,
+        }
+    }
+
+    pub const fn water(level: u8) -> Self {
+        Self {
+            render_id: WATER_RENDER_ID,
+            mesh_flags: BLOCK_FLAG_RENDERED | BLOCK_FLAG_TRANSLUCENT,
+            light_opacity: 0,
+            light_emission: 0,
+            fluid_level: level,
+        }
+    }
+}
+
+pub const AIR_CELL_STATE_ID: CellStateId = CellStateId(0);
 const FIRST_BLOCK_STATE_ID: u32 = 1;
 const FIRST_FLUID_STATE_ID: u32 = FIRST_BLOCK_STATE_ID + BlockType::COUNT as u32;
 
 #[derive(Debug, Clone, Copy, Default)]
-pub struct BlockRegistry;
+pub struct CellRegistry;
 
-pub const BLOCK_REGISTRY: BlockRegistry = BlockRegistry;
+pub const CELL_REGISTRY: CellRegistry = CellRegistry;
 
-impl BlockRegistry {
-    pub fn hot_meta(&self, state: BlockStateId) -> Option<HotBlockStateMeta> {
+impl CellRegistry {
+    pub fn hot_meta(&self, state: CellStateId) -> Option<HotCellMeta> {
         cell_from_state_id(state).map(ChunkCell::hot_meta)
     }
 
-    pub fn cell(&self, state: BlockStateId) -> Option<ChunkCell> {
+    pub fn cell(&self, state: CellStateId) -> Option<ChunkCell> {
         cell_from_state_id(state)
     }
 }
@@ -264,10 +308,10 @@ impl ChunkCell {
     }
 
     #[inline(always)]
-    pub fn state_id(self) -> BlockStateId {
+    pub fn state_id(self) -> CellStateId {
         match self {
-            Self::Empty => AIR_BLOCK_STATE_ID,
-            Self::Block(block) => BlockStateId(FIRST_BLOCK_STATE_ID + block as u32),
+            Self::Empty => AIR_CELL_STATE_ID,
+            Self::Block(block) => CellStateId(FIRST_BLOCK_STATE_ID + block as u32),
             Self::Fluid(fluid) => {
                 let profile = FluidProfile::default_for_type(fluid.ty());
                 debug_assert!(profile.contains(fluid));
@@ -276,21 +320,21 @@ impl ChunkCell {
                     FluidForm::Flowing => 0,
                     FluidForm::Source => profile.full_level.get() as u32,
                 };
-                BlockStateId(FIRST_FLUID_STATE_ID + level_offset + form_offset)
+                CellStateId(FIRST_FLUID_STATE_ID + level_offset + form_offset)
             }
         }
     }
 
-    pub fn from_state_id(state: BlockStateId) -> Option<Self> {
+    pub fn from_state_id(state: CellStateId) -> Option<Self> {
         cell_from_state_id(state)
     }
 
     #[inline(always)]
-    pub const fn hot_meta(self) -> HotBlockStateMeta {
+    pub const fn hot_meta(self) -> HotCellMeta {
         match self {
-            Self::Empty => HotBlockStateMeta::AIR,
-            Self::Block(block) => HotBlockStateMeta::for_block(block),
-            Self::Fluid(fluid) => HotBlockStateMeta::water(fluid.level().get()),
+            Self::Empty => HotCellMeta::AIR,
+            Self::Block(block) => HotCellMeta::for_block(block),
+            Self::Fluid(fluid) => HotCellMeta::water(fluid.level().get()),
         }
     }
 
@@ -380,9 +424,9 @@ impl ChunkCell {
     }
 }
 
-fn cell_from_state_id(state: BlockStateId) -> Option<ChunkCell> {
+fn cell_from_state_id(state: CellStateId) -> Option<ChunkCell> {
     let raw = state.0;
-    if raw == AIR_BLOCK_STATE_ID.0 {
+    if raw == AIR_CELL_STATE_ID.0 {
         return Some(ChunkCell::Empty);
     }
 

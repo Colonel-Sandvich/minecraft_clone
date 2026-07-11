@@ -1,15 +1,7 @@
 use bevy::{platform::collections::HashMap, prelude::*};
 use strum::{Display, EnumCount, EnumIter, EnumString, FromRepr};
 
-use crate::{quad::Direction, world::chunk::ChunkBlockPos};
-
-pub struct BlockPlugin;
-
-impl Plugin for BlockPlugin {
-    fn build(&self, app: &mut App) {
-        app.add_message::<BlockUpdateMessage>();
-    }
-}
+use crate::quad::Direction;
 
 #[derive(
     Default,
@@ -39,49 +31,6 @@ pub enum BlockType {
     OakLeaves,
     Glowstone,
     Ice,
-}
-
-#[repr(transparent)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub struct BlockStateId(pub u32);
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub struct HotBlockStateMeta {
-    pub render_id: u16,
-    pub mesh_flags: u8,
-    pub light_opacity: u8,
-    pub light_emission: u8,
-    pub fluid_level: u8,
-}
-
-impl HotBlockStateMeta {
-    pub const AIR: Self = Self {
-        render_id: 0,
-        mesh_flags: 0,
-        light_opacity: 0,
-        light_emission: 0,
-        fluid_level: 0,
-    };
-
-    pub const fn for_block(block: BlockType) -> Self {
-        Self {
-            render_id: render_id_for_block(block),
-            mesh_flags: block.mesh_flags(),
-            light_opacity: block.light_opacity(),
-            light_emission: block.light_emission(),
-            fluid_level: 0,
-        }
-    }
-
-    pub const fn water(level: u8) -> Self {
-        Self {
-            render_id: WATER_RENDER_ID,
-            mesh_flags: BLOCK_FLAG_RENDERED | BLOCK_FLAG_TRANSLUCENT,
-            light_opacity: 0,
-            light_emission: 0,
-            fluid_level: level,
-        }
-    }
 }
 
 pub const fn render_id_for_block(block: BlockType) -> u16 {
@@ -466,16 +415,4 @@ mod tests {
         assert!(BlockType::Ice.is_solid());
         assert!(BlockType::Ice.is_placeable());
     }
-}
-
-pub enum BlockUpdateKind {
-    Break,
-    Place(BlockType),
-}
-
-#[derive(Message)]
-pub struct BlockUpdateMessage {
-    pub chunk: Entity,
-    pub pos: ChunkBlockPos,
-    pub kind: BlockUpdateKind,
 }
