@@ -340,6 +340,13 @@ mod tests {
         assert!(!source_to_falling.needs_light_rebuild());
         assert!(source_to_falling.needs_fluid_step());
 
+        let placed_fluid = classify_cell_delta(delta(air, source));
+        assert!(placed_fluid.needs_save());
+        assert!(placed_fluid.needs_mesh_rebuild());
+        assert!(!placed_fluid.needs_collider_rebuild());
+        assert!(!placed_fluid.needs_light_rebuild());
+        assert!(placed_fluid.needs_fluid_step());
+
         let solid_to_transparent = classify_cell_delta(delta(stone, glass));
         assert!(solid_to_transparent.needs_save());
         assert!(solid_to_transparent.needs_mesh_rebuild());

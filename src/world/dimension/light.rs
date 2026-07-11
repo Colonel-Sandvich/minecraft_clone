@@ -5,41 +5,41 @@ use bevy::{
 
 use crate::world::{
     chunk::{
-        Chunk, ChunkHeightmap, ChunkLight, ChunkNeedsLightRebuild, ChunkNeedsRenderLightUpload,
-        ChunkPerfCounters, ChunkPosition, chunk_neighbor_offsets, light::compute_light_region,
+        Chunk, ChunkHeightmap, ChunkInvalidationPlan, ChunkLight, ChunkNeedsLightRebuild,
+        ChunkPerfCounters, ChunkPos, ChunkPosition, chunk_neighbor_offsets,
+        light::compute_light_region,
     },
     generation::WorldMetadata,
 };
 
-use super::{Active, Dimension};
+use super::{Active, Dimension, apply_chunk_invalidations};
 
 pub(crate) fn rebuild_chunk_light(
     mut commands: Commands,
     mut perf: Option<ResMut<ChunkPerfCounters>>,
     needs_rebuild: Query<(Entity, &ChunkPosition), With<ChunkNeedsLightRebuild>>,
     all_chunks: Query<(Entity, &ChunkPosition, &Chunk, &ChunkLight, &ChunkHeightmap)>,
-    dimension: Option<Single<&Dimension, With<Active>>>,
+    dimension: Single<&Dimension, With<Active>>,
     metadata: Res<WorldMetadata>,
 ) {
     if needs_rebuild.is_empty() {
         return;
     }
 
-    let dirty_positions = needs_rebuild
-        .iter()
-        .map(|(_, pos)| pos.0)
+    let dimension = dimension.into_inner();
+    let dirty_chunks = dimension
+        .iter_chunks()
+        .filter_map(|(registered_position, entity)| {
+            let (_, actual_position) = needs_rebuild.get(entity).ok()?;
+            (actual_position.chunk_pos() == registered_position)
+                .then_some((entity, registered_position.as_ivec3()))
+        })
         .collect::<Vec<_>>();
-
-    let fallback_loaded_chunks;
-    let loaded_chunks = if let Some(dimension) = dimension.as_ref() {
-        &dimension.chunks
-    } else {
-        fallback_loaded_chunks = all_chunks
-            .iter()
-            .map(|(entity, pos, _, _, _)| (pos.0, entity))
-            .collect::<HashMap<_, _>>();
-        &fallback_loaded_chunks
-    };
+    let dirty_positions = dirty_chunks
+        .iter()
+        .map(|(_, position)| *position)
+        .collect::<Vec<_>>();
+    let loaded_chunks = dimension.chunk_entities();
 
     let targets = light_rebuild_targets(
         &dirty_positions,
@@ -51,7 +51,7 @@ pub(crate) fn rebuild_chunk_light(
     }
 
     if targets.is_empty() {
-        for (entity, _) in needs_rebuild.iter() {
+        for (entity, _) in dirty_chunks {
             commands.entity(entity).remove::<ChunkNeedsLightRebuild>();
         }
         return;
@@ -105,7 +105,7 @@ pub(crate) fn rebuild_chunk_light(
         metadata.height_chunks as i32,
     );
 
-    let mut changed_light_positions = HashSet::new();
+    let mut invalidations = ChunkInvalidationPlan::new();
     for &pos in &targets {
         let Some((entity, _, old_light, old_heightmap)) = chunk_map.get(&pos) else {
             continue;
@@ -116,10 +116,8 @@ pub(crate) fn rebuild_chunk_light(
         let heightmap_changed = new_heightmap != **old_heightmap;
 
         if light_changed {
-            commands
-                .entity(*entity)
-                .insert((new_light, ChunkNeedsRenderLightUpload));
-            changed_light_positions.insert(pos);
+            commands.entity(*entity).insert(new_light);
+            invalidations.record_render_light_changed(ChunkPos::from_ivec3(pos));
         }
         if heightmap_changed {
             commands.entity(*entity).insert(new_heightmap);
@@ -127,14 +125,7 @@ pub(crate) fn rebuild_chunk_light(
         commands.entity(*entity).remove::<ChunkNeedsLightRebuild>();
     }
 
-    for pos in changed_light_positions {
-        for offset in chunk_neighbor_offsets() {
-            let Some(entity) = loaded_chunks.get(&(pos + offset)) else {
-                continue;
-            };
-            commands.entity(*entity).insert(ChunkNeedsRenderLightUpload);
-        }
-    }
+    apply_chunk_invalidations(&mut commands, dimension, &invalidations);
 }
 
 fn light_rebuild_targets(
@@ -171,6 +162,9 @@ mod tests {
         },
     };
 
+    #[derive(Resource)]
+    struct TestDimension(Entity);
+
     fn app_with_light_system(height_chunks: usize) -> App {
         let mut metadata = WorldMetadata::with_seed(1);
         metadata.height_chunks = height_chunks;
@@ -178,7 +172,18 @@ mod tests {
         app.add_plugins(MinimalPlugins)
             .insert_resource(metadata)
             .add_systems(Update, rebuild_chunk_light);
+        let dimension = app.world_mut().spawn((Dimension::default(), Active)).id();
+        app.insert_resource(TestDimension(dimension));
         app
+    }
+
+    fn register_chunk(app: &mut App, position: IVec3, entity: Entity) {
+        let dimension = app.world().resource::<TestDimension>().0;
+        app.world_mut()
+            .entity_mut(dimension)
+            .get_mut::<Dimension>()
+            .unwrap()
+            .register_chunk(position, entity);
     }
 
     fn solid_chunk(block: BlockType) -> Chunk {
@@ -222,6 +227,8 @@ mod tests {
                 ChunkHeightmap::default(),
             ))
             .id();
+        register_chunk(&mut app, lower_pos, lower_entity);
+        register_chunk(&mut app, upper_pos, upper_entity);
 
         app.update();
 
@@ -265,6 +272,8 @@ mod tests {
                 heightmap_with(15),
             ))
             .id();
+        register_chunk(&mut app, IVec3::ZERO, center_entity);
+        register_chunk(&mut app, IVec3::X, neighbor_entity);
 
         app.update();
 
@@ -322,6 +331,8 @@ mod tests {
                 ChunkNeedsLightRebuild,
             ))
             .id();
+        register_chunk(&mut app, left_pos, left_entity);
+        register_chunk(&mut app, right_pos, right_entity);
 
         app.update();
 
@@ -360,6 +371,33 @@ mod tests {
                 .unwrap()
                 .block_light(uvec3(15, 8, 8)),
             0
+        );
+    }
+
+    #[test]
+    fn light_rebuild_does_not_consume_markers_from_another_dimension() {
+        let mut app = app_with_light_system(1);
+        let foreign_position = ivec3(12, 0, -8);
+        let foreign_entity = app
+            .world_mut()
+            .spawn((
+                ChunkPosition(foreign_position),
+                Chunk::default(),
+                ChunkLight::default(),
+                ChunkHeightmap::default(),
+                ChunkNeedsLightRebuild,
+            ))
+            .id();
+        let mut foreign_dimension = Dimension::default();
+        foreign_dimension.register_chunk(foreign_position, foreign_entity);
+        app.world_mut().spawn(foreign_dimension);
+
+        app.update();
+
+        assert!(
+            app.world()
+                .get::<ChunkNeedsLightRebuild>(foreign_entity)
+                .is_some()
         );
     }
 

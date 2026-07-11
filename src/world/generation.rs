@@ -180,19 +180,18 @@ pub fn oak_tree_blocks(tree: OakTree) -> Vec<(IVec3, BlockType)> {
 
 pub fn apply_oak_tree_to_chunk(tree: OakTree, chunk_pos: IVec3, chunk: &mut Chunk) {
     for (global_pos, block) in oak_tree_blocks(tree) {
-        let Some(local_pos) = ChunkPos::from_ivec3(chunk_pos)
-            .local_of(WorldBlockPos::from_ivec3(global_pos))
-            .map(Into::into)
+        let Some(local_pos) =
+            ChunkPos::from_ivec3(chunk_pos).local_of(WorldBlockPos::from_ivec3(global_pos))
         else {
             continue;
         };
 
         match block {
             BlockType::OakLog => {
-                chunk.set_cell(local_pos, BlockType::OakLog.into());
+                chunk.set_cell(local_pos.as_uvec3(), BlockType::OakLog.into());
             }
-            BlockType::OakLeaves if chunk.get_cell(local_pos) == ChunkCell::EMPTY => {
-                chunk.set_cell(local_pos, BlockType::OakLeaves.into());
+            BlockType::OakLeaves if chunk.cell(local_pos) == ChunkCell::EMPTY => {
+                chunk.set_cell(local_pos.as_uvec3(), BlockType::OakLeaves.into());
             }
             BlockType::OakLeaves => {}
             _ => unreachable!("oak tree emitted non-oak block"),

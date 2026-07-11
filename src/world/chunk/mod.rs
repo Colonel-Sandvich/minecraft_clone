@@ -4,7 +4,6 @@ pub mod collider;
 mod components;
 mod coords;
 mod data;
-mod fluid;
 mod fluid_sim;
 mod invalidation;
 pub mod light;
@@ -16,7 +15,6 @@ mod state;
 use bevy::prelude::*;
 
 use collider::ChunkColliderPlugin;
-use fluid::ChunkFluidPlugin;
 use mesh::ChunkMeshPlugin;
 
 pub use codec::ChunkDecodeError;
@@ -31,6 +29,7 @@ pub use coords::{
 };
 pub use data::{CellStorage, Chunk, ChunkCellIter, ChunkPalette, PaletteEntry};
 pub use fluid_sim::FluidStepResult;
+pub(crate) use fluid_sim::{FluidSnapshot, simulate_fluid_step};
 pub use invalidation::{
     ChunkColumn, ChunkInvalidationEffects, ChunkInvalidationPlan, classify_cell_delta,
 };
@@ -41,14 +40,14 @@ pub use state::{
     FluidLevel, FluidProfile, FluidState, FluidType, HotCellMeta,
 };
 
-pub(crate) use neighborhood::{chunk_neighbor_offsets, chunk_neighbor_offsets_for_block};
+pub(crate) use neighborhood::chunk_neighbor_offsets;
 
 pub struct ChunkPlugin;
 
 impl Plugin for ChunkPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<ChunkPerfCounters>()
-            .add_plugins((ChunkFluidPlugin, ChunkMeshPlugin));
+            .add_plugins(ChunkMeshPlugin);
         if std::env::var_os("MINECRAFT_CLONE_DISABLE_CHUNK_COLLIDERS").is_none() {
             app.add_plugins(ChunkColliderPlugin);
         }

@@ -22,6 +22,12 @@ pub use generation::WorldMetadata;
 
 pub struct WorldPlugin;
 
+#[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum ChunkSimulationSet {
+    ExternalMutation,
+    FluidStep,
+}
+
 #[derive(Resource, Debug, Clone, PartialEq, Eq)]
 pub struct WorldConfig {
     pub metadata: WorldMetadata,
@@ -100,8 +106,20 @@ pub const ACTOR_COLLISION_LAYERS: CollisionLayers =
 impl Plugin for WorldPlugin {
     fn build(&self, app: &mut App) {
         ensure_world_resources(app);
+        configure_chunk_simulation(app);
         app.add_plugins((DimensionPlugin, ChunkPlugin));
     }
+}
+
+fn configure_chunk_simulation(app: &mut App) {
+    app.configure_sets(
+        FixedUpdate,
+        (
+            ChunkSimulationSet::ExternalMutation,
+            ChunkSimulationSet::FluidStep,
+        )
+            .chain(),
+    );
 }
 
 fn ensure_world_resources(app: &mut App) {
@@ -178,7 +196,51 @@ fn build_chunk_repository(config: &WorldConfig) -> ChunkStoreResult<ChunkReposit
 
 #[cfg(test)]
 mod tests {
+    use super::chunk::ChunkNeedsFluidStep;
     use super::*;
+
+    #[derive(Resource)]
+    struct DeferredMarkerTarget(Entity);
+
+    #[derive(Resource, Default)]
+    struct FluidSetObservedMarker(bool);
+
+    fn insert_marker_in_external_mutation_set(
+        mut commands: Commands,
+        target: Res<DeferredMarkerTarget>,
+    ) {
+        commands.entity(target.0).insert(ChunkNeedsFluidStep);
+    }
+
+    fn observe_marker_in_fluid_set(
+        target: Res<DeferredMarkerTarget>,
+        marked: Query<(), With<ChunkNeedsFluidStep>>,
+        mut observed: ResMut<FluidSetObservedMarker>,
+    ) {
+        observed.0 = marked.get(target.0).is_ok();
+    }
+
+    #[test]
+    fn external_mutation_commands_are_visible_to_the_fluid_set() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .init_resource::<FluidSetObservedMarker>();
+        configure_chunk_simulation(&mut app);
+        app.add_systems(
+            FixedUpdate,
+            insert_marker_in_external_mutation_set.in_set(ChunkSimulationSet::ExternalMutation),
+        )
+        .add_systems(
+            FixedUpdate,
+            observe_marker_in_fluid_set.in_set(ChunkSimulationSet::FluidStep),
+        );
+        let target = app.world_mut().spawn_empty().id();
+        app.insert_resource(DeferredMarkerTarget(target));
+
+        app.world_mut().run_schedule(FixedUpdate);
+
+        assert!(app.world().resource::<FluidSetObservedMarker>().0);
+    }
 
     #[test]
     fn default_world_config_is_stable_and_in_memory() {

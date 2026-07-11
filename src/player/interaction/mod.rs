@@ -9,11 +9,10 @@ use crate::{
     world::{
         ACTOR_LAYER, WORLD_LAYER,
         chunk::{
-            Chunk, ChunkBlockPos, ChunkCell, ChunkContentCounts, ChunkNeedsColliderRebuild,
-            ChunkNeedsFluidStep, ChunkNeedsLightRebuild, ChunkNeedsMeshRebuild, ChunkNeedsSave,
-            WorldBlockPos, chunk_neighbor_offsets_for_block,
+            Chunk, ChunkBlockPos, ChunkCell, ChunkContentCounts, ChunkEditor,
+            ChunkInvalidationPlan, WorldBlockPos,
         },
-        dimension::Dimension,
+        dimension::{Active, Dimension, apply_chunk_invalidations},
     },
 };
 
@@ -30,7 +29,9 @@ impl Plugin for BlockInteractionPlugin {
                 FixedUpdate,
                 (
                     emit_block_interaction_requests.in_set(BlockInteractionSystems::EmitRequests),
-                    apply_block_interaction_requests.after(BlockInteractionSystems::EmitRequests),
+                    apply_block_interaction_requests
+                        .after(BlockInteractionSystems::EmitRequests)
+                        .in_set(crate::world::ChunkSimulationSet::ExternalMutation),
                 ),
             );
     }
@@ -158,49 +159,36 @@ fn emit_block_interaction_requests(
 fn apply_block_interaction_requests(
     mut commands: Commands,
     mut requests: MessageReader<BlockInteractionRequest>,
-    dimension: Single<&Dimension>,
-    mut chunks: Query<&mut Chunk>,
-    mut meta_q: Query<&mut ChunkContentCounts>,
+    dimension: Single<&Dimension, With<Active>>,
+    mut chunks: Query<(&mut Chunk, &mut ChunkContentCounts)>,
     mut hotbar: ResMut<Hotbar>,
     spatial_query: SpatialQuery,
 ) {
+    let dimension = dimension.into_inner();
+    let mut invalidations = ChunkInvalidationPlan::new();
+
     for request in requests.read().copied() {
         let pos = request.block_pos();
 
-        let Some(chunk_entity) = dimension.chunk_entity(pos.chunk().as_ivec3()) else {
+        let Some(chunk_entity) = dimension.chunk_entity(pos.chunk()) else {
             warn!("Interacted with missing chunk");
             continue;
         };
 
-        let Ok(mut chunk) = chunks.get_mut(chunk_entity) else {
+        let Ok((mut chunk, mut counts)) = chunks.get_mut(chunk_entity) else {
             continue;
         };
 
         match request.kind {
             BlockInteractionKind::Pick => {
-                hotbar.set_selected_cell(chunk.get_cell(pos.local().as_uvec3()));
+                hotbar.set_selected_cell(chunk.cell(pos.local()));
             }
             BlockInteractionKind::Break => {
-                let Some(delta) = chunk.break_block(pos.local().as_uvec3()) else {
+                let mut editor =
+                    ChunkEditor::new(pos.chunk(), &mut chunk, &mut counts, &mut invalidations);
+                if editor.break_block(pos.local()).is_none() {
                     continue;
-                };
-                if let Ok(mut meta) = meta_q.get_mut(chunk_entity) {
-                    meta.apply_delta(delta);
                 }
-                mark_chunk_fluid_activity(&mut commands, chunk_entity, &chunk);
-
-                commands.entity(chunk_entity).insert((
-                    ChunkNeedsSave,
-                    ChunkNeedsMeshRebuild,
-                    ChunkNeedsColliderRebuild,
-                    ChunkNeedsLightRebuild,
-                ));
-                mark_boundary_neighbor_meshes_dirty(&mut commands, &dimension, pos);
-                mark_block_edit_light_columns_dirty(
-                    &mut commands,
-                    &dimension,
-                    pos.chunk().as_ivec3(),
-                );
             }
             BlockInteractionKind::Place => {
                 let Some(cell) = hotbar.selected_cell() else {
@@ -212,69 +200,16 @@ fn apply_block_interaction_requests(
                     continue;
                 }
 
-                let Some(delta) = chunk.place_cell(pos.local().as_uvec3(), cell) else {
+                let mut editor =
+                    ChunkEditor::new(pos.chunk(), &mut chunk, &mut counts, &mut invalidations);
+                if editor.place_cell(pos.local(), cell).is_none() {
                     continue;
-                };
-                if let Ok(mut meta) = meta_q.get_mut(chunk_entity) {
-                    meta.apply_delta(delta);
                 }
-                mark_chunk_fluid_activity(&mut commands, chunk_entity, &chunk);
-
-                commands.entity(chunk_entity).insert((
-                    ChunkNeedsSave,
-                    ChunkNeedsMeshRebuild,
-                    ChunkNeedsColliderRebuild,
-                    ChunkNeedsLightRebuild,
-                ));
-                mark_boundary_neighbor_meshes_dirty(&mut commands, &dimension, pos);
-                mark_block_edit_light_columns_dirty(
-                    &mut commands,
-                    &dimension,
-                    pos.chunk().as_ivec3(),
-                );
             }
         }
     }
-}
 
-fn mark_chunk_fluid_activity(commands: &mut Commands, chunk_entity: Entity, chunk: &Chunk) {
-    if chunk.has_fluids() {
-        commands.entity(chunk_entity).insert(ChunkNeedsFluidStep);
-    } else {
-        commands
-            .entity(chunk_entity)
-            .remove::<ChunkNeedsFluidStep>();
-    }
-}
-
-fn mark_boundary_neighbor_meshes_dirty(
-    commands: &mut Commands,
-    dimension: &Dimension,
-    pos: ChunkBlockPos,
-) {
-    for offset in chunk_neighbor_offsets_for_block(pos.local().as_uvec3()) {
-        let Some(entity) = dimension.chunk_entity(pos.chunk().as_ivec3() + offset) else {
-            continue;
-        };
-
-        commands
-            .entity(entity)
-            .insert((ChunkNeedsMeshRebuild, ChunkNeedsFluidStep));
-    }
-}
-
-fn mark_block_edit_light_columns_dirty(commands: &mut Commands, dimension: &Dimension, pos: IVec3) {
-    for (&chunk_pos, &entity) in &dimension.chunks {
-        if !block_edit_light_reaches_column(pos, chunk_pos) {
-            continue;
-        }
-
-        commands.entity(entity).insert(ChunkNeedsLightRebuild);
-    }
-}
-
-fn block_edit_light_reaches_column(edit_chunk: IVec3, chunk_pos: IVec3) -> bool {
-    (chunk_pos.x - edit_chunk.x).abs() <= 1 && (chunk_pos.z - edit_chunk.z).abs() <= 1
+    apply_chunk_invalidations(&mut commands, dimension, &invalidations);
 }
 
 fn placement_requires_actor_clearance(cell: ChunkCell) -> bool {

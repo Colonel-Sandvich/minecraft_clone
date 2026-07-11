@@ -1,6 +1,8 @@
 use std::ops::Range;
 
-use bevy::math::{IVec3, UVec3};
+use bevy::math::IVec3;
+#[cfg(test)]
+use bevy::math::UVec3;
 
 use crate::quad::Direction;
 
@@ -190,12 +192,6 @@ pub(crate) const fn padded_chunk_index(x: usize, y: usize, z: usize) -> usize {
 
 pub(crate) fn chunk_neighbor_offsets() -> impl Iterator<Item = IVec3> {
     NeighborOffset::all().map(NeighborOffset::as_ivec3)
-}
-
-pub(crate) fn chunk_neighbor_offsets_for_block(block: UVec3) -> impl Iterator<Item = IVec3> {
-    let local = LocalBlockPos::try_from_uvec3(block)
-        .expect("chunk-local block coordinate must be within the chunk");
-    NeighborOffset::touching(local).map(NeighborOffset::as_ivec3)
 }
 
 #[cfg(test)]

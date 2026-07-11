@@ -2,7 +2,10 @@ use bevy::prelude::*;
 
 use crate::block::{BLOCK_FLAG_FULL_CUBE, BLOCK_FLAG_RENDERED, BLOCK_FLAG_TRANSLUCENT};
 
-use super::state::{CellDelta, ChunkCell};
+use super::{
+    coords::ChunkPos,
+    state::{CellDelta, ChunkCell},
+};
 
 #[derive(Resource, Debug, Default)]
 pub struct ChunkPerfCounters {
@@ -29,6 +32,10 @@ pub struct ChunkContentCounts {
 
 impl ChunkContentCounts {
     pub fn apply_delta(&mut self, delta: CellDelta) {
+        if delta.old == delta.new {
+            return;
+        }
+
         let old = CellCounts::from_cell(delta.old);
         let new = CellCounts::from_cell(delta.new);
 
@@ -84,6 +91,22 @@ fn apply_count_delta(count: u16, old: u16, new: u16, name: &str) -> u16 {
 
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ChunkPosition(pub IVec3);
+
+impl ChunkPosition {
+    pub const fn from_chunk_pos(position: ChunkPos) -> Self {
+        Self(position.as_ivec3())
+    }
+
+    pub const fn chunk_pos(self) -> ChunkPos {
+        ChunkPos::from_ivec3(self.0)
+    }
+}
+
+impl From<ChunkPos> for ChunkPosition {
+    fn from(position: ChunkPos) -> Self {
+        Self::from_chunk_pos(position)
+    }
+}
 
 #[derive(Component, Debug, Clone, Copy)]
 pub struct ChunkNeedsSave;

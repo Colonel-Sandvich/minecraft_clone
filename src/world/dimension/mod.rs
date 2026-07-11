@@ -1,3 +1,5 @@
+mod fluid;
+mod invalidation;
 mod lifecycle;
 mod light;
 mod persistence;
@@ -17,17 +19,19 @@ use crate::game_state::{GameState, Playing};
 use core::future::Future;
 
 use self::{
+    fluid::DimensionFluidPlugin,
     lifecycle::{finish_chunk_load_tasks, maintain_chunk_view, start_chunk_load_tasks},
     light::rebuild_chunk_light,
     persistence::{ChunkSaveBudget, finish_chunk_save_tasks, start_chunk_save_tasks},
 };
-use super::{generation::WorldMetadata, storage::ChunkRepository};
+use super::{chunk::ChunkPos, generation::WorldMetadata, storage::ChunkRepository};
 
 pub(crate) use self::{persistence::ChunkSaveTasks, tasks::ChunkLoadTasks};
 pub use self::{
     tasks::{ChunkLoadBudget, ChunkSpawnBudget},
     view::{ViewDistance, chunk_positions_in_view},
 };
+pub(crate) use invalidation::apply_chunk_invalidations;
 
 #[derive(Resource)]
 pub(crate) struct ChunkTaskPool(ChunkTaskPoolInner);
@@ -64,16 +68,42 @@ impl ChunkTaskPool {
 
 #[derive(Default, Component)]
 pub struct Dimension {
-    pub chunks: HashMap<IVec3, Entity>,
+    chunks: HashMap<IVec3, Entity>,
 }
 
 impl Dimension {
-    pub fn chunk_entity(&self, pos: IVec3) -> Option<Entity> {
-        self.chunks.get(&pos).copied()
+    pub fn chunk_entity(&self, pos: impl Into<ChunkPos>) -> Option<Entity> {
+        self.chunks.get(&pos.into().as_ivec3()).copied()
+    }
+
+    pub fn contains_chunk(&self, pos: impl Into<ChunkPos>) -> bool {
+        self.chunks.contains_key(&pos.into().as_ivec3())
+    }
+
+    pub fn register_chunk(&mut self, pos: impl Into<ChunkPos>, entity: Entity) -> Option<Entity> {
+        self.chunks.insert(pos.into().as_ivec3(), entity)
+    }
+
+    pub fn unregister_chunk(&mut self, pos: impl Into<ChunkPos>) -> Option<Entity> {
+        self.chunks.remove(&pos.into().as_ivec3())
+    }
+
+    pub fn iter_chunks(&self) -> impl ExactSizeIterator<Item = (ChunkPos, Entity)> + '_ {
+        self.chunks
+            .iter()
+            .map(|(&pos, &entity)| (ChunkPos::from_ivec3(pos), entity))
+    }
+
+    pub fn chunk_entities(&self) -> &HashMap<IVec3, Entity> {
+        &self.chunks
     }
 
     pub fn loaded_chunk_count(&self) -> usize {
         self.chunks.len()
+    }
+
+    pub fn chunk_map_capacity(&self) -> usize {
+        self.chunks.capacity()
     }
 }
 
@@ -89,7 +119,8 @@ impl Plugin for DimensionPlugin {
             .init_resource::<ChunkSaveBudget>()
             .init_resource::<ChunkSaveTasks>()
             .init_resource::<ChunkLoadTasks>()
-            .init_resource::<ViewDistance>();
+            .init_resource::<ViewDistance>()
+            .add_plugins(DimensionFluidPlugin);
 
         app.add_systems(
             OnEnter(GameState::GenWorld),

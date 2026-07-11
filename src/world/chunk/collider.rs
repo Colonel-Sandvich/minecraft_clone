@@ -22,12 +22,12 @@ fn insert_one(
     }
 
     let mut voxels = Vec::with_capacity(meta.solid as usize);
-    for (cell, (x, y, z)) in chunk.iter() {
+    for (cell, local) in chunk.iter() {
         if !cell.is_solid() {
             continue;
         }
 
-        voxels.push(IVec3::new(x as i32, y as i32, z as i32));
+        voxels.push(local.as_uvec3().as_ivec3());
     }
 
     if voxels.is_empty() {

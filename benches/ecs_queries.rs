@@ -405,12 +405,11 @@ fn build_light_rebuild_world(dirty_columns: usize, with_active_dimension: bool) 
     }
 
     if with_active_dimension {
-        world.spawn((
-            Dimension {
-                chunks: loaded_chunks,
-            },
-            Active,
-        ));
+        let mut dimension = Dimension::default();
+        for (position, entity) in loaded_chunks {
+            dimension.register_chunk(position, entity);
+        }
+        world.spawn((dimension, Active));
     }
 
     world
@@ -506,9 +505,9 @@ fn build_collider_world(dirty_chunks: usize) -> World {
 
 fn collider_voxels(chunk: &Chunk, meta: &ChunkContentCounts) -> Vec<IVec3> {
     let mut voxels = Vec::with_capacity(meta.solid as usize);
-    for (cell, (x, y, z)) in chunk.iter() {
+    for (cell, local) in chunk.iter() {
         if cell.is_solid() {
-            voxels.push(IVec3::new(x as i32, y as i32, z as i32));
+            voxels.push(local.as_uvec3().as_ivec3());
         }
     }
 
@@ -730,7 +729,7 @@ fn rebuild_chunk_light_iter_system(
 
     let fallback_loaded_chunks;
     let loaded_chunks = if let Some(dimension) = dimension.as_ref() {
-        &dimension.chunks
+        dimension.chunk_entities()
     } else {
         fallback_loaded_chunks = all_chunks
             .iter()
@@ -772,7 +771,7 @@ fn rebuild_chunk_light_contiguous_system(
 
     let fallback_loaded_chunks;
     let loaded_chunks = if let Some(dimension) = dimension.as_ref() {
-        &dimension.chunks
+        dimension.chunk_entities()
     } else {
         fallback_loaded_chunks = build_loaded_chunk_map_contiguous(&all_chunks);
         &fallback_loaded_chunks
@@ -942,7 +941,7 @@ fn step_active_fluids(
         *counts = chunk.compute_content_counts();
         let mut entity_commands = commands.entity(entity);
         entity_commands.insert((ChunkNeedsSave, ChunkNeedsMeshRebuild));
-        if !chunk.has_fluids() {
+        if counts.fluids == 0 {
             entity_commands.remove::<ChunkNeedsFluidStep>();
         }
 

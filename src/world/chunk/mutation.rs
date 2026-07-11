@@ -39,7 +39,7 @@ impl<'a> ChunkEditor<'a> {
     }
 
     pub fn cell(&self, local: LocalBlockPos) -> ChunkCell {
-        self.chunk.get_cell(local.as_uvec3())
+        self.chunk.cell(local)
     }
 
     /// Replaces a cell, returning `None` when its semantic state is unchanged.

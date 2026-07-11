@@ -1,16 +1,21 @@
 use bevy::prelude::*;
 use std::collections::{HashMap, HashSet};
 
-use super::{
-    CHUNK_VOLUME, Chunk, ChunkCell, ChunkContentCounts, ChunkNeedsFluidStep, ChunkNeedsMeshRebuild,
-    ChunkNeedsSave, ChunkPosition, FluidProfile, WorldBlockPos, chunk_neighbor_offsets,
-    fluid_sim::{FluidSnapshot, simulate_fluid_step},
+use crate::world::{
+    ChunkSimulationSet,
+    chunk::{
+        CHUNK_VOLUME, Chunk, ChunkCell, ChunkContentCounts, ChunkEditor, ChunkInvalidationPlan,
+        ChunkNeedsFluidStep, FluidProfile, FluidSnapshot, WorldBlockPos, chunk_neighbor_offsets,
+        simulate_fluid_step,
+    },
 };
 
-pub(crate) struct ChunkFluidPlugin;
+use super::{Active, Dimension, apply_chunk_invalidations};
+
+pub(crate) struct DimensionFluidPlugin;
 
 #[derive(Resource, Debug, Clone, Copy)]
-pub struct FluidStepBudget(pub usize);
+pub(crate) struct FluidStepBudget(pub usize);
 
 impl Default for FluidStepBudget {
     fn default() -> Self {
@@ -24,12 +29,23 @@ impl Default for FluidStepBudget {
 #[derive(Resource, Debug, Default)]
 struct FluidTickCounter(u32);
 
-impl Plugin for ChunkFluidPlugin {
+type FluidChunkRead = (
+    &'static Chunk,
+    &'static ChunkContentCounts,
+    Option<&'static ChunkNeedsFluidStep>,
+);
+type FluidChunkWrite = (&'static mut Chunk, &'static mut ChunkContentCounts);
+
+impl Plugin for DimensionFluidPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<FluidStepBudget>()
             .init_resource::<FluidTickCounter>()
-            .add_systems(FixedUpdate, tick_counter)
-            .add_systems(FixedUpdate, step_chunk_fluids.after(tick_counter));
+            .add_systems(
+                FixedUpdate,
+                (tick_counter, step_chunk_fluids)
+                    .chain()
+                    .in_set(ChunkSimulationSet::FluidStep),
+            );
     }
 }
 
@@ -41,19 +57,11 @@ fn step_chunk_fluids(
     mut commands: Commands,
     budget: Res<FluidStepBudget>,
     counter: Res<FluidTickCounter>,
-    mut param_set: ParamSet<(
-        Query<(Entity, &ChunkPosition, &Chunk, Option<&ChunkNeedsFluidStep>)>,
-        Query<(
-            Entity,
-            &ChunkPosition,
-            &mut Chunk,
-            &mut ChunkContentCounts,
-            Option<&ChunkNeedsFluidStep>,
-        )>,
-    )>,
+    dimension: Single<&Dimension, With<Active>>,
+    mut param_set: ParamSet<(Query<FluidChunkRead>, Query<FluidChunkWrite>)>,
 ) {
     // Water in Minecraft spreads at 1 block per 5 ticks (4/sec).
-    if counter.0 % 5 != 0 {
+    if !counter.0.is_multiple_of(5) {
         return;
     }
 
@@ -61,16 +69,25 @@ fn step_chunk_fluids(
         return;
     }
 
-    let mut chunks_by_pos = HashMap::new();
+    let dimension = dimension.into_inner();
+    let chunks_by_pos = dimension
+        .iter_chunks()
+        .map(|(position, entity)| (position.as_ivec3(), entity))
+        .collect::<HashMap<_, _>>();
     let mut active_source_chunks = Vec::new();
 
-    for (entity, pos, chunk, active) in &param_set.p0() {
-        chunks_by_pos.insert(pos.0, entity);
-        if active.is_some() {
-            if chunk.has_fluids() {
-                active_source_chunks.push(pos.0);
-            } else {
-                commands.entity(entity).remove::<ChunkNeedsFluidStep>();
+    {
+        let chunks = param_set.p0();
+        for (&position, &entity) in &chunks_by_pos {
+            let Ok((_, counts, active)) = chunks.get(entity) else {
+                continue;
+            };
+            if active.is_some() {
+                if counts.fluids > 0 {
+                    active_source_chunks.push(position);
+                } else {
+                    commands.entity(entity).remove::<ChunkNeedsFluidStep>();
+                }
             }
         }
     }
@@ -102,7 +119,7 @@ fn step_chunk_fluids(
         return;
     }
 
-    let mut old_cells_by_entity: HashMap<Entity, Box<[ChunkCell; CHUNK_VOLUME]>> = HashMap::new();
+    let mut invalidations = ChunkInvalidationPlan::new();
     for update in step.updates {
         let address = WorldBlockPos::from_ivec3(update.pos).split();
         let Some(entity) = chunks_by_pos.get(&address.chunk().as_ivec3()).copied() else {
@@ -110,60 +127,25 @@ fn step_chunk_fluids(
         };
 
         let mut chunks_q = param_set.p1();
-        let Ok((_, _, mut chunk, _, _)) = chunks_q.get_mut(entity) else {
+        let Ok((mut chunk, mut counts)) = chunks_q.get_mut(entity) else {
             continue;
         };
-        old_cells_by_entity
-            .entry(entity)
-            .or_insert_with(|| Box::new(chunk.to_cell_buffer()));
-        chunk.set_cell(address.local().as_uvec3(), update.cell);
+        let mut editor =
+            ChunkEditor::new(address.chunk(), &mut chunk, &mut counts, &mut invalidations);
+        editor.set_cell(address.local(), update.cell);
     }
 
-    let changed_entities = old_cells_by_entity.keys().copied().collect::<HashSet<_>>();
-    let mut neighbor_mesh_dirty = HashSet::new();
-
-    for (entity, old_cells) in old_cells_by_entity {
-        let mut chunks_q = param_set.p1();
-        let Ok((_, pos, chunk, mut counts, _)) = chunks_q.get_mut(entity) else {
-            continue;
-        };
-        let result = chunk.fluid_step_result_from(&old_cells);
-        let mut entity_commands = commands.entity(entity);
-        if result.changed {
-            *counts = chunk.compute_content_counts();
-            entity_commands.insert((ChunkNeedsSave, ChunkNeedsMeshRebuild));
-            if chunk.has_fluids() {
-                entity_commands.insert(ChunkNeedsFluidStep);
-            } else {
-                entity_commands.remove::<ChunkNeedsFluidStep>();
-            }
-        } else {
-            entity_commands.remove::<ChunkNeedsFluidStep>();
-        }
-
-        if result.boundary_changed {
-            for offset in chunk_neighbor_offsets() {
-                let Some(entity) = chunks_by_pos.get(&(pos.0 + offset)).copied() else {
-                    continue;
-                };
-                neighbor_mesh_dirty.insert(entity);
-            }
-        }
+    for entity in processed_entities {
+        commands.entity(entity).remove::<ChunkNeedsFluidStep>();
     }
 
-    for entity in processed_entities.difference(&changed_entities) {
-        commands.entity(*entity).remove::<ChunkNeedsFluidStep>();
-    }
-
-    for entity in neighbor_mesh_dirty {
-        commands.entity(entity).insert(ChunkNeedsMeshRebuild);
-    }
+    apply_chunk_invalidations(&mut commands, dimension, &invalidations);
 }
 
 fn expand_with_fluid_neighbors(
     active_source_chunks: Vec<IVec3>,
     chunks_by_pos: &HashMap<IVec3, Entity>,
-    chunks_q: &Query<(Entity, &ChunkPosition, &Chunk, Option<&ChunkNeedsFluidStep>)>,
+    chunks_q: &Query<FluidChunkRead>,
 ) -> Vec<IVec3> {
     let mut selected = active_source_chunks.clone();
     let mut seen = selected.iter().copied().collect::<HashSet<_>>();
@@ -173,10 +155,10 @@ fn expand_with_fluid_neighbors(
             let Some(entity) = chunks_by_pos.get(&neighbor).copied() else {
                 continue;
             };
-            let Ok((_, _, neighbor_chunk, _)) = chunks_q.get(entity) else {
+            let Ok((_, counts, _)) = chunks_q.get(entity) else {
                 continue;
             };
-            if neighbor_chunk.has_fluids() && seen.insert(neighbor) {
+            if counts.fluids > 0 && seen.insert(neighbor) {
                 selected.push(neighbor);
             }
         }
@@ -188,7 +170,7 @@ fn expand_with_fluid_neighbors(
 fn snapshot_chunks_for_sources(
     source_chunks: &[IVec3],
     chunks_by_pos: &HashMap<IVec3, Entity>,
-    chunks_q: &Query<(Entity, &ChunkPosition, &Chunk, Option<&ChunkNeedsFluidStep>)>,
+    chunks_q: &Query<FluidChunkRead>,
 ) -> HashMap<IVec3, Box<[ChunkCell; CHUNK_VOLUME]>> {
     let mut snapshot_positions = HashSet::new();
     for chunk in source_chunks {
@@ -202,7 +184,7 @@ fn snapshot_chunks_for_sources(
         .into_iter()
         .filter_map(|pos| {
             let entity = chunks_by_pos.get(&pos).copied()?;
-            let (_, _, chunk, _) = chunks_q.get(entity).ok()?;
+            let (chunk, _, _) = chunks_q.get(entity).ok()?;
             Some((pos, Box::new(chunk.to_cell_buffer())))
         })
         .collect()
@@ -212,7 +194,26 @@ fn snapshot_chunks_for_sources(
 mod tests {
     use super::*;
     use crate::block::BlockType;
-    use crate::world::chunk::{CHUNK_SIZE, ChunkCell};
+    use crate::world::chunk::{
+        CHUNK_SIZE, ChunkCell, ChunkNeedsMeshRebuild, ChunkNeedsSave, ChunkPosition,
+    };
+
+    #[derive(Resource)]
+    struct TestDimension(Entity);
+
+    fn add_test_dimension(app: &mut App) {
+        let entity = app.world_mut().spawn((Dimension::default(), Active)).id();
+        app.insert_resource(TestDimension(entity));
+    }
+
+    fn register_chunk(app: &mut App, position: IVec3, entity: Entity) {
+        let dimension = app.world().resource::<TestDimension>().0;
+        app.world_mut()
+            .entity_mut(dimension)
+            .get_mut::<Dimension>()
+            .unwrap()
+            .register_chunk(position, entity);
+    }
 
     #[test]
     fn fluid_step_marks_changed_chunks_dirty_and_updates_counts() {
@@ -222,6 +223,7 @@ mod tests {
             .insert_resource(FluidTickCounter(4))
             .add_systems(Update, tick_counter)
             .add_systems(Update, step_chunk_fluids.after(tick_counter));
+        add_test_dimension(&mut app);
 
         let mut chunk = Chunk::default();
         chunk.set_cell(uvec3(8, 1, 8), ChunkCell::water_source());
@@ -236,13 +238,19 @@ mod tests {
                 ChunkNeedsFluidStep,
             ))
             .id();
+        register_chunk(&mut app, IVec3::ZERO, entity);
 
         app.update();
 
         let world = app.world();
         assert!(world.get::<ChunkNeedsSave>(entity).is_some());
         assert!(world.get::<ChunkNeedsMeshRebuild>(entity).is_some());
-        assert_eq!(world.get::<ChunkContentCounts>(entity).unwrap().rendered, 6);
+        let chunk = world.get::<Chunk>(entity).unwrap();
+        let counts = *world.get::<ChunkContentCounts>(entity).unwrap();
+        assert_eq!(counts, chunk.compute_content_counts());
+        assert_eq!(counts.rendered, 6);
+        assert_eq!(counts.solid, 1);
+        assert_eq!(counts.fluids, 5);
     }
 
     #[test]
@@ -252,6 +260,7 @@ mod tests {
             .insert_resource(FluidStepBudget(16))
             .insert_resource(FluidTickCounter(0))
             .add_systems(Update, step_chunk_fluids);
+        add_test_dimension(&mut app);
 
         spawn_flat_chunk(&mut app, IVec3::new(0, 0, -1), None);
         spawn_flat_chunk(
@@ -282,6 +291,7 @@ mod tests {
             .insert_resource(FluidStepBudget(16))
             .insert_resource(FluidTickCounter(0))
             .add_systems(Update, step_chunk_fluids);
+        add_test_dimension(&mut app);
 
         spawn_flat_chunk(&mut app, IVec3::new(0, 0, -1), None);
         spawn_flat_chunk(
@@ -324,6 +334,7 @@ mod tests {
             .insert_resource(FluidStepBudget(16))
             .insert_resource(FluidTickCounter(0))
             .add_systems(Update, step_chunk_fluids);
+        add_test_dimension(&mut app);
 
         spawn_flat_chunk(&mut app, IVec3::new(0, 1, -1), None);
         spawn_flat_chunk(
@@ -342,6 +353,7 @@ mod tests {
             .insert_resource(FluidStepBudget(16))
             .insert_resource(FluidTickCounter(0))
             .add_systems(Update, step_chunk_fluids);
+        add_test_dimension(&mut app);
 
         spawn_flat_chunk(
             &mut app,
@@ -409,20 +421,23 @@ mod tests {
                 .entity_mut(entity)
                 .insert(ChunkNeedsFluidStep);
         }
+        register_chunk(app, pos, entity);
         entity
     }
 
     fn set_cell(app: &mut App, chunk_pos: IVec3, cell_pos: UVec3, cell: ChunkCell) {
         let world = app.world_mut();
-        let mut query =
-            world.query::<(Entity, &ChunkPosition, &mut Chunk, &mut ChunkContentCounts)>();
-        let (entity, _, mut chunk, mut counts) = query
-            .iter_mut(world)
-            .find(|(_, pos, _, _)| pos.0 == chunk_pos)
-            .expect("chunk should exist");
-        chunk.set_cell(cell_pos, cell);
-        *counts = chunk.compute_content_counts();
-        drop(chunk);
+        let entity = {
+            let mut query =
+                world.query::<(Entity, &ChunkPosition, &mut Chunk, &mut ChunkContentCounts)>();
+            let (entity, _, mut chunk, mut counts) = query
+                .iter_mut(world)
+                .find(|(_, pos, _, _)| pos.0 == chunk_pos)
+                .expect("chunk should exist");
+            chunk.set_cell(cell_pos, cell);
+            *counts = chunk.compute_content_counts();
+            entity
+        };
         world.entity_mut(entity).insert(ChunkNeedsFluidStep);
     }
 
@@ -437,10 +452,10 @@ mod tests {
 
     fn mark_chunks_with_fluids_active(app: &mut App) {
         let world = app.world_mut();
-        let mut query = world.query::<(Entity, &Chunk)>();
+        let mut query = world.query::<(Entity, &ChunkContentCounts)>();
         let entities: Vec<Entity> = query
             .iter(world)
-            .filter_map(|(entity, chunk)| chunk.has_fluids().then_some(entity))
+            .filter_map(|(entity, counts)| (counts.fluids > 0).then_some(entity))
             .collect();
         for entity in entities {
             world.entity_mut(entity).insert(ChunkNeedsFluidStep);

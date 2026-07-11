@@ -3,11 +3,7 @@ use bevy::{platform::collections::HashSet, prelude::*, tasks::futures::check_rea
 use crate::{
     player::Player,
     world::{
-        chunk::{
-            ChunkNeedsColliderRebuild, ChunkNeedsFluidStep, ChunkNeedsLightRebuild,
-            ChunkNeedsMeshRebuild, ChunkNeedsRenderLightUpload, ChunkNeedsSave, ChunkPos,
-            ChunkPosition, chunk_neighbor_offsets,
-        },
+        chunk::{ChunkInvalidationPlan, ChunkNeedsSave, ChunkPos, ChunkPosition},
         generation::WorldMetadata,
         loading::{ChunkLoadRequest, load_or_generate_chunk},
         storage::ChunkRepository,
@@ -15,7 +11,7 @@ use crate::{
 };
 
 use super::{
-    Active, ChunkTaskPool, Dimension,
+    Active, ChunkTaskPool, Dimension, apply_chunk_invalidations,
     tasks::{ChunkLoadBudget, ChunkLoadTasks, ChunkSpawnBudget},
     view::{ViewDistance, chunk_positions_in_view},
 };
@@ -38,9 +34,10 @@ pub(crate) fn maintain_chunk_view(
     let chunks_in_view_set = chunks_in_view.iter().copied().collect::<HashSet<_>>();
 
     let (mut dim, _) = dimension.into_inner();
+    let mut invalidations = ChunkInvalidationPlan::new();
 
     let chunks_to_unload = dim
-        .chunks
+        .chunk_entities()
         .iter()
         .filter(|(pos, _)| !chunks_in_view_set.contains(*pos))
         .map(|(pos, entity)| (*pos, *entity))
@@ -51,10 +48,12 @@ pub(crate) fn maintain_chunk_view(
             continue;
         }
 
-        mark_loaded_neighbor_meshes_dirty(&mut commands, &dim, pos);
-        dim.chunks.remove(&pos);
+        invalidations.record_chunk_unloaded(ChunkPos::from_ivec3(pos));
+        dim.unregister_chunk(pos);
         commands.entity(entity).despawn();
     }
+
+    apply_chunk_invalidations(&mut commands, &dim, &invalidations);
 
     load_tasks.retain_visible(&chunks_in_view_set);
 }
@@ -93,7 +92,7 @@ pub(crate) fn start_chunk_load_tasks(
             break;
         }
 
-        if dim.chunks.contains_key(&pos) || load_tasks.blocks_starting_task(pos) {
+        if dim.contains_chunk(pos) || load_tasks.blocks_starting_task(pos) {
             continue;
         }
 
@@ -137,10 +136,11 @@ pub(crate) fn finish_chunk_load_tasks(
     }
 
     let (mut dim, dimension_entity) = dimension.into_inner();
+    let mut invalidations = ChunkInvalidationPlan::new();
     for (pos, loaded) in completed {
         load_tasks.tasks.remove(&pos);
 
-        if dim.chunks.contains_key(&pos) {
+        if dim.contains_chunk(pos) {
             load_tasks.record_success(pos);
             continue;
         }
@@ -163,57 +163,25 @@ pub(crate) fn finish_chunk_load_tasks(
         let chunk_light = loaded.light;
         let heightmap = loaded.heightmap;
 
-        let mut entity_commands = commands.spawn((
-            ChildOf(dimension_entity),
-            ChunkPosition(pos),
-            loaded.chunk,
-            chunk_light,
-            heightmap,
-            meta,
-            Transform::from_translation(ChunkPos::from_ivec3(pos).origin_translation()),
-            Visibility::default(),
-            ChunkNeedsLightRebuild,
-        ));
-        if meta.rendered > 0 {
-            entity_commands.insert(ChunkNeedsMeshRebuild);
-        }
-        if meta.solid > 0 {
-            entity_commands.insert(ChunkNeedsColliderRebuild);
-        }
-        if meta.fluids > 0 {
-            entity_commands.insert(ChunkNeedsFluidStep);
-        }
-        let chunk_entity = entity_commands.id();
+        let chunk_pos = ChunkPos::from_ivec3(pos);
+        let chunk_entity = commands
+            .spawn((
+                ChildOf(dimension_entity),
+                ChunkPosition::from(chunk_pos),
+                loaded.chunk,
+                chunk_light,
+                heightmap,
+                meta,
+                Transform::from_translation(chunk_pos.origin_translation()),
+                Visibility::default(),
+            ))
+            .id();
 
-        dim.chunks.insert(pos, chunk_entity);
-        mark_loaded_neighbor_meshes_dirty(&mut commands, &dim, pos);
-    }
-}
-
-fn mark_loaded_neighbor_meshes_dirty(commands: &mut Commands, dimension: &Dimension, pos: IVec3) {
-    for offset in chunk_neighbor_offsets() {
-        let Some(entity) = dimension.chunk_entity(pos + offset) else {
-            continue;
-        };
-
-        commands.entity(entity).insert((
-            ChunkNeedsMeshRebuild,
-            ChunkNeedsRenderLightUpload,
-            ChunkNeedsFluidStep,
-        ));
+        dim.register_chunk(chunk_pos, chunk_entity);
+        invalidations.record_chunk_loaded(chunk_pos, meta);
     }
 
-    mark_loaded_light_column_dirty(commands, dimension, pos);
-}
-
-fn mark_loaded_light_column_dirty(commands: &mut Commands, dimension: &Dimension, pos: IVec3) {
-    for (&chunk_pos, &entity) in &dimension.chunks {
-        if chunk_pos.x != pos.x || chunk_pos.z != pos.z {
-            continue;
-        }
-
-        commands.entity(entity).insert(ChunkNeedsLightRebuild);
-    }
+    apply_chunk_invalidations(&mut commands, &dim, &invalidations);
 }
 
 #[cfg(test)]
@@ -221,7 +189,10 @@ mod tests {
     use super::*;
     use bevy::platform::collections::HashMap;
 
-    use crate::world::chunk::{CHUNK_SIZE, Chunk, ChunkHeightmap, ChunkLight};
+    use crate::world::chunk::{
+        CHUNK_SIZE, Chunk, ChunkHeightmap, ChunkLight, ChunkNeedsFluidStep, ChunkNeedsLightRebuild,
+        ChunkNeedsMeshRebuild, ChunkNeedsRenderLightUpload,
+    };
     use crate::world::loading::{ChunkLoadOutput, ChunkLoadSource, LoadedChunk};
     use crate::world::storage::{
         ChunkStore, ChunkStoreError, ChunkStoreResult, InMemoryChunkStore,
@@ -278,12 +249,14 @@ mod tests {
             .into_iter()
             .map(|pos| (pos, spawn_chunk(app, pos)))
             .collect::<HashMap<_, _>>();
+        let mut dimension = Dimension::default();
+        for (&position, &entity) in &chunks {
+            dimension.register_chunk(position, entity);
+        }
         let dimension_entity = app
             .world_mut()
             .spawn((
-                Dimension {
-                    chunks: chunks.clone(),
-                },
+                dimension,
                 Transform::default(),
                 Visibility::default(),
                 Active,
@@ -352,6 +325,11 @@ mod tests {
         );
         assert!(
             world
+                .get::<ChunkNeedsRenderLightUpload>(chunks[&face_neighbor])
+                .is_some()
+        );
+        assert!(
+            world
                 .get::<ChunkNeedsMeshRebuild>(chunks[&diagonal_neighbor])
                 .is_some()
         );
@@ -362,12 +340,22 @@ mod tests {
         );
         assert!(
             world
+                .get::<ChunkNeedsRenderLightUpload>(chunks[&diagonal_neighbor])
+                .is_some()
+        );
+        assert!(
+            world
                 .get::<ChunkNeedsMeshRebuild>(chunks[&non_neighbor])
                 .is_none()
         );
         assert!(
             world
                 .get::<ChunkNeedsFluidStep>(chunks[&non_neighbor])
+                .is_none()
+        );
+        assert!(
+            world
+                .get::<ChunkNeedsRenderLightUpload>(chunks[&non_neighbor])
                 .is_none()
         );
     }
@@ -453,12 +441,42 @@ mod tests {
         );
         assert!(
             world
+                .get::<ChunkNeedsFluidStep>(chunks[&face_neighbor])
+                .is_some()
+        );
+        assert!(
+            world
+                .get::<ChunkNeedsRenderLightUpload>(chunks[&face_neighbor])
+                .is_some()
+        );
+        assert!(
+            world
                 .get::<ChunkNeedsMeshRebuild>(chunks[&diagonal_neighbor])
                 .is_some()
         );
         assert!(
             world
+                .get::<ChunkNeedsFluidStep>(chunks[&diagonal_neighbor])
+                .is_some()
+        );
+        assert!(
+            world
+                .get::<ChunkNeedsRenderLightUpload>(chunks[&diagonal_neighbor])
+                .is_some()
+        );
+        assert!(
+            world
                 .get::<ChunkNeedsMeshRebuild>(chunks[&non_neighbor])
+                .is_none()
+        );
+        assert!(
+            world
+                .get::<ChunkNeedsFluidStep>(chunks[&non_neighbor])
+                .is_none()
+        );
+        assert!(
+            world
+                .get::<ChunkNeedsRenderLightUpload>(chunks[&non_neighbor])
                 .is_none()
         );
     }
@@ -498,7 +516,6 @@ mod tests {
 
         let origin_chunk = {
             let dimension = app.world().get::<Dimension>(dimension_entity).unwrap();
-            assert_eq!(dimension.chunks.len(), expected_chunk_count(&metadata));
             assert_eq!(
                 dimension.loaded_chunk_count(),
                 expected_chunk_count(&metadata)
@@ -519,7 +536,6 @@ mod tests {
         });
 
         let dimension = app.world().get::<Dimension>(dimension_entity).unwrap();
-        assert_eq!(dimension.chunks.len(), expected_chunk_count(&metadata));
         assert_eq!(
             dimension.loaded_chunk_count(),
             expected_chunk_count(&metadata)
@@ -559,7 +575,6 @@ mod tests {
         let dimension = app.world().get::<Dimension>(dimension_entity).unwrap();
         let loading_count = app.world().resource::<ChunkLoadTasks>().tasks.len();
 
-        assert_eq!(dimension.chunks.len(), 0);
         assert_eq!(dimension.loaded_chunk_count(), 0);
         assert_eq!(loading_count, 1);
         assert_eq!(
@@ -686,12 +701,12 @@ mod tests {
                 ChunkNeedsSave,
             ))
             .id();
+        let mut dimension = Dimension::default();
+        dimension.register_chunk(pos, chunk_entity);
         let dimension_entity = app
             .world_mut()
             .spawn((
-                Dimension {
-                    chunks: HashMap::from([(pos, chunk_entity)]),
-                },
+                dimension,
                 Transform::default(),
                 Visibility::default(),
                 Active,

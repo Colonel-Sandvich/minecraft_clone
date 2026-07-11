@@ -146,24 +146,3 @@ fn interaction_request_uses_action_specific_block_position() {
         target.adjacent_block
     );
 }
-
-#[test]
-fn block_edit_light_dirtying_reaches_adjacent_columns() {
-    let edit = ivec3(10, 2, -4);
-
-    assert!(block_edit_light_reaches_column(edit, edit));
-    assert!(block_edit_light_reaches_column(edit, edit + IVec3::Y));
-    assert!(block_edit_light_reaches_column(edit, edit + ivec3(1, 0, 1)));
-    assert!(block_edit_light_reaches_column(
-        edit,
-        edit + ivec3(-1, 3, -1)
-    ));
-    assert!(!block_edit_light_reaches_column(
-        edit,
-        edit + ivec3(2, 0, 0)
-    ));
-    assert!(!block_edit_light_reaches_column(
-        edit,
-        edit + ivec3(0, 0, -2)
-    ));
-}

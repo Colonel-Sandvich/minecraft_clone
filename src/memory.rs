@@ -290,7 +290,7 @@ fn update_memory_snapshot(
         chunk_positions_in_view(Vec3::ZERO, metadata.height_chunks, view_distance.chunks()).len();
     let dimension_maps = dimensions_q
         .iter()
-        .map(|dimension| dimension.chunks.capacity() * size_of::<(IVec3, Entity)>())
+        .map(|dimension| dimension.chunk_map_capacity() * size_of::<(IVec3, Entity)>())
         .sum::<usize>();
 
     let load_stats = load_tasks

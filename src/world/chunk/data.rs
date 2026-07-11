@@ -4,7 +4,7 @@ use crate::block::BlockType;
 
 use super::{
     components::ChunkContentCounts,
-    coords::{CHUNK_ISIZE, CHUNK_SIZE, CHUNK_VOLUME, chunk_linear_index},
+    coords::{CHUNK_ISIZE, CHUNK_SIZE, CHUNK_VOLUME, LocalBlockPos, chunk_linear_index},
     state::{
         AIR_CELL_STATE_ID, CELL_REGISTRY, CellDelta, CellRegistry, CellStateId, ChunkCell,
         FluidState, HotCellMeta,
@@ -200,6 +200,11 @@ impl Chunk {
     }
 
     #[inline(always)]
+    pub fn cell(&self, local: LocalBlockPos) -> ChunkCell {
+        self.cell_linear(local.index().as_usize())
+    }
+
+    #[inline(always)]
     pub fn cell_xyz(&self, x: usize, y: usize, z: usize) -> ChunkCell {
         self.cell_linear(chunk_linear_index(x, y, z))
     }
@@ -373,11 +378,7 @@ impl Chunk {
         palette
     }
 
-    pub fn has_fluids(&self) -> bool {
-        (0..CHUNK_VOLUME).any(|index| self.hot_meta_linear(index).fluid_level > 0)
-    }
-
-    pub(super) fn to_cell_buffer(&self) -> [ChunkCell; CHUNK_VOLUME] {
+    pub(crate) fn to_cell_buffer(&self) -> [ChunkCell; CHUNK_VOLUME] {
         std::array::from_fn(|index| self.cell_linear(index))
     }
 }
@@ -388,7 +389,7 @@ pub struct ChunkCellIter<'a> {
 }
 
 impl Iterator for ChunkCellIter<'_> {
-    type Item = (ChunkCell, (usize, usize, usize));
+    type Item = (ChunkCell, LocalBlockPos);
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.index >= CHUNK_VOLUME {
@@ -401,9 +402,6 @@ impl Iterator for ChunkCellIter<'_> {
             .expect("chunk iterator index must be in bounds")
             .local();
 
-        Some((
-            self.chunk.cell_linear(index),
-            (local.x(), local.y(), local.z()),
-        ))
+        Some((self.chunk.cell_linear(index), local))
     }
 }
