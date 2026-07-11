@@ -1,4 +1,4 @@
-//! Real-renderer stress scenario for vertex-pulling light uploads.
+//! Real-renderer stress scenario for chunk mesh light uploads.
 //!
 //! Run with:
 //! `MINECRAFT_CLONE_DISABLE_CHUNK_COLLIDERS=1 RUST_LOG=perf=info \

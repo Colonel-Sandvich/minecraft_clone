@@ -1,14 +1,24 @@
 use bevy::math::Vec3;
 use strum::EnumIter;
 
-#[derive(Debug, Clone, Copy, PartialEq, EnumIter)]
+/// Canonical face order shared by meshing tables and the terrain shader.
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, EnumIter)]
 pub enum Direction {
-    Left,
-    Right,
-    Down,
-    Up,
-    Forward,
-    Backward,
+    Left = 0,
+    Right = 1,
+    Down = 2,
+    Up = 3,
+    Forward = 4,
+    Backward = 5,
+}
+
+impl Direction {
+    pub const COUNT: usize = 6;
+
+    pub const fn index(self) -> usize {
+        self as usize
+    }
 }
 
 impl From<Direction> for Vec3 {

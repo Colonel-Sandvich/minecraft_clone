@@ -1,4 +1,4 @@
-//! Vertex-pulling mesh generation benchmark (8 scenarios).
+//! Chunk meshing benchmark (8 scenarios).
 
 use std::{hint::black_box, sync::Arc, time::Duration};
 
@@ -11,7 +11,10 @@ use minecraft_clone::{
     block::{BlockMaterialLayer, BlockType},
     world::{
         WorldMetadata,
-        chunk::mesh::{ChunkMeshBlocks, binary, vertex_pulling},
+        chunk::mesh::{
+            ChunkMeshBlocks, ChunkMeshLight,
+            mesher::{LayerMesh, benchmark_binary_floor, build, build_reference},
+        },
         chunk::{CHUNK_SIZE, Chunk, ChunkCell, ChunkLight, ChunkNeedsMeshRebuild, ChunkPosition},
         generation::generate_chunk,
     },
@@ -241,8 +244,8 @@ fn exposed_water_columns_chunk() -> Chunk {
 // Data size helpers
 // ---------------------------------------------------------------------------
 
-fn vp_face_count(layers: &[(BlockMaterialLayer, Vec<vertex_pulling::FaceDescriptor>)]) -> usize {
-    layers.iter().map(|(_, desc)| desc.len()).sum()
+fn chunk_mesh_face_count(layers: &[LayerMesh]) -> usize {
+    layers.iter().map(|layer| layer.faces.len()).sum()
 }
 
 fn light_upload_lights(chunk_count: usize) -> Vec<(IVec3, ChunkLight)> {
@@ -292,45 +295,45 @@ fn patterned_light(chunk_pos: IVec3) -> ChunkLight {
 // Benchmark
 // ---------------------------------------------------------------------------
 
-fn bench_vertex_pulling(c: &mut Criterion) {
+fn bench_chunk_meshing(c: &mut Criterion) {
     ComputeTaskPool::get_or_init(Default::default);
 
     let scenarios = make_scenarios();
 
-    bench_mesh_descriptors_scalar(c, &scenarios);
-    bench_mesh_descriptors_hybrid(c, &scenarios);
-    bench_mesh_descriptors_floor(c, &scenarios);
-    bench_water_shape_descriptors(c);
-    print_data_size_comparison(&scenarios);
+    bench_reference_mesher(c, &scenarios);
+    bench_production_mesher(c, &scenarios);
+    bench_binary_mesher_floor(c, &scenarios);
+    bench_water_shape_meshing(c);
+    print_mesher_output_comparison(&scenarios);
     print_bind_group_topology_comparison();
     bench_light_upload(c);
-    bench_dirty_mesh_loop(c);
+    bench_dirty_chunk_mesh_loop(c);
 }
 
-fn bench_water_shape_descriptors(c: &mut Criterion) {
+fn bench_water_shape_meshing(c: &mut Criterion) {
     let chunks = [
         ("surface_16x16", water_surface_chunk()),
         ("realistic_pond", realistic_terrain_chunk()),
         ("exposed_columns", exposed_water_columns_chunk()),
     ];
-    let mut group = c.benchmark_group("vp_water_shape");
+    let mut group = c.benchmark_group("chunk_mesh_water_shape");
 
     for (name, chunk) in chunks {
         let chunks = [(IVec3::ZERO, chunk)];
         let chunk_refs = chunks.iter().map(|(p, c)| (*p, c)).collect();
         let blocks = ChunkMeshBlocks::from_chunks(IVec3::ZERO, &chunk_refs);
-        let face_count = vp_face_count(&binary::build_descriptors_hybrid(&blocks));
+        let face_count = chunk_mesh_face_count(&build(&blocks));
         group.throughput(Throughput::Elements(face_count as u64));
-        group.bench_function(BenchmarkId::new("hybrid", name), move |b| {
-            b.iter(|| black_box(binary::build_descriptors_hybrid(black_box(&blocks))))
+        group.bench_function(BenchmarkId::new("production", name), move |b| {
+            b.iter(|| black_box(build(black_box(&blocks))))
         });
     }
 
     group.finish();
 }
 
-fn bench_mesh_descriptors_scalar(c: &mut Criterion, scenarios: &[Scenario]) {
-    let mut group = c.benchmark_group("vp_mesh_scalar");
+fn bench_reference_mesher(c: &mut Criterion, scenarios: &[Scenario]) {
+    let mut group = c.benchmark_group("chunk_mesh_reference");
     group.throughput(Throughput::Elements(1));
     for scenario in scenarios {
         let chunk_refs = scenario.chunk_refs();
@@ -338,15 +341,15 @@ fn bench_mesh_descriptors_scalar(c: &mut Criterion, scenarios: &[Scenario]) {
         group.bench_function(BenchmarkId::from_parameter(scenario.name), |b| {
             b.iter(|| {
                 let blocks = ChunkMeshBlocks::from_chunks(center, black_box(&chunk_refs));
-                black_box(vertex_pulling::build_descriptors(&blocks))
+                black_box(build_reference(&blocks))
             });
         });
     }
     group.finish();
 }
 
-fn bench_mesh_descriptors_hybrid(c: &mut Criterion, scenarios: &[Scenario]) {
-    let mut group = c.benchmark_group("vp_mesh_hybrid");
+fn bench_production_mesher(c: &mut Criterion, scenarios: &[Scenario]) {
+    let mut group = c.benchmark_group("chunk_mesh_production");
     group.throughput(Throughput::Elements(1));
     for scenario in scenarios {
         let chunk_refs = scenario.chunk_refs();
@@ -354,7 +357,7 @@ fn bench_mesh_descriptors_hybrid(c: &mut Criterion, scenarios: &[Scenario]) {
         group.bench_function(BenchmarkId::from_parameter(scenario.name), |b| {
             b.iter(|| {
                 let blocks = ChunkMeshBlocks::from_chunks(center, black_box(&chunk_refs));
-                black_box(binary::build_descriptors_hybrid(&blocks))
+                black_box(build(&blocks))
             });
         });
     }
@@ -362,10 +365,10 @@ fn bench_mesh_descriptors_hybrid(c: &mut Criterion, scenarios: &[Scenario]) {
 }
 
 /// Absolute floor: masks + AND-NOT + iter_ones + coord recovery.
-/// Same memory access pattern as `build_descriptors_binary` but skips AO,
-/// cell lookup, and descriptor construction.
-fn bench_mesh_descriptors_floor(c: &mut Criterion, scenarios: &[Scenario]) {
-    let mut group = c.benchmark_group("vp_mesh_floor");
+/// Same memory access pattern as `build_binary` but skips AO, cell lookup and
+/// packed-face construction.
+fn bench_binary_mesher_floor(c: &mut Criterion, scenarios: &[Scenario]) {
+    let mut group = c.benchmark_group("chunk_mesh_binary_floor");
     group.throughput(Throughput::Elements(1));
 
     for scenario in scenarios {
@@ -374,25 +377,28 @@ fn bench_mesh_descriptors_floor(c: &mut Criterion, scenarios: &[Scenario]) {
         let blocks = ChunkMeshBlocks::from_chunks(center, &chunk_refs);
 
         group.bench_function(BenchmarkId::from_parameter(scenario.name), move |b| {
-            b.iter(|| binary::build_descriptors_binary_floor(black_box(&blocks)))
+            b.iter(|| benchmark_binary_floor(black_box(&blocks)))
         });
     }
     group.finish();
 }
 
-fn print_data_size_comparison(scenarios: &[Scenario]) {
+fn print_mesher_output_comparison(scenarios: &[Scenario]) {
     println!();
-    println!("--- Scalar vs Hybrid descriptor counts ---");
-    println!("  {:<30} {:>8} {:>8}", "scenario", "scalar", "hybrid",);
+    println!("--- Reference vs production face counts ---");
+    println!(
+        "  {:<30} {:>9} {:>10}",
+        "scenario", "reference", "production",
+    );
     for scenario in scenarios {
         let chunk_refs = scenario.chunk_refs();
         let blocks = ChunkMeshBlocks::from_chunks(scenario.center_pos, &chunk_refs);
-        let scalar_faces = vp_face_count(&vertex_pulling::build_descriptors(&blocks));
-        let hybrid_faces = vp_face_count(&binary::build_descriptors_hybrid(&blocks));
+        let reference_faces = chunk_mesh_face_count(&build_reference(&blocks));
+        let production_faces = chunk_mesh_face_count(&build(&blocks));
 
         println!(
-            "  {:<30} {:>8} {:>8}",
-            scenario.name, scalar_faces, hybrid_faces,
+            "  {:<30} {:>9} {:>10}",
+            scenario.name, reference_faces, production_faces,
         );
     }
     println!();
@@ -419,7 +425,7 @@ fn realistic_layer_counts(chunk_count: usize) -> Vec<usize> {
     let mut chunk_refs = HashMap::default();
     chunk_refs.insert(IVec3::ZERO, &chunk);
     let blocks = ChunkMeshBlocks::from_chunks(IVec3::ZERO, &chunk_refs);
-    let layers = binary::build_descriptors_hybrid(&blocks).len();
+    let layers = build(&blocks).len();
 
     vec![layers; chunk_count]
 }
@@ -498,19 +504,17 @@ fn bench_light_upload(c: &mut Criterion) {
     let empty_light: Arc<[u32]> =
         ChunkLight::build_padded_light_data(IVec3::ZERO, &HashMap::default()).into();
     let mut components = (0..chunk_count * layer_count)
-        .map(|_| vertex_pulling::VertexPullingLight {
-            light_data: empty_light.clone(),
-        })
+        .map(|_| ChunkMeshLight::new(empty_light.clone()))
         .collect::<Vec<_>>();
 
-    let mut group = c.benchmark_group("vp_light_upload");
+    let mut group = c.benchmark_group("chunk_mesh_light_upload");
     group.throughput(Throughput::Elements(chunk_count as u64));
     group.bench_function("prebuilt_4096_chunks_all_layers", |b| {
         b.iter(|| {
             for (chunk_index, light_data) in light_blobs.iter().enumerate() {
                 let first_child = chunk_index * layer_count;
                 for layer_index in 0..layer_count {
-                    components[first_child + layer_index].light_data = light_data.clone();
+                    components[first_child + layer_index].replace(light_data.clone());
                 }
             }
             black_box(&components);
@@ -556,7 +560,7 @@ fn build_dirty_meshes_serial_contiguous(
     {
         for pos in positions {
             let blocks = ChunkMeshBlocks::from_chunks(pos.0, chunks_by_pos);
-            face_count += vp_face_count(&binary::build_descriptors_hybrid(&blocks));
+            face_count += chunk_mesh_face_count(&build(&blocks));
         }
     }
     face_count
@@ -572,15 +576,15 @@ fn build_dirty_meshes_parallel(
         || totals.borrow_local_mut(),
         |local_total, (pos, _)| {
             let blocks = ChunkMeshBlocks::from_chunks(pos.0, chunks_by_pos);
-            **local_total += vp_face_count(&binary::build_descriptors_hybrid(&blocks));
+            **local_total += chunk_mesh_face_count(&build(&blocks));
         },
     );
 
     totals.iter_mut().map(|total| *total).sum()
 }
 
-fn bench_dirty_mesh_loop(c: &mut Criterion) {
-    let mut group = c.benchmark_group("vp_dirty_mesh_loop");
+fn bench_dirty_chunk_mesh_loop(c: &mut Criterion) {
+    let mut group = c.benchmark_group("chunk_mesh_dirty_loop");
     for chunk_count in [1usize, 4, 16, 64, 256] {
         let chunks = dirty_mesh_chunks(chunk_count);
         let chunks_by_pos = chunks
@@ -620,11 +624,11 @@ fn bench_dirty_mesh_loop(c: &mut Criterion) {
 }
 
 criterion_group! {
-    name = vp_benches;
+    name = chunk_meshing_benches;
     config = Criterion::default()
         .warm_up_time(Duration::from_secs(1))
         .measurement_time(Duration::from_secs(3))
         .sample_size(10);
-    targets = bench_vertex_pulling
+    targets = bench_chunk_meshing
 }
-criterion_main!(vp_benches);
+criterion_main!(chunk_meshing_benches);

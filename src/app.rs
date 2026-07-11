@@ -26,8 +26,7 @@ use crate::{
     ui::UIPlugin,
     world::chunk::{
         Chunk, ChunkNeedsLightRebuild, ChunkNeedsLightUpload, ChunkNeedsMeshRebuild,
-        ChunkPerfCounters, ChunkPosition,
-        mesh::vertex_pulling::{VertexPullingMesh, VertexPullingPlugin},
+        ChunkPerfCounters, ChunkPosition, mesh::ChunkMeshLayer,
     },
     world::{WorldConfig, WorldMetadata, WorldPlugin, dimension::ViewDistance},
 };
@@ -75,7 +74,6 @@ impl Plugin for AppPlugin {
             }
         })
         .add_plugins(WorldPlugin)
-        .add_plugins(VertexPullingPlugin)
         .add_plugins(UIPlugin)
         .insert_resource(Time::<Fixed>::from_hz(FIXED_TICK_RATE_HZ))
         .insert_resource(Time::<Virtual>::from_max_delta(Duration::from_secs_f64(
@@ -116,7 +114,7 @@ fn log_frame_perf(
     dirty_mesh_chunks: Query<&ChunkPosition, (With<Chunk>, With<ChunkNeedsMeshRebuild>)>,
     dirty_light_upload_chunks: Query<&ChunkPosition, (With<Chunk>, With<ChunkNeedsLightUpload>)>,
     dirty_light_rebuild_chunks: Query<&ChunkPosition, (With<Chunk>, With<ChunkNeedsLightRebuild>)>,
-    vp_meshes: Query<&VertexPullingMesh>,
+    chunk_mesh_layers: Query<&ChunkMeshLayer>,
     mut chunk_perf: Option<ResMut<ChunkPerfCounters>>,
     mut timer: Local<Option<Timer>>,
 ) {
@@ -134,11 +132,11 @@ fn log_frame_perf(
         .and_then(|diagnostic| diagnostic.smoothed())
         .unwrap_or_else(|| time.delta_secs_f64() * 1000.0);
 
-    let mut vp_layers = 0usize;
-    let mut vp_faces = 0u64;
-    for mesh in &vp_meshes {
-        vp_layers += 1;
-        vp_faces += u64::from(mesh.face_count);
+    let mut mesh_layers = 0usize;
+    let mut mesh_faces = 0u64;
+    for layer in &chunk_mesh_layers {
+        mesh_layers += 1;
+        mesh_faces += u64::from(layer.face_count());
     }
     let dirty_mesh_positions = dirty_mesh_chunks
         .iter()
@@ -174,8 +172,8 @@ fn log_frame_perf(
         mesh_rebuilds_5s = chunk_perf.mesh_rebuilds,
         light_rebuild_targets_5s = chunk_perf.light_rebuild_targets,
         light_uploads_5s = chunk_perf.light_uploads,
-        vp_layers,
-        vp_faces,
+        mesh_layers,
+        mesh_faces,
         "frame perf"
     );
 }

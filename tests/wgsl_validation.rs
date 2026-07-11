@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use minecraft_clone::world::chunk::mesh::vertex_pulling::SHADER_SOURCE;
+use minecraft_clone::world::chunk::mesh::TERRAIN_SHADER_SOURCE;
 use naga::{AddressSpace, ImageClass, ImageDimension, ScalarKind, TypeInner, front::wgsl, valid};
 
 #[derive(Debug, PartialEq, Eq)]
@@ -20,7 +20,7 @@ enum ResourceKind {
 }
 
 fn parse_vertex_pulling_shader() -> naga::Module {
-    wgsl::parse_str(SHADER_SOURCE).expect("vertex_pulling.wgsl should parse")
+    wgsl::parse_str(TERRAIN_SHADER_SOURCE).expect("vertex_pulling.wgsl should parse")
 }
 
 #[test]

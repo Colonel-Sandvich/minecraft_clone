@@ -53,7 +53,7 @@ impl ChunkLight {
         self.light[x][z][y]
     }
 
-    /// Build a padded 18³ light buffer for vertex pulling.
+    /// Build the padded light buffer consumed by chunk mesh rendering.
     ///
     /// `center_pos` is the chunk's position in chunk coords,
     /// `lights` is a map of all available chunks' light data (keyed by chunk position).

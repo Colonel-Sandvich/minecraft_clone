@@ -4,17 +4,18 @@ use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
 
 use crate::block::{
-    BlockMaterialLayer, BlockType, RENDER_ID_COUNT, WATER_RENDER_ID, from_render_id,
-    render_id_for_block,
+    BlockMaterialLayer, BlockType, WATER_RENDER_ID, from_render_id, render_id_for_block,
 };
 use crate::quad::Direction;
-use crate::world::chunk::mesh::{binary, vertex_pulling};
-use crate::world::chunk::{Chunk, ChunkCell, ChunkLight, ChunkNeedsLightUpload};
+use crate::world::chunk::mesh::mesher::{build, build_reference};
+use crate::world::chunk::{
+    CHUNK_ISIZE, CHUNK_SIZE, Chunk, ChunkCell, ChunkLight, ChunkNeedsLightUpload,
+    ChunkNeedsMeshRebuild, ChunkPosition,
+};
 
 use super::{
-    CHUNK_ISIZE, CHUNK_SIZE, ChunkMeshBlocks, ChunkNeedsMeshRebuild, ChunkPosition,
-    VertexPullingLight, VpTextureState, face_ao_from_indices, padded_chunk_index, water_below_pair,
-    water_corner_heights,
+    ChunkMeshBlocks, ChunkMeshFaces, ChunkMeshLayer, ChunkMeshLight, face_ao_from_indices,
+    padded_chunk_index, water_below_pair, water_corner_heights,
 };
 
 // Mirrors the removed mod.rs VERTEX_OFFSETS — only needed in test AO helpers.
@@ -345,13 +346,131 @@ fn mesh_rebuild_marker_is_removed_after_rebuild() {
     let children = world.get::<Children>(chunk_entity).unwrap();
     let mesh_child_count = children
         .iter()
-        .filter(|child| world.get::<super::VertexPullingMesh>(*child).is_some())
+        .filter(|child| world.get::<ChunkMeshLayer>(*child).is_some())
         .count();
     assert_eq!(mesh_child_count, 1);
 }
 
 #[test]
-fn light_upload_marker_updates_existing_vertex_pulling_light() {
+fn mesh_rebuild_reuses_layer_entity_and_uploads_same_count_topology_changes() {
+    let mut app = mesh_rebuild_app();
+
+    let mut chunk = Chunk::default();
+    chunk.set_cell_xyz(0, 0, 0, block_cell(BlockType::Stone));
+    let chunk_entity = app
+        .world_mut()
+        .spawn((
+            ChunkPosition(IVec3::ZERO),
+            chunk,
+            Transform::from_xyz(16.0, 0.0, 0.0),
+            ChunkNeedsMeshRebuild,
+        ))
+        .id();
+
+    app.update();
+
+    let layer_entity = app.world().get::<Children>(chunk_entity).unwrap()[0];
+    let layer = app.world().get::<ChunkMeshLayer>(layer_entity).unwrap();
+    assert_eq!(layer.face_count(), 6);
+    assert_eq!(layer.origin(), Vec3::new(16.0, 0.0, 0.0));
+    assert!(
+        app.world()
+            .get::<ChunkMeshFaces>(layer_entity)
+            .unwrap()
+            .as_slice()
+            .iter()
+            .all(|face| face.x() == 0)
+    );
+
+    // The transient payload survives its insertion frame, then is dropped once extraction had a
+    // chance to observe it.
+    app.update();
+    assert!(app.world().get::<ChunkMeshFaces>(layer_entity).is_none());
+
+    {
+        let world = app.world_mut();
+        let mut entity = world.entity_mut(chunk_entity);
+        {
+            let mut chunk = entity.get_mut::<Chunk>().unwrap();
+            chunk.set_cell_xyz(0, 0, 0, ChunkCell::EMPTY);
+            chunk.set_cell_xyz(1, 0, 0, block_cell(BlockType::Stone));
+        }
+        entity.get_mut::<Transform>().unwrap().translation = Vec3::new(32.0, 0.0, 0.0);
+        entity.insert(ChunkNeedsMeshRebuild);
+    }
+
+    app.update();
+
+    let children = app.world().get::<Children>(chunk_entity).unwrap();
+    assert_eq!(children.len(), 1);
+    assert_eq!(
+        children[0], layer_entity,
+        "material layer entity should be reused"
+    );
+    let layer = app.world().get::<ChunkMeshLayer>(layer_entity).unwrap();
+    assert_eq!(layer.face_count(), 6);
+    assert_eq!(layer.origin(), Vec3::new(32.0, 0.0, 0.0));
+    assert!(
+        app.world()
+            .get::<ChunkMeshFaces>(layer_entity)
+            .unwrap()
+            .as_slice()
+            .iter()
+            .all(|face| face.x() == 1),
+        "same-count topology changes must still replace the face payload"
+    );
+}
+
+#[test]
+fn mesh_rebuild_despawns_material_layers_no_longer_emitted() {
+    let mut app = mesh_rebuild_app();
+
+    let mut chunk = Chunk::default();
+    chunk.set_cell_xyz(0, 0, 0, block_cell(BlockType::Stone));
+    chunk.set_cell_xyz(1, 0, 0, block_cell(BlockType::Glass));
+    let chunk_entity = app
+        .world_mut()
+        .spawn((ChunkPosition(IVec3::ZERO), chunk, ChunkNeedsMeshRebuild))
+        .id();
+
+    app.update();
+
+    let original_children = app
+        .world()
+        .get::<Children>(chunk_entity)
+        .unwrap()
+        .iter()
+        .collect::<Vec<_>>();
+    assert_eq!(original_children.len(), 2);
+
+    {
+        let world = app.world_mut();
+        let mut entity = world.entity_mut(chunk_entity);
+        entity
+            .get_mut::<Chunk>()
+            .unwrap()
+            .set_cell_xyz(1, 0, 0, ChunkCell::EMPTY);
+        entity.insert(ChunkNeedsMeshRebuild);
+    }
+
+    app.update();
+
+    let remaining_children = app
+        .world()
+        .get::<Children>(chunk_entity)
+        .unwrap()
+        .iter()
+        .collect::<Vec<_>>();
+    assert_eq!(remaining_children.len(), 1);
+    let removed = *original_children
+        .iter()
+        .find(|entity| !remaining_children.contains(entity))
+        .unwrap();
+    assert!(app.world().get::<ChunkMeshLayer>(removed).is_none());
+}
+
+#[test]
+fn light_upload_marker_updates_existing_chunk_mesh_light() {
     let mut app = light_upload_app();
 
     let mut chunk_light = ChunkLight::default();
@@ -379,21 +498,13 @@ fn light_upload_marker_updates_existing_vertex_pulling_light() {
     let world = app.world();
     assert!(world.get::<ChunkNeedsLightUpload>(chunk_entity).is_none());
     assert!(world.get::<ChunkNeedsMeshRebuild>(chunk_entity).is_none());
-    let child_light = world.get::<VertexPullingLight>(child_entity).unwrap();
-    let sibling_child_light = world
-        .get::<VertexPullingLight>(sibling_child_entity)
-        .unwrap();
-    assert_eq!(
-        child_light.light_data.as_ref(),
-        expected_light_data.as_ref()
-    );
-    assert_eq!(
-        sibling_child_light.light_data.as_ref(),
-        expected_light_data.as_ref()
-    );
+    let child_light = world.get::<ChunkMeshLight>(child_entity).unwrap();
+    let sibling_child_light = world.get::<ChunkMeshLight>(sibling_child_entity).unwrap();
+    assert_eq!(child_light.data(), expected_light_data.as_ref());
+    assert_eq!(sibling_child_light.data(), expected_light_data.as_ref());
     assert!(Arc::ptr_eq(
-        &child_light.light_data,
-        &sibling_child_light.light_data
+        &child_light.shared_data(),
+        &sibling_child_light.shared_data()
     ));
 }
 
@@ -410,7 +521,7 @@ fn mesh_rebuild_new_layer_child_reuses_existing_light_data() {
         .world_mut()
         .spawn((ChunkPosition(IVec3::ZERO), chunk, ChunkNeedsMeshRebuild))
         .id();
-    spawn_vp_layer_child(
+    spawn_mesh_layer_child(
         app.world_mut(),
         chunk_entity,
         BlockMaterialLayer::Opaque,
@@ -424,8 +535,8 @@ fn mesh_rebuild_new_layer_child_reuses_existing_light_data() {
     let children = world.get::<Children>(chunk_entity).unwrap();
     let child_light_data = children
         .iter()
-        .filter_map(|child| world.get::<VertexPullingLight>(child))
-        .map(|light| light.light_data.clone())
+        .filter_map(|child| world.get::<ChunkMeshLight>(child))
+        .map(ChunkMeshLight::shared_data)
         .collect::<Vec<_>>();
 
     assert_eq!(child_light_data.len(), 2);
@@ -436,80 +547,18 @@ fn mesh_rebuild_new_layer_child_reuses_existing_light_data() {
     );
 }
 
-#[derive(Resource, Default)]
-struct VpTextureStateChangeCount(usize);
-
-fn count_vp_texture_state_changes(
-    texture_state: Option<Res<VpTextureState>>,
-    mut changes: ResMut<VpTextureStateChangeCount>,
-) {
-    if texture_state.is_some_and(|state| state.is_changed()) {
-        changes.0 += 1;
-    }
-}
-
-#[test]
-fn vp_texture_state_only_changes_with_texture_resources() {
-    let mut app = App::new();
-    app.add_plugins(MinimalPlugins)
-        .insert_resource(test_texture_map())
-        .insert_resource(crate::textures::BlockTextures::test_handles())
-        .init_resource::<VpTextureStateChangeCount>()
-        .add_systems(
-            Update,
-            (super::sync_vp_texture_state, count_vp_texture_state_changes).chain(),
-        );
-
-    app.update();
-
-    let entry_count = RENDER_ID_COUNT * super::DIRECTION_COUNT;
-    let texture_state = app.world().resource::<VpTextureState>();
-    assert_eq!(texture_state.texture_layers.len(), entry_count);
-    assert_eq!(texture_state.tint_colors.len(), entry_count);
-    assert_eq!(texture_state.emission_factors.len(), entry_count);
-    assert_eq!(app.world().resource::<VpTextureStateChangeCount>().0, 1);
-
-    app.update();
-    assert_eq!(
-        app.world().resource::<VpTextureStateChangeCount>().0,
-        1,
-        "unrelated frames must not recreate the texture state"
-    );
-
-    let stone_rid = render_id_for_block(BlockType::Stone);
-    let stone_path = crate::block::render_id_to_texture_path(stone_rid, Direction::Up);
-    app.world_mut()
-        .resource_mut::<crate::block::BlockTextureMap>()
-        .0
-        .insert(
-            stone_path.to_owned(),
-            crate::block::BlockTextureAnimation::new(crate::block::BlockTextureLayer::new(123), 4),
-        );
-
-    app.update();
-
-    let up_index = Direction::iter()
-        .position(|side| side == Direction::Up)
-        .unwrap();
-    let stone_up_index = stone_rid as usize * super::DIRECTION_COUNT + up_index;
-    assert_eq!(
-        app.world().resource::<VpTextureState>().texture_layers[stone_up_index],
-        super::pack_texture_layer(crate::block::BlockTextureLayer::new(123), 4)
-    );
-    assert_eq!(app.world().resource::<VpTextureStateChangeCount>().0, 2);
-}
-
 fn mesh_rebuild_app() -> App {
     let mut app = App::new();
     app.add_plugins(MinimalPlugins)
-        .add_systems(Update, super::rebuild_chunk_meshes);
+        .add_systems(Update, super::systems::rebuild_chunk_meshes)
+        .add_systems(PostUpdate, super::systems::drop_uploaded_faces);
     app
 }
 
 fn light_upload_app() -> App {
     let mut app = App::new();
     app.add_plugins(MinimalPlugins)
-        .add_systems(Update, super::upload_chunk_lights);
+        .add_systems(Update, super::systems::upload_chunk_lights);
     app
 }
 
@@ -519,46 +568,44 @@ fn empty_light_data() -> Arc<[u32]> {
 
 fn spawn_light_child(world: &mut World, chunk_entity: Entity, light_data: Arc<[u32]>) -> Entity {
     world
-        .spawn((ChildOf(chunk_entity), VertexPullingLight { light_data }))
+        .spawn((ChildOf(chunk_entity), ChunkMeshLight::new(light_data)))
         .id()
 }
 
-fn spawn_vp_layer_child(
+fn spawn_mesh_layer_child(
     world: &mut World,
     chunk_entity: Entity,
     layer: BlockMaterialLayer,
     light_data: Arc<[u32]>,
 ) -> Entity {
+    let faces = ChunkMeshFaces::new(Vec::new());
+    let mesh_layer = ChunkMeshLayer::new(layer, Vec3::ZERO, &faces);
     world
         .spawn((
             ChildOf(chunk_entity),
-            super::ChunkMaterialLayerMarker(layer),
-            super::VertexPullingMesh {
-                face_count: 0,
-                material_layer: layer,
-                chunk_origin: Vec3::ZERO,
-            },
-            VertexPullingLight { light_data },
+            mesh_layer,
+            faces,
+            ChunkMeshLight::new(light_data),
         ))
         .id()
 }
 
 #[test]
-fn vertex_pulling_descriptors_match_reference_face_counts() {
+fn reference_mesher_matches_independent_face_counts() {
     for case in test_chunks() {
         let blocks = ChunkMeshBlocks::from_chunk(&case.chunk);
         let reference_faces: Vec<_> = reference_face_counts(&blocks);
-        let descriptor_faces: Vec<_> = vertex_pulling::build_descriptors(&blocks)
+        let meshed_faces: Vec<_> = build_reference(&blocks)
             .into_iter()
-            .map(|(layer, descriptors)| (layer, descriptors.len()))
+            .map(|layer| (layer.material_layer, layer.faces.len()))
             .collect();
 
-        assert_eq!(reference_faces, descriptor_faces, "{}", case.name);
+        assert_eq!(reference_faces, meshed_faces, "{}", case.name);
     }
 }
 
 #[test]
-fn water_top_descriptor_packs_flow_direction() {
+fn water_top_face_packs_flow_direction() {
     let mut chunk = Chunk::default();
     chunk.set_cell_xyz(8, 1, 8, ChunkCell::water_source());
     chunk.set_cell_xyz(9, 1, 8, ChunkCell::water_flow(7));
@@ -567,42 +614,42 @@ fn water_top_descriptor_packs_flow_direction() {
     chunk.set_cell_xyz(8, 1, 9, block_cell(BlockType::Stone));
 
     let blocks = ChunkMeshBlocks::from_chunk(&chunk);
-    let descriptor = vertex_pulling::build_descriptors(&blocks)
+    let face = build_reference(&blocks)
         .into_iter()
-        .flat_map(|(_, descriptors)| descriptors)
-        .find(|desc| {
-            desc.block_type() == WATER_RENDER_ID as u32
-                && desc.x() == 8
-                && desc.y() == 1
-                && desc.z() == 8
-                && desc.face_dir() == Direction::Up as u32
+        .flat_map(|layer| layer.faces)
+        .find(|face| {
+            face.render_id() == WATER_RENDER_ID as u32
+                && face.x() == 8
+                && face.y() == 1
+                && face.z() == 8
+                && face.face_direction() == Direction::Up as u32
         })
         .expect("source water top face should be emitted");
 
-    assert!(descriptor.water_up_flowing());
-    assert_eq!(descriptor.water_flow_code(), 1);
+    assert!(face.water_up_flowing());
+    assert_eq!(face.water_flow_code(), 1);
 }
 
 #[test]
-fn shallow_water_descriptor_marks_zero_height_water_geometry() {
+fn shallow_water_face_marks_zero_height_water_geometry() {
     let mut chunk = Chunk::default();
     chunk.set_cell_xyz(8, 1, 8, ChunkCell::water_flow(1));
 
     let blocks = ChunkMeshBlocks::from_chunk(&chunk);
-    let descriptor = vertex_pulling::build_descriptors(&blocks)
+    let face = build_reference(&blocks)
         .into_iter()
-        .flat_map(|(_, descriptors)| descriptors)
-        .find(|desc| {
-            desc.block_type() == WATER_RENDER_ID as u32
-                && desc.x() == 8
-                && desc.y() == 1
-                && desc.z() == 8
-                && desc.face_dir() == Direction::Up as u32
+        .flat_map(|layer| layer.faces)
+        .find(|face| {
+            face.render_id() == WATER_RENDER_ID as u32
+                && face.x() == 8
+                && face.y() == 1
+                && face.z() == 8
+                && face.face_direction() == Direction::Up as u32
         })
         .expect("shallow water top face should be emitted");
 
-    assert_eq!(descriptor.info >> 16, 0);
-    assert!(descriptor.has_water_geometry());
+    assert_eq!(face.water_corner_heights(), (0, 0, 0, 0));
+    assert!(face.has_water_geometry());
 }
 
 #[test]
@@ -624,7 +671,7 @@ fn water_corner_heights_use_vanilla_ninths_and_full_columns() {
 }
 
 #[test]
-fn water_side_descriptors_use_precomputed_below_corner_pairs() {
+fn water_side_faces_use_precomputed_below_corner_pairs() {
     let mut chunk = Chunk::default();
     chunk.set_cell_xyz(8, 1, 8, ChunkCell::water_flow(3));
     chunk.set_cell_xyz(7, 1, 8, ChunkCell::water_flow(7));
@@ -635,43 +682,37 @@ fn water_side_descriptors_use_precomputed_below_corner_pairs() {
     let below_index = padded_chunk_index(9, 2, 9);
     let below_level = blocks.get_fluid_level(below_index);
     let (h00, h10, h01, h11) = water_corner_heights(below_level, &blocks, below_index);
-    let descriptors = vertex_pulling::build_descriptors(&blocks)
+    let faces = build_reference(&blocks)
         .into_iter()
-        .flat_map(|(_, descriptors)| descriptors)
-        .filter(|desc| {
-            desc.block_type() == WATER_RENDER_ID as u32
-                && desc.x() == 8
-                && desc.y() == 2
-                && desc.z() == 8
+        .flat_map(|layer| layer.faces)
+        .filter(|face| {
+            face.render_id() == WATER_RENDER_ID as u32
+                && face.x() == 8
+                && face.y() == 2
+                && face.z() == 8
         })
         .collect::<Vec<_>>();
 
     for side_index in [0usize, 1, 4, 5] {
-        let descriptor = descriptors
+        let face = faces
             .iter()
-            .find(|desc| desc.face_dir() == side_index as u32)
+            .find(|face| face.face_direction() == side_index as u32)
             .expect("exposed water side should be emitted");
         let expected = water_below_pair(side_index, h00, h10, h01, h11);
-        let actual = (
-            (descriptor.packed >> 6) & 0xF,
-            (descriptor.packed >> 10) & 0xF,
-        );
+        let actual = face.water_below();
         assert_eq!(actual, expected, "side {side_index}");
     }
 }
 
 #[test]
-fn hybrid_mesher_matches_scalar_water_flow_descriptors() {
+fn production_mesher_matches_reference_water_flow_faces() {
     let mut chunk = Chunk::default();
     chunk.set_cell_xyz(8, 1, 8, ChunkCell::water_source());
     chunk.set_cell_xyz(9, 1, 8, ChunkCell::water_flow(7));
     chunk.set_cell_xyz(8, 1, 9, ChunkCell::water_flow(6));
 
     let blocks = ChunkMeshBlocks::from_chunk(&chunk);
-    assert_eq!(
-        vertex_pulling::build_descriptors(&blocks),
-        binary::build_descriptors_hybrid(&blocks)
-    );
+    assert_eq!(build_reference(&blocks), build(&blocks));
 }
 
 // ---------------------------------------------------------------------------
@@ -728,24 +769,6 @@ fn reference_face_counts(blocks: &ChunkMeshBlocks) -> Vec<(BlockMaterialLayer, u
             (c > 0).then_some((layer, c))
         })
         .collect()
-}
-
-fn test_texture_map() -> crate::block::BlockTextureMap {
-    use crate::block::{RENDER_ID_COUNT, render_id_to_texture_path};
-    let mut paths = HashMap::default();
-    for rid in 1..RENDER_ID_COUNT as u16 {
-        for side in Direction::iter() {
-            let path = render_id_to_texture_path(rid, side).to_owned();
-            let next_layer = paths.len() as u32;
-            paths
-                .entry(path)
-                .or_insert(crate::block::BlockTextureAnimation::new(
-                    crate::block::BlockTextureLayer::new(next_layer),
-                    1,
-                ));
-        }
-    }
-    crate::block::BlockTextureMap(paths)
 }
 
 struct TestChunkCase {

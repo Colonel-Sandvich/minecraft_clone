@@ -12,7 +12,7 @@ use minecraft_clone::{
     block::BlockType,
     world::chunk::{
         CHUNK_SIZE, Chunk, ChunkCell,
-        mesh::{ChunkMeshBlocks, binary},
+        mesh::{ChunkMeshBlocks, mesher::build_binary},
     },
 };
 use std::hint::black_box;
@@ -26,14 +26,14 @@ fn main() {
 
     // Prime the cache
     for _ in 0..10_000 {
-        black_box(binary::build_descriptors_binary(&blocks));
+        black_box(build_binary(&blocks));
     }
 
     // Timed loop
     let iterations = 200_000;
     let start = std::time::Instant::now();
     for _ in 0..iterations {
-        black_box(binary::build_descriptors_binary(&blocks));
+        black_box(build_binary(&blocks));
     }
     let elapsed = start.elapsed();
 

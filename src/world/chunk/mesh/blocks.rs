@@ -2,12 +2,37 @@ use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
 
 use crate::block::{BLOCK_FLAG_FULL_CUBE, BLOCK_FLAG_RENDERED};
+use crate::quad::Direction;
 
-use super::{
-    CHUNK_ISIZE, CHUNK_SIZE, CHUNK_VOLUME, Chunk, PADDED_CHUNK_VOLUME, padded_chunk_index,
+use super::super::{CHUNK_ISIZE, CHUNK_SIZE, CHUNK_VOLUME, Chunk, chunk_neighbor_offsets};
+
+pub(crate) const PADDED_CHUNK_SIZE: usize = CHUNK_SIZE + 2;
+pub(crate) const PADDED_CHUNK_VOLUME: usize =
+    PADDED_CHUNK_SIZE * PADDED_CHUNK_SIZE * PADDED_CHUNK_SIZE;
+pub(crate) const PADDED_CHUNK_LAYER_SIZE: usize = PADDED_CHUNK_SIZE * PADDED_CHUNK_SIZE;
+pub(crate) const DIRECTION_COUNT: usize = Direction::COUNT;
+pub(crate) const DIRECTION_INDEX_OFFSETS: [isize; DIRECTION_COUNT] = [
+    -1,
+    1,
+    -(PADDED_CHUNK_LAYER_SIZE as isize),
+    PADDED_CHUNK_LAYER_SIZE as isize,
+    -(PADDED_CHUNK_SIZE as isize),
+    PADDED_CHUNK_SIZE as isize,
+];
+
+const _: () = {
+    assert!(Direction::Left.index() == 0);
+    assert!(Direction::Right.index() == 1);
+    assert!(Direction::Down.index() == 2);
+    assert!(Direction::Up.index() == 3);
+    assert!(Direction::Forward.index() == 4);
+    assert!(Direction::Backward.index() == 5);
 };
 
-use super::super::chunk_neighbor_offsets;
+#[inline(always)]
+pub(crate) const fn padded_chunk_index(x: usize, y: usize, z: usize) -> usize {
+    x + PADDED_CHUNK_SIZE * (z + PADDED_CHUNK_SIZE * y)
+}
 
 pub struct ChunkMeshBlocks {
     pub(crate) blocks: Box<[u16; PADDED_CHUNK_VOLUME]>,

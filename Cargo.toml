@@ -36,7 +36,7 @@ name = "light_propagation"
 harness = false
 
 [[bench]]
-name = "vertex_pulling"
+name = "chunk_meshing"
 harness = false
 
 [[bench]]

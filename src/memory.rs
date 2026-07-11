@@ -4,9 +4,7 @@ use avian3d::prelude::Collider;
 use bevy::prelude::*;
 
 use crate::{
-    world::chunk::mesh::vertex_pulling::{
-        ChunkMeshDescriptors, FaceDescriptor, VertexPullingLight, VertexPullingMesh,
-    },
+    world::chunk::mesh::{ChunkMeshFaces, ChunkMeshLayer, ChunkMeshLight, PackedFace},
     world::{
         chunk::{Chunk, ChunkBlockCounts, ChunkHeightmap, ChunkLight, ChunkPosition},
         dimension::{
@@ -203,9 +201,9 @@ fn update_memory_snapshot(
     mut snapshot: ResMut<GameMemorySnapshot>,
     chunk_q: Query<(&ChunkBlockCounts, Option<&Children>), With<Chunk>>,
     collider_q: Query<&Collider>,
-    mesh_q: Query<&VertexPullingMesh>,
-    mesh_desc_q: Query<&ChunkMeshDescriptors>,
-    light_q: Query<&VertexPullingLight>,
+    mesh_q: Query<&ChunkMeshLayer>,
+    mesh_faces_q: Query<&ChunkMeshFaces>,
+    mesh_light_q: Query<&ChunkMeshLight>,
     dimensions_q: Query<&Dimension>,
     metadata: Res<WorldMetadata>,
     view_distance: Res<ViewDistance>,
@@ -255,19 +253,19 @@ fn update_memory_snapshot(
 
     let mesh_entities = mesh_q
         .contiguous_iter()
-        .expect("VertexPullingMesh memory scan should stay dense")
-        .map(<[VertexPullingMesh]>::len)
+        .expect("ChunkMeshLayer memory scan should stay dense")
+        .map(<[ChunkMeshLayer]>::len)
         .sum();
 
     let mut face_descriptors = 0usize;
     let mut face_descriptor_capacity = 0usize;
-    for descriptors in mesh_desc_q
+    for face_components in mesh_faces_q
         .contiguous_iter()
-        .expect("ChunkMeshDescriptors memory scan should stay dense")
+        .expect("ChunkMeshFaces memory scan should stay dense")
     {
-        for desc in descriptors {
-            face_descriptors += desc.0.len();
-            face_descriptor_capacity += desc.0.capacity();
+        for faces in face_components {
+            face_descriptors += faces.len();
+            face_descriptor_capacity += faces.capacity();
         }
     }
 
@@ -275,15 +273,15 @@ fn update_memory_snapshot(
     let mut unique_padded_light_words = 0usize;
     let mut gpu_padded_light_words_estimate = 0usize;
     let mut unique_padded_lights = HashSet::new();
-    for lights in light_q
+    for lights in mesh_light_q
         .contiguous_iter()
-        .expect("VertexPullingLight memory scan should stay dense")
+        .expect("ChunkMeshLight memory scan should stay dense")
     {
         padded_light_components += lights.len();
         for light in lights {
-            gpu_padded_light_words_estimate += light.light_data.len();
+            gpu_padded_light_words_estimate += light.data().len();
             if unique_padded_lights.insert(light.data_key()) {
-                unique_padded_light_words += light.light_data.len();
+                unique_padded_light_words += light.data().len();
             }
         }
     }
@@ -366,15 +364,15 @@ fn compute_memory_bytes(input: MemoryByteInputs) -> GameMemoryBytes {
         .saturating_add(bytes_for::<ChunkPosition>(input.chunk_count))
         .saturating_add(bytes_for::<Transform>(input.chunk_count))
         .saturating_add(bytes_for::<Visibility>(input.chunk_count));
-    let main_mesh_descriptor_used = bytes_for::<FaceDescriptor>(input.face_descriptors);
-    let main_mesh_descriptor_capacity = bytes_for::<FaceDescriptor>(input.face_descriptor_capacity);
+    let main_mesh_descriptor_used = bytes_for::<PackedFace>(input.face_descriptors);
+    let main_mesh_descriptor_capacity = bytes_for::<PackedFace>(input.face_descriptor_capacity);
     let main_mesh_light_data = input
         .unique_padded_light_words
         .saturating_mul(size_of::<u32>());
-    let light_component_bytes = bytes_for::<VertexPullingLight>(input.padded_light_components);
+    let light_component_bytes = bytes_for::<ChunkMeshLight>(input.padded_light_components);
     let main_mesh_components =
-        bytes_for::<VertexPullingMesh>(input.mesh_entities).saturating_add(light_component_bytes);
-    let render_world_mesh_mirror = bytes_for::<VertexPullingMesh>(input.mesh_entities)
+        bytes_for::<ChunkMeshLayer>(input.mesh_entities).saturating_add(light_component_bytes);
+    let render_world_mesh_mirror = bytes_for::<ChunkMeshLayer>(input.mesh_entities)
         .saturating_add(main_mesh_descriptor_used)
         .saturating_add(light_component_bytes);
     let gpu_mesh_buffers_estimate = main_mesh_descriptor_used

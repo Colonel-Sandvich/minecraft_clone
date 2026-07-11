@@ -15,7 +15,7 @@ use minecraft_clone::{
             ChunkLight, ChunkNeedsColliderRebuild, ChunkNeedsLightRebuild, ChunkNeedsLightUpload,
             ChunkNeedsMeshRebuild, ChunkNeedsSave, ChunkPosition, FluidProfile, FluidState,
             light::compute_light_region,
-            mesh::{ChunkMeshBlocks, VertexPullingLight, binary},
+            mesh::{ChunkMeshBlocks, ChunkMeshLight, mesher::build},
         },
         dimension::{Active, Dimension},
         generation::generate_chunk,
@@ -132,11 +132,8 @@ fn mesh_rebuild_iter_system(
     for (chunk_pos, _) in &dirty_chunks_q {
         dirty_chunks += 1;
         let blocks = ChunkMeshBlocks::from_chunks(chunk_pos.0, &chunks_by_pos);
-        let layers = binary::build_descriptors_hybrid(&blocks);
-        faces += layers
-            .iter()
-            .map(|(_, descriptors)| descriptors.len())
-            .sum::<usize>();
+        let layers = build(&blocks);
+        faces += layers.iter().map(|layer| layer.faces.len()).sum::<usize>();
         black_box(ChunkLight::build_padded_light_data(
             chunk_pos.0,
             &lights_by_pos,
@@ -188,11 +185,8 @@ fn mesh_rebuild_contiguous_system(
     for (chunk_pos, _) in &dirty_chunks_q {
         dirty_chunks += 1;
         let blocks = ChunkMeshBlocks::from_chunks(chunk_pos.0, &chunks_by_pos);
-        let layers = binary::build_descriptors_hybrid(&blocks);
-        faces += layers
-            .iter()
-            .map(|(_, descriptors)| descriptors.len())
-            .sum::<usize>();
+        let layers = build(&blocks);
+        faces += layers.iter().map(|layer| layer.faces.len()).sum::<usize>();
         black_box(ChunkLight::build_padded_light_data(
             chunk_pos.0,
             &lights_by_pos,
@@ -217,12 +211,7 @@ fn build_light_upload_world(dirty_chunks: usize) -> World {
         let parent = entity.id();
 
         for _ in 0..LIGHT_UPLOAD_CHILDREN_PER_CHUNK {
-            world.spawn((
-                ChildOf(parent),
-                VertexPullingLight {
-                    light_data: light_data.clone(),
-                },
-            ));
+            world.spawn((ChildOf(parent), ChunkMeshLight::new(light_data.clone())));
         }
     }
 
@@ -260,7 +249,7 @@ fn light_upload_map_iter_system(
     light_q: Query<(&ChunkPosition, &ChunkLight)>,
     dirty_chunks_q: Query<(&ChunkPosition, Entity), With<ChunkNeedsLightUpload>>,
     children_q: Query<&Children>,
-    mut vp_light_q: Query<&mut VertexPullingLight>,
+    mut mesh_light_q: Query<&mut ChunkMeshLight>,
     mut stats: ResMut<LightUploadBenchStats>,
 ) {
     let lights_by_pos = build_lights_by_pos_iter(&light_q);
@@ -268,7 +257,7 @@ fn light_upload_map_iter_system(
         &mut commands,
         &dirty_chunks_q,
         &children_q,
-        &mut vp_light_q,
+        &mut mesh_light_q,
         &lights_by_pos,
         &mut stats,
     );
@@ -279,7 +268,7 @@ fn light_upload_map_contiguous_system(
     light_q: Query<(&ChunkPosition, &ChunkLight)>,
     dirty_chunks_q: Query<(&ChunkPosition, Entity), With<ChunkNeedsLightUpload>>,
     children_q: Query<&Children>,
-    mut vp_light_q: Query<&mut VertexPullingLight>,
+    mut mesh_light_q: Query<&mut ChunkMeshLight>,
     mut stats: ResMut<LightUploadBenchStats>,
 ) {
     let lights_by_pos = build_lights_by_pos(&light_q);
@@ -287,7 +276,7 @@ fn light_upload_map_contiguous_system(
         &mut commands,
         &dirty_chunks_q,
         &children_q,
-        &mut vp_light_q,
+        &mut mesh_light_q,
         &lights_by_pos,
         &mut stats,
     );
@@ -297,7 +286,7 @@ fn run_light_upload_dirty_loop(
     commands: &mut Commands,
     dirty_chunks_q: &Query<(&ChunkPosition, Entity), With<ChunkNeedsLightUpload>>,
     children_q: &Query<&Children>,
-    vp_light_q: &mut Query<&mut VertexPullingLight>,
+    mesh_light_q: &mut Query<&mut ChunkMeshLight>,
     lights_by_pos: &HashMap<IVec3, &ChunkLight>,
     stats: &mut LightUploadBenchStats,
 ) {
@@ -310,8 +299,8 @@ fn run_light_upload_dirty_loop(
             ChunkLight::build_padded_light_data(chunk_pos.0, lights_by_pos).into();
         if let Ok(children) = children_q.get(chunk_entity) {
             for child in children {
-                if let Ok(mut light) = vp_light_q.get_mut(*child) {
-                    light.light_data = light_data.clone();
+                if let Ok(mut light) = mesh_light_q.get_mut(*child) {
+                    light.replace(light_data.clone());
                     child_updates += 1;
                 }
             }
@@ -331,7 +320,7 @@ fn light_upload_dirty_iter_system(
     light_q: Query<(&ChunkPosition, &ChunkLight)>,
     dirty_chunks_q: Query<(&ChunkPosition, Entity), With<ChunkNeedsLightUpload>>,
     children_q: Query<&Children>,
-    mut vp_light_q: Query<&mut VertexPullingLight>,
+    mut mesh_light_q: Query<&mut ChunkMeshLight>,
     mut stats: ResMut<LightUploadBenchStats>,
 ) {
     let lights_by_pos = build_lights_by_pos(&light_q);
@@ -339,7 +328,7 @@ fn light_upload_dirty_iter_system(
         &mut commands,
         &dirty_chunks_q,
         &children_q,
-        &mut vp_light_q,
+        &mut mesh_light_q,
         &lights_by_pos,
         &mut stats,
     );
@@ -350,7 +339,7 @@ fn light_upload_dirty_contiguous_system(
     light_q: Query<(&ChunkPosition, &ChunkLight)>,
     dirty_chunks_q: Query<(&ChunkPosition, Entity), With<ChunkNeedsLightUpload>>,
     children_q: Query<&Children>,
-    mut vp_light_q: Query<&mut VertexPullingLight>,
+    mut mesh_light_q: Query<&mut ChunkMeshLight>,
     mut stats: ResMut<LightUploadBenchStats>,
 ) {
     let lights_by_pos = build_lights_by_pos(&light_q);
@@ -367,8 +356,8 @@ fn light_upload_dirty_contiguous_system(
                 ChunkLight::build_padded_light_data(chunk_pos.0, &lights_by_pos).into();
             if let Ok(children) = children_q.get(chunk_entity) {
                 for child in children {
-                    if let Ok(mut light) = vp_light_q.get_mut(*child) {
-                        light.light_data = light_data.clone();
+                    if let Ok(mut light) = mesh_light_q.get_mut(*child) {
+                        light.replace(light_data.clone());
                         child_updates += 1;
                     }
                 }

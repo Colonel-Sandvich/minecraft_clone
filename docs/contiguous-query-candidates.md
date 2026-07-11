@@ -25,7 +25,7 @@ This tracks Bevy 0.19 `contiguous_iter` / `contiguous_iter_mut` candidates. Do o
 
 ## Candidate 1: Meshing Setup Position-Map Scans
 
-Production target: `src/world/chunk/mesh/mod.rs`
+Production target: `src/world/chunk/mesh/systems.rs`
 
 Current loops:
 
@@ -79,11 +79,11 @@ Current loop: `dirty_chunks_q.par_iter().for_each_init(...)`
 
 Hypothesis: for small dirty batches, a serial contiguous path could beat `par_iter` overhead. For large dirty batches, `par_iter` should still win because descriptor generation is CPU-heavy.
 
-Benchmark command: `cargo bench --bench vertex_pulling`
+Benchmark command: `cargo bench --bench chunk_meshing`
 
-Benchmark added: `vp_dirty_mesh_loop` in `benches/vertex_pulling.rs`.
+Benchmark added: `chunk_mesh_dirty_loop` in `benches/chunk_meshing.rs`.
 
-Results using realistic-terrain chunks, `ChunkMeshBlocks::from_chunks`, and `binary::build_descriptors_hybrid`:
+Results using realistic-terrain chunks, `ChunkMeshBlocks::from_chunks`, and `mesher::build`:
 
 - 1 dirty chunk: serial contiguous 14.762-15.046 us, parallel 16.915-17.289 us
 - 4 dirty chunks: serial contiguous 60.894-61.273 us, parallel 23.293-24.770 us
@@ -122,9 +122,9 @@ Production change: `upload_chunk_lights` now builds `lights_by_pos` with `contig
 
 System-level revalidation command: `cargo bench --bench ecs_queries -- ecs_system_light_upload_map_build`
 
-System-level revalidation benchmark: `ecs_system_light_upload_map_build` in `benches/ecs_queries.rs`. This runs the real dirty light upload loop, including padded-light construction, child traversal, mutable `VertexPullingLight` writes, and command removal. Only the light-map build changes between variants.
+System-level revalidation benchmark: `ecs_system_light_upload_map_build` in `benches/ecs_queries.rs`. This runs the real dirty light upload loop, including padded-light construction, child traversal, mutable `ChunkMeshLight` writes, and command removal. Only the light-map build changes between variants.
 
-Revalidated results with 4096 chunk-light entities and 3 vertex-pulling children per dirty chunk:
+Revalidated results with 4096 chunk-light entities and 3 chunk mesh layer children per dirty chunk:
 
 - 1 dirty chunk: iter 241.13-331.28 us, contiguous 169.57-176.10 us
 - 4 dirty chunks: iter 189.09-206.63 us, contiguous 184.23-190.49 us
@@ -145,7 +145,7 @@ Dirty loop decision: deferred to Candidate 3b. It includes padded-light construc
 
 ## Candidate 3b: Light Upload Dirty Loop
 
-Production target: `src/world/chunk/mesh/mod.rs`
+Production target: `src/world/chunk/mesh/systems.rs`
 
 Current loop: `for (chunk_pos, chunk_entity) in &dirty_chunks_q { ... }`
 
@@ -155,9 +155,9 @@ Benchmark command: `cargo bench --bench ecs_queries`
 
 Benchmark added: `ecs_query_light_upload_dirty_loop` in `benches/ecs_queries.rs`.
 
-The benchmark keeps the already-applied contiguous light-map build identical in both variants and compares only the dirty upload loop shape. It models padded-light construction, child traversal, and mutable `VertexPullingLight` writes. It does not remove `ChunkNeedsLightUpload`, because repeating archetype mutation would measure marker churn more than the loop shape.
+The benchmark keeps the already-applied contiguous light-map build identical in both variants and compares only the dirty upload loop shape. It models padded-light construction, child traversal, and mutable `ChunkMeshLight` writes. It does not remove `ChunkNeedsLightUpload`, because repeating archetype mutation would measure marker churn more than the loop shape.
 
-Results with 4096 chunk-light entities and 3 vertex-pulling children per dirty chunk:
+Results with 4096 chunk-light entities and 3 chunk mesh layer children per dirty chunk:
 
 - 1 dirty chunk: iter 17.730-18.553 us, contiguous 17.736-18.112 us
 - 4 dirty chunks: iter 24.789-25.110 us, contiguous 24.576-25.045 us
@@ -281,7 +281,7 @@ Production change: none.
 
 ## Candidate 7: Render Extract/Prepare Redesign
 
-Production target: `src/world/chunk/mesh/vertex_pulling.rs`
+Production target: `src/world/chunk/mesh/render/vertex_pulling/prepare.rs`
 
 Current queries use `Changed<T>`/`Ref<T>`, which blocks contiguous iteration because `Changed<T>` is not an archetypal filter.
 
