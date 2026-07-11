@@ -206,7 +206,7 @@ impl ChunkInvalidationPlan {
         self.mark(chunk, effects);
 
         if effects.needs_light_rebuild() {
-            self.record_cell_light_columns(chunk);
+            self.record_light_columns(chunk);
         }
 
         let mut halo = 0;
@@ -239,13 +239,13 @@ impl ChunkInvalidationPlan {
         }
 
         self.mark(chunk, ChunkInvalidationEffects::from_bits(own));
-        self.light_columns.insert(chunk.into());
+        self.record_light_columns(chunk);
         self.record_topology_neighbor_fanout(chunk);
     }
 
     pub fn record_chunk_unloaded(&mut self, chunk: ChunkPos) {
         self.chunks.remove(&chunk);
-        self.light_columns.insert(chunk.into());
+        self.record_light_columns(chunk);
         self.record_topology_neighbor_fanout(chunk);
     }
 
@@ -265,7 +265,7 @@ impl ChunkInvalidationPlan {
         }
     }
 
-    fn record_cell_light_columns(&mut self, chunk: ChunkPos) {
+    fn record_light_columns(&mut self, chunk: ChunkPos) {
         self.light_columns.insert(chunk.into());
         for offset in NeighborOffset::all().filter(|offset| offset.as_ivec3().y == 0) {
             self.light_columns
@@ -313,6 +313,16 @@ mod tests {
 
     fn neighbor(origin: ChunkPos, offset: bevy::math::IVec3) -> ChunkPos {
         origin.offset(NeighborOffset::try_new(offset).unwrap().as_ivec3())
+    }
+
+    fn light_column_neighborhood(origin: ChunkPos) -> HashSet<ChunkColumn> {
+        (-1..=1)
+            .flat_map(|x| {
+                (-1..=1).map(move |z| {
+                    ChunkColumn::new(origin.as_ivec3().x + x, origin.as_ivec3().z + z)
+                })
+            })
+            .collect()
     }
 
     #[test]
@@ -491,8 +501,11 @@ mod tests {
         );
 
         assert_eq!(plan.chunk_count(), 27);
-        assert_eq!(plan.light_column_count(), 1);
-        assert!(plan.light_column_is_dirty(origin.into()));
+        assert_eq!(plan.light_column_count(), 9);
+        assert_eq!(
+            plan.light_columns().collect::<HashSet<_>>(),
+            light_column_neighborhood(origin)
+        );
 
         let own = effects(&plan, origin);
         assert!(own.needs_mesh_rebuild());
@@ -539,7 +552,11 @@ mod tests {
 
         assert_eq!(plan.effects_for(origin), None);
         assert_eq!(plan.chunk_count(), 26);
-        assert!(plan.light_column_is_dirty(origin.into()));
+        assert_eq!(plan.light_column_count(), 9);
+        assert_eq!(
+            plan.light_columns().collect::<HashSet<_>>(),
+            light_column_neighborhood(origin)
+        );
         for offset in NeighborOffset::all() {
             let adjacent = effects(&plan, origin.offset(offset.as_ivec3()));
             assert!(adjacent.needs_mesh_rebuild());
@@ -577,11 +594,7 @@ mod tests {
         assert_eq!(plan.light_column_count(), 9);
         assert_eq!(
             plan.light_columns().collect::<HashSet<_>>(),
-            (-1..=1)
-                .flat_map(|x| {
-                    (-1..=1).map(move |z| ChunkColumn::new(lower.as_ivec3().x + x, 5 + z))
-                })
-                .collect::<HashSet<_>>()
+            light_column_neighborhood(lower)
         );
 
         plan.clear();

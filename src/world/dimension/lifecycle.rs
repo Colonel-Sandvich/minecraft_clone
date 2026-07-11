@@ -361,7 +361,7 @@ mod tests {
     }
 
     #[test]
-    fn chunk_load_marks_only_same_column_for_light_rebuild() {
+    fn chunk_load_marks_neighboring_columns_for_light_rebuild() {
         let mut metadata = test_metadata();
         metadata.height_chunks = 2;
         let loaded_pos = IVec3::ZERO;
@@ -403,7 +403,7 @@ mod tests {
         assert!(
             world
                 .get::<ChunkNeedsLightRebuild>(chunks[&horizontal_neighbor])
-                .is_none()
+                .is_some()
         );
     }
 
