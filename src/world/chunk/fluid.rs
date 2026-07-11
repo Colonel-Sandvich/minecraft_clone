@@ -2,7 +2,7 @@ use bevy::prelude::*;
 use std::collections::{HashMap, HashSet};
 
 use super::{
-    CHUNK_VOLUME, Chunk, ChunkBlockCounts, ChunkCell, ChunkHasActiveFluids, ChunkNeedsMeshRebuild,
+    CHUNK_VOLUME, Chunk, ChunkCell, ChunkContentCounts, ChunkNeedsFluidStep, ChunkNeedsMeshRebuild,
     ChunkNeedsSave, ChunkPosition, FluidProfile, WorldBlockPos, chunk_neighbor_offsets,
     fluid_sim::{FluidSnapshot, simulate_fluid_step},
 };
@@ -42,18 +42,13 @@ fn step_chunk_fluids(
     budget: Res<FluidStepBudget>,
     counter: Res<FluidTickCounter>,
     mut param_set: ParamSet<(
-        Query<(
-            Entity,
-            &ChunkPosition,
-            &Chunk,
-            Option<&ChunkHasActiveFluids>,
-        )>,
+        Query<(Entity, &ChunkPosition, &Chunk, Option<&ChunkNeedsFluidStep>)>,
         Query<(
             Entity,
             &ChunkPosition,
             &mut Chunk,
-            &mut ChunkBlockCounts,
-            Option<&ChunkHasActiveFluids>,
+            &mut ChunkContentCounts,
+            Option<&ChunkNeedsFluidStep>,
         )>,
     )>,
 ) {
@@ -75,7 +70,7 @@ fn step_chunk_fluids(
             if chunk.has_fluids() {
                 active_source_chunks.push(pos.0);
             } else {
-                commands.entity(entity).remove::<ChunkHasActiveFluids>();
+                commands.entity(entity).remove::<ChunkNeedsFluidStep>();
             }
         }
     }
@@ -102,7 +97,7 @@ fn step_chunk_fluids(
     let step = simulate_fluid_step(&snapshot, &source_chunks, FluidProfile::WATER);
     if step.is_empty() {
         for entity in processed_entities {
-            commands.entity(entity).remove::<ChunkHasActiveFluids>();
+            commands.entity(entity).remove::<ChunkNeedsFluidStep>();
         }
         return;
     }
@@ -135,15 +130,15 @@ fn step_chunk_fluids(
         let result = chunk.fluid_step_result_from(&old_cells);
         let mut entity_commands = commands.entity(entity);
         if result.changed {
-            *counts = chunk.compute_block_counts();
+            *counts = chunk.compute_content_counts();
             entity_commands.insert((ChunkNeedsSave, ChunkNeedsMeshRebuild));
             if chunk.has_fluids() {
-                entity_commands.insert(ChunkHasActiveFluids);
+                entity_commands.insert(ChunkNeedsFluidStep);
             } else {
-                entity_commands.remove::<ChunkHasActiveFluids>();
+                entity_commands.remove::<ChunkNeedsFluidStep>();
             }
         } else {
-            entity_commands.remove::<ChunkHasActiveFluids>();
+            entity_commands.remove::<ChunkNeedsFluidStep>();
         }
 
         if result.boundary_changed {
@@ -157,7 +152,7 @@ fn step_chunk_fluids(
     }
 
     for entity in processed_entities.difference(&changed_entities) {
-        commands.entity(*entity).remove::<ChunkHasActiveFluids>();
+        commands.entity(*entity).remove::<ChunkNeedsFluidStep>();
     }
 
     for entity in neighbor_mesh_dirty {
@@ -168,12 +163,7 @@ fn step_chunk_fluids(
 fn expand_with_fluid_neighbors(
     active_source_chunks: Vec<IVec3>,
     chunks_by_pos: &HashMap<IVec3, Entity>,
-    chunks_q: &Query<(
-        Entity,
-        &ChunkPosition,
-        &Chunk,
-        Option<&ChunkHasActiveFluids>,
-    )>,
+    chunks_q: &Query<(Entity, &ChunkPosition, &Chunk, Option<&ChunkNeedsFluidStep>)>,
 ) -> Vec<IVec3> {
     let mut selected = active_source_chunks.clone();
     let mut seen = selected.iter().copied().collect::<HashSet<_>>();
@@ -198,12 +188,7 @@ fn expand_with_fluid_neighbors(
 fn snapshot_chunks_for_sources(
     source_chunks: &[IVec3],
     chunks_by_pos: &HashMap<IVec3, Entity>,
-    chunks_q: &Query<(
-        Entity,
-        &ChunkPosition,
-        &Chunk,
-        Option<&ChunkHasActiveFluids>,
-    )>,
+    chunks_q: &Query<(Entity, &ChunkPosition, &Chunk, Option<&ChunkNeedsFluidStep>)>,
 ) -> HashMap<IVec3, Box<[ChunkCell; CHUNK_VOLUME]>> {
     let mut snapshot_positions = HashSet::new();
     for chunk in source_chunks {
@@ -241,14 +226,14 @@ mod tests {
         let mut chunk = Chunk::default();
         chunk.set_cell(uvec3(8, 1, 8), ChunkCell::water_source());
         chunk.set_block(uvec3(8, 0, 8), BlockType::Stone);
-        let counts = chunk.compute_block_counts();
+        let counts = chunk.compute_content_counts();
         let entity = app
             .world_mut()
             .spawn((
                 ChunkPosition(IVec3::ZERO),
                 chunk,
                 counts,
-                ChunkHasActiveFluids,
+                ChunkNeedsFluidStep,
             ))
             .id();
 
@@ -257,7 +242,7 @@ mod tests {
         let world = app.world();
         assert!(world.get::<ChunkNeedsSave>(entity).is_some());
         assert!(world.get::<ChunkNeedsMeshRebuild>(entity).is_some());
-        assert_eq!(world.get::<ChunkBlockCounts>(entity).unwrap().rendered, 6);
+        assert_eq!(world.get::<ChunkContentCounts>(entity).unwrap().rendered, 6);
     }
 
     #[test]
@@ -413,7 +398,7 @@ mod tests {
         if let Some((pos, cell)) = water {
             chunk.set_cell(pos, cell);
         }
-        let counts = chunk.compute_block_counts();
+        let counts = chunk.compute_content_counts();
         let has_active_fluids = water.is_some();
         let entity = app
             .world_mut()
@@ -422,7 +407,7 @@ mod tests {
         if has_active_fluids {
             app.world_mut()
                 .entity_mut(entity)
-                .insert(ChunkHasActiveFluids);
+                .insert(ChunkNeedsFluidStep);
         }
         entity
     }
@@ -430,15 +415,15 @@ mod tests {
     fn set_cell(app: &mut App, chunk_pos: IVec3, cell_pos: UVec3, cell: ChunkCell) {
         let world = app.world_mut();
         let mut query =
-            world.query::<(Entity, &ChunkPosition, &mut Chunk, &mut ChunkBlockCounts)>();
+            world.query::<(Entity, &ChunkPosition, &mut Chunk, &mut ChunkContentCounts)>();
         let (entity, _, mut chunk, mut counts) = query
             .iter_mut(world)
             .find(|(_, pos, _, _)| pos.0 == chunk_pos)
             .expect("chunk should exist");
         chunk.set_cell(cell_pos, cell);
-        *counts = chunk.compute_block_counts();
+        *counts = chunk.compute_content_counts();
         drop(chunk);
-        world.entity_mut(entity).insert(ChunkHasActiveFluids);
+        world.entity_mut(entity).insert(ChunkNeedsFluidStep);
     }
 
     fn get_cell(app: &mut App, chunk_pos: IVec3, cell_pos: UVec3) -> ChunkCell {
@@ -458,7 +443,7 @@ mod tests {
             .filter_map(|(entity, chunk)| chunk.has_fluids().then_some(entity))
             .collect();
         for entity in entities {
-            world.entity_mut(entity).insert(ChunkHasActiveFluids);
+            world.entity_mut(entity).insert(ChunkNeedsFluidStep);
         }
     }
 
@@ -480,7 +465,7 @@ mod tests {
     }
 
     fn active_fluid_chunk_positions(world: &mut World) -> Vec<IVec3> {
-        let mut query = world.query_filtered::<&ChunkPosition, With<ChunkHasActiveFluids>>();
+        let mut query = world.query_filtered::<&ChunkPosition, With<ChunkNeedsFluidStep>>();
         query.iter(world).map(|pos| pos.0).collect()
     }
 }

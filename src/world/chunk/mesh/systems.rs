@@ -6,8 +6,8 @@ use crate::block::BlockMaterialLayer;
 use crate::textures::TextureState;
 
 use super::super::{
-    CHUNK_SIZE, Chunk, ChunkLight, ChunkNeedsLightUpload, ChunkNeedsMeshRebuild, ChunkPerfCounters,
-    ChunkPosition,
+    CHUNK_SIZE, Chunk, ChunkLight, ChunkNeedsMeshRebuild, ChunkNeedsRenderLightUpload,
+    ChunkPerfCounters, ChunkPosition,
 };
 use super::{
     ChunkMeshBlocks, ChunkMeshFaces, ChunkMeshLayer, ChunkMeshLight,
@@ -224,7 +224,7 @@ fn light_data_for_new_mesh_child(
 pub(super) fn upload_chunk_lights(
     mut commands: Commands,
     mut perf: Option<ResMut<ChunkPerfCounters>>,
-    dirty_chunks_q: Query<(&ChunkPosition, Entity), With<ChunkNeedsLightUpload>>,
+    dirty_chunks_q: Query<(&ChunkPosition, Entity), With<ChunkNeedsRenderLightUpload>>,
     light_q: Query<(&ChunkPosition, &ChunkLight)>,
     children_q: Query<&Children>,
     mut mesh_light_q: Query<&mut ChunkMeshLight>,
@@ -261,7 +261,7 @@ pub(super) fn upload_chunk_lights(
 
         commands
             .entity(chunk_entity)
-            .remove::<ChunkNeedsLightUpload>();
+            .remove::<ChunkNeedsRenderLightUpload>();
     }
 
     if let Some(perf) = perf.as_deref_mut() {

@@ -3,7 +3,7 @@ use bevy::prelude::*;
 use crate::block::{BlockStateId, BlockType, HotBlockStateMeta};
 
 use super::{
-    components::{ChunkBlockCounts, meta_counts},
+    components::ChunkContentCounts,
     coords::{CHUNK_ISIZE, CHUNK_SIZE, CHUNK_VOLUME, chunk_linear_index},
     state::{AIR_BLOCK_STATE_ID, BLOCK_REGISTRY, BlockRegistry, CellDelta, ChunkCell, FluidState},
 };
@@ -342,13 +342,13 @@ impl Chunk {
         Some(self.set_empty(pos))
     }
 
-    pub fn compute_block_counts(&self) -> ChunkBlockCounts {
-        let mut counts = ChunkBlockCounts::default();
+    pub fn compute_content_counts(&self) -> ChunkContentCounts {
+        let mut counts = ChunkContentCounts::default();
         for index in 0..CHUNK_VOLUME {
-            let (rendered, full_cubes, translucent) = meta_counts(self.hot_meta_linear(index));
-            counts.rendered += rendered;
-            counts.full_cubes += full_cubes;
-            counts.translucent += translucent;
+            counts.apply_delta(CellDelta {
+                old: ChunkCell::EMPTY,
+                new: self.cell_linear(index),
+            });
         }
         counts
     }

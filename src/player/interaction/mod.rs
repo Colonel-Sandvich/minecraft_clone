@@ -10,9 +10,9 @@ use crate::{
     world::{
         ACTOR_LAYER, WORLD_LAYER,
         chunk::{
-            Chunk, ChunkBlockCounts, ChunkBlockPos, ChunkCell, ChunkHasActiveFluids,
-            ChunkNeedsColliderRebuild, ChunkNeedsLightRebuild, ChunkNeedsMeshRebuild,
-            ChunkNeedsSave, WorldBlockPos, chunk_neighbor_offsets_for_block,
+            Chunk, ChunkBlockPos, ChunkCell, ChunkContentCounts, ChunkNeedsColliderRebuild,
+            ChunkNeedsFluidStep, ChunkNeedsLightRebuild, ChunkNeedsMeshRebuild, ChunkNeedsSave,
+            WorldBlockPos, chunk_neighbor_offsets_for_block,
         },
         dimension::Dimension,
     },
@@ -161,7 +161,7 @@ fn apply_block_interaction_requests(
     mut requests: MessageReader<BlockInteractionRequest>,
     dimension: Single<&Dimension>,
     mut chunks: Query<&mut Chunk>,
-    mut meta_q: Query<&mut ChunkBlockCounts>,
+    mut meta_q: Query<&mut ChunkContentCounts>,
     mut block_updates: MessageWriter<BlockUpdateMessage>,
     mut hotbar: ResMut<Hotbar>,
     spatial_query: SpatialQuery,
@@ -253,11 +253,11 @@ fn apply_block_interaction_requests(
 
 fn mark_chunk_fluid_activity(commands: &mut Commands, chunk_entity: Entity, chunk: &Chunk) {
     if chunk.has_fluids() {
-        commands.entity(chunk_entity).insert(ChunkHasActiveFluids);
+        commands.entity(chunk_entity).insert(ChunkNeedsFluidStep);
     } else {
         commands
             .entity(chunk_entity)
-            .remove::<ChunkHasActiveFluids>();
+            .remove::<ChunkNeedsFluidStep>();
     }
 }
 
@@ -273,7 +273,7 @@ fn mark_boundary_neighbor_meshes_dirty(
 
         commands
             .entity(entity)
-            .insert((ChunkNeedsMeshRebuild, ChunkHasActiveFluids));
+            .insert((ChunkNeedsMeshRebuild, ChunkNeedsFluidStep));
     }
 }
 

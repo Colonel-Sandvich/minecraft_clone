@@ -12,7 +12,7 @@
 use bevy::{prelude::*, window::PresentMode};
 use minecraft_clone::{
     AppPlugin,
-    world::chunk::{Chunk, ChunkNeedsLightUpload},
+    world::chunk::{Chunk, ChunkNeedsRenderLightUpload},
 };
 
 #[derive(Resource)]
@@ -33,7 +33,7 @@ fn force_light_uploads(
     chunks: Query<Entity, With<Chunk>>,
 ) {
     for entity in chunks.iter().take(stress.chunks_per_tick) {
-        commands.entity(entity).insert(ChunkNeedsLightUpload);
+        commands.entity(entity).insert(ChunkNeedsRenderLightUpload);
     }
 }
 

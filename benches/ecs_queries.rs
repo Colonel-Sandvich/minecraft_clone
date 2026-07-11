@@ -11,9 +11,10 @@ use minecraft_clone::{
     world::{
         WORLD_COLLISION_LAYERS, WorldMetadata,
         chunk::{
-            CHUNK_SIZE, Chunk, ChunkBlockCounts, ChunkCell, ChunkHasActiveFluids, ChunkHeightmap,
-            ChunkLight, ChunkNeedsColliderRebuild, ChunkNeedsLightRebuild, ChunkNeedsLightUpload,
-            ChunkNeedsMeshRebuild, ChunkNeedsSave, ChunkPosition, FluidProfile, FluidState,
+            CHUNK_SIZE, Chunk, ChunkCell, ChunkContentCounts, ChunkHeightmap, ChunkLight,
+            ChunkNeedsColliderRebuild, ChunkNeedsFluidStep, ChunkNeedsLightRebuild,
+            ChunkNeedsMeshRebuild, ChunkNeedsRenderLightUpload, ChunkNeedsSave, ChunkPosition,
+            FluidProfile, FluidState,
             light::compute_light_region,
             mesh::{ChunkMeshBlocks, ChunkMeshLight, mesher::build},
         },
@@ -206,7 +207,7 @@ fn build_light_upload_world(dirty_chunks: usize) -> World {
         let pos = chunk_pos(index);
         let mut entity = world.spawn((ChunkPosition(pos), ChunkLight::default()));
         if index < dirty_chunks {
-            entity.insert(ChunkNeedsLightUpload);
+            entity.insert(ChunkNeedsRenderLightUpload);
         }
         let parent = entity.id();
 
@@ -247,7 +248,7 @@ fn build_lights_by_pos_iter<'w>(
 fn light_upload_map_iter_system(
     mut commands: Commands,
     light_q: Query<(&ChunkPosition, &ChunkLight)>,
-    dirty_chunks_q: Query<(&ChunkPosition, Entity), With<ChunkNeedsLightUpload>>,
+    dirty_chunks_q: Query<(&ChunkPosition, Entity), With<ChunkNeedsRenderLightUpload>>,
     children_q: Query<&Children>,
     mut mesh_light_q: Query<&mut ChunkMeshLight>,
     mut stats: ResMut<LightUploadBenchStats>,
@@ -266,7 +267,7 @@ fn light_upload_map_iter_system(
 fn light_upload_map_contiguous_system(
     mut commands: Commands,
     light_q: Query<(&ChunkPosition, &ChunkLight)>,
-    dirty_chunks_q: Query<(&ChunkPosition, Entity), With<ChunkNeedsLightUpload>>,
+    dirty_chunks_q: Query<(&ChunkPosition, Entity), With<ChunkNeedsRenderLightUpload>>,
     children_q: Query<&Children>,
     mut mesh_light_q: Query<&mut ChunkMeshLight>,
     mut stats: ResMut<LightUploadBenchStats>,
@@ -284,7 +285,7 @@ fn light_upload_map_contiguous_system(
 
 fn run_light_upload_dirty_loop(
     commands: &mut Commands,
-    dirty_chunks_q: &Query<(&ChunkPosition, Entity), With<ChunkNeedsLightUpload>>,
+    dirty_chunks_q: &Query<(&ChunkPosition, Entity), With<ChunkNeedsRenderLightUpload>>,
     children_q: &Query<&Children>,
     mesh_light_q: &mut Query<&mut ChunkMeshLight>,
     lights_by_pos: &HashMap<IVec3, &ChunkLight>,
@@ -308,7 +309,7 @@ fn run_light_upload_dirty_loop(
 
         commands
             .entity(chunk_entity)
-            .remove::<ChunkNeedsLightUpload>();
+            .remove::<ChunkNeedsRenderLightUpload>();
     }
 
     stats.dirty_chunks = dirty_chunks;
@@ -318,7 +319,7 @@ fn run_light_upload_dirty_loop(
 fn light_upload_dirty_iter_system(
     mut commands: Commands,
     light_q: Query<(&ChunkPosition, &ChunkLight)>,
-    dirty_chunks_q: Query<(&ChunkPosition, Entity), With<ChunkNeedsLightUpload>>,
+    dirty_chunks_q: Query<(&ChunkPosition, Entity), With<ChunkNeedsRenderLightUpload>>,
     children_q: Query<&Children>,
     mut mesh_light_q: Query<&mut ChunkMeshLight>,
     mut stats: ResMut<LightUploadBenchStats>,
@@ -337,7 +338,7 @@ fn light_upload_dirty_iter_system(
 fn light_upload_dirty_contiguous_system(
     mut commands: Commands,
     light_q: Query<(&ChunkPosition, &ChunkLight)>,
-    dirty_chunks_q: Query<(&ChunkPosition, Entity), With<ChunkNeedsLightUpload>>,
+    dirty_chunks_q: Query<(&ChunkPosition, Entity), With<ChunkNeedsRenderLightUpload>>,
     children_q: Query<&Children>,
     mut mesh_light_q: Query<&mut ChunkMeshLight>,
     mut stats: ResMut<LightUploadBenchStats>,
@@ -365,7 +366,7 @@ fn light_upload_dirty_contiguous_system(
 
             commands
                 .entity(chunk_entity)
-                .remove::<ChunkNeedsLightUpload>();
+                .remove::<ChunkNeedsRenderLightUpload>();
         }
     }
 
@@ -454,10 +455,10 @@ fn build_fluid_world(active_chunks: usize) -> World {
             let pos = ivec3(x, 0, z);
             let active = active_positions.contains(&pos);
             let chunk = fluid_bench_chunk(active);
-            let counts = chunk.compute_block_counts();
+            let counts = chunk.compute_content_counts();
             let mut entity = world.spawn((ChunkPosition(pos), chunk, counts));
             if active {
-                entity.insert(ChunkHasActiveFluids);
+                entity.insert(ChunkNeedsFluidStep);
             }
         }
     }
@@ -484,7 +485,7 @@ fn build_collider_world(dirty_chunks: usize) -> World {
     let mut world = World::new();
     world.insert_resource(ColliderBenchStats::default());
     let chunk = collider_bench_chunk();
-    let counts = chunk.compute_block_counts();
+    let counts = chunk.compute_content_counts();
 
     for index in 0..COLLIDER_WORLD_CHUNKS {
         let mut entity = world.spawn((chunk.clone(), counts));
@@ -503,8 +504,8 @@ fn build_collider_world(dirty_chunks: usize) -> World {
     world
 }
 
-fn collider_voxels(chunk: &Chunk, meta: &ChunkBlockCounts) -> Vec<IVec3> {
-    let mut voxels = Vec::with_capacity(meta.rendered as usize);
+fn collider_voxels(chunk: &Chunk, meta: &ChunkContentCounts) -> Vec<IVec3> {
+    let mut voxels = Vec::with_capacity(meta.solid as usize);
     for (cell, (x, y, z)) in chunk.iter() {
         if cell.is_solid() {
             voxels.push(IVec3::new(x as i32, y as i32, z as i32));
@@ -517,10 +518,10 @@ fn collider_voxels(chunk: &Chunk, meta: &ChunkBlockCounts) -> Vec<IVec3> {
 fn rebuild_one_collider(
     commands: &mut Commands,
     chunk: &Chunk,
-    meta: &ChunkBlockCounts,
+    meta: &ChunkContentCounts,
     chunk_entity: Entity,
 ) -> usize {
-    if meta.rendered == 0 {
+    if meta.solid == 0 {
         return 0;
     }
 
@@ -542,7 +543,7 @@ fn rebuild_one_collider(
 fn collider_rebuild_iter_system(
     mut commands: Commands,
     chunks_q: Query<
-        (&Chunk, &ChunkBlockCounts, Entity, Option<&Children>),
+        (&Chunk, &ChunkContentCounts, Entity, Option<&Children>),
         With<ChunkNeedsColliderRebuild>,
     >,
     collider_q: Query<Entity, With<Collider>>,
@@ -570,7 +571,7 @@ fn collider_rebuild_iter_system(
 
 fn collider_rebuild_contiguous_system(
     mut commands: Commands,
-    chunks_q: Query<(&Chunk, &ChunkBlockCounts, Entity), With<ChunkNeedsColliderRebuild>>,
+    chunks_q: Query<(&Chunk, &ChunkContentCounts, Entity), With<ChunkNeedsColliderRebuild>>,
     children_q: Query<&Children>,
     collider_q: Query<Entity, With<Collider>>,
     mut stats: ResMut<ColliderBenchStats>,
@@ -889,7 +890,7 @@ fn rebuild_chunk_light_rest(
         if light_changed {
             commands
                 .entity(*entity)
-                .insert((new_light, ChunkNeedsLightUpload));
+                .insert((new_light, ChunkNeedsRenderLightUpload));
             changed_light_positions.insert(pos);
         }
         if heightmap_changed {
@@ -903,7 +904,7 @@ fn rebuild_chunk_light_rest(
             let Some(entity) = loaded_chunks.get(&(*pos + offset)) else {
                 continue;
             };
-            commands.entity(*entity).insert(ChunkNeedsLightUpload);
+            commands.entity(*entity).insert(ChunkNeedsRenderLightUpload);
         }
     }
 
@@ -917,10 +918,10 @@ fn step_active_fluids(
     budget: usize,
     param_set: &mut ParamSet<(
         Query<
-            (Entity, &ChunkPosition, &mut Chunk, &mut ChunkBlockCounts),
-            With<ChunkHasActiveFluids>,
+            (Entity, &ChunkPosition, &mut Chunk, &mut ChunkContentCounts),
+            With<ChunkNeedsFluidStep>,
         >,
-        Query<(Entity, &ChunkPosition, &mut Chunk, &mut ChunkBlockCounts)>,
+        Query<(Entity, &ChunkPosition, &mut Chunk, &mut ChunkContentCounts)>,
     )>,
 ) -> (usize, Vec<BoundaryFlow>) {
     let mut boundary_flows = Vec::new();
@@ -934,15 +935,15 @@ fn step_active_fluids(
         let profile = FluidProfile::WATER;
         let result = chunk.step_fluids(&profile);
         if !result.changed {
-            commands.entity(entity).remove::<ChunkHasActiveFluids>();
+            commands.entity(entity).remove::<ChunkNeedsFluidStep>();
             continue;
         }
 
-        *counts = chunk.compute_block_counts();
+        *counts = chunk.compute_content_counts();
         let mut entity_commands = commands.entity(entity);
         entity_commands.insert((ChunkNeedsSave, ChunkNeedsMeshRebuild));
         if !chunk.has_fluids() {
-            entity_commands.remove::<ChunkHasActiveFluids>();
+            entity_commands.remove::<ChunkNeedsFluidStep>();
         }
 
         if result.boundary_changed {
@@ -957,7 +958,7 @@ fn apply_boundary_flow(
     commands: &mut Commands,
     entity: Entity,
     chunk: &mut Chunk,
-    counts: &mut ChunkBlockCounts,
+    counts: &mut ChunkContentCounts,
     flow: BoundaryFlow,
 ) {
     let cell = chunk.cell_xyz(flow.x, flow.y, flow.z);
@@ -967,9 +968,9 @@ fn apply_boundary_flow(
             .is_none_or(|f| !f.is_source() && flow.fluid.level() > f.level())
     {
         chunk.set_cell_xyz(flow.x, flow.y, flow.z, ChunkCell::fluid(flow.fluid));
-        *counts = chunk.compute_block_counts();
+        *counts = chunk.compute_content_counts();
         commands.entity(entity).insert((
-            ChunkHasActiveFluids,
+            ChunkNeedsFluidStep,
             ChunkNeedsSave,
             ChunkNeedsMeshRebuild,
         ));
@@ -982,10 +983,10 @@ fn fluid_boundary_scan_system(
     mut stats: ResMut<FluidBenchStats>,
     mut param_set: ParamSet<(
         Query<
-            (Entity, &ChunkPosition, &mut Chunk, &mut ChunkBlockCounts),
-            With<ChunkHasActiveFluids>,
+            (Entity, &ChunkPosition, &mut Chunk, &mut ChunkContentCounts),
+            With<ChunkNeedsFluidStep>,
         >,
-        Query<(Entity, &ChunkPosition, &mut Chunk, &mut ChunkBlockCounts)>,
+        Query<(Entity, &ChunkPosition, &mut Chunk, &mut ChunkContentCounts)>,
     )>,
 ) {
     let (stepped, boundary_flows) = step_active_fluids(&mut commands, budget.0, &mut param_set);
@@ -1010,10 +1011,10 @@ fn fluid_boundary_lookup_system(
     mut stats: ResMut<FluidBenchStats>,
     mut param_set: ParamSet<(
         Query<
-            (Entity, &ChunkPosition, &mut Chunk, &mut ChunkBlockCounts),
-            With<ChunkHasActiveFluids>,
+            (Entity, &ChunkPosition, &mut Chunk, &mut ChunkContentCounts),
+            With<ChunkNeedsFluidStep>,
         >,
-        Query<(Entity, &ChunkPosition, &mut Chunk, &mut ChunkBlockCounts)>,
+        Query<(Entity, &ChunkPosition, &mut Chunk, &mut ChunkContentCounts)>,
     )>,
 ) {
     let (stepped, boundary_flows) = step_active_fluids(&mut commands, budget.0, &mut param_set);

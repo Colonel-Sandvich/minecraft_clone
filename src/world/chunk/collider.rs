@@ -1,4 +1,4 @@
-use super::{Chunk, ChunkBlockCounts, ChunkNeedsColliderRebuild};
+use super::{Chunk, ChunkContentCounts, ChunkNeedsColliderRebuild};
 use crate::world::WORLD_COLLISION_LAYERS;
 use avian3d::prelude::*;
 use bevy::prelude::*;
@@ -15,13 +15,13 @@ fn insert_one(
     commands: &mut Commands,
     chunk: &Chunk,
     chunk_entity: Entity,
-    meta: &ChunkBlockCounts,
+    meta: &ChunkContentCounts,
 ) {
-    if meta.rendered == 0 {
+    if meta.solid == 0 {
         return;
     }
 
-    let mut voxels = Vec::with_capacity(meta.rendered as usize);
+    let mut voxels = Vec::with_capacity(meta.solid as usize);
     for (cell, (x, y, z)) in chunk.iter() {
         if !cell.is_solid() {
             continue;
@@ -45,7 +45,7 @@ fn insert_one(
 fn rebuild_chunk_colliders(
     mut commands: Commands,
     chunks_q: Query<
-        (&Chunk, &ChunkBlockCounts, Entity, Option<&Children>),
+        (&Chunk, &ChunkContentCounts, Entity, Option<&Children>),
         With<ChunkNeedsColliderRebuild>,
     >,
     collider_q: Query<Entity, With<Collider>>,
@@ -78,7 +78,7 @@ mod tests {
 
         let mut chunk = Chunk::default();
         chunk.set_cell_xyz(0, 0, 0, BlockType::Stone.into());
-        let meta = chunk.compute_block_counts();
+        let meta = chunk.compute_content_counts();
         let chunk_entity = app
             .world_mut()
             .spawn((chunk, meta, ChunkNeedsColliderRebuild))
@@ -109,7 +109,7 @@ mod tests {
         let mut chunk = Chunk::default();
         chunk.set_cell_xyz(0, 0, 0, BlockType::Ice.into());
         chunk.set_cell_xyz(1, 0, 0, ChunkCell::water_source());
-        let meta = chunk.compute_block_counts();
+        let meta = chunk.compute_content_counts();
         let chunk_entity = app
             .world_mut()
             .spawn((chunk, meta, ChunkNeedsColliderRebuild))

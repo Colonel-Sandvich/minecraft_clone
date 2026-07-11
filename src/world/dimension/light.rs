@@ -5,7 +5,7 @@ use bevy::{
 
 use crate::world::{
     chunk::{
-        Chunk, ChunkHeightmap, ChunkLight, ChunkNeedsLightRebuild, ChunkNeedsLightUpload,
+        Chunk, ChunkHeightmap, ChunkLight, ChunkNeedsLightRebuild, ChunkNeedsRenderLightUpload,
         ChunkPerfCounters, ChunkPosition, chunk_neighbor_offsets, light::compute_light_region,
     },
     generation::WorldMetadata,
@@ -118,7 +118,7 @@ pub(crate) fn rebuild_chunk_light(
         if light_changed {
             commands
                 .entity(*entity)
-                .insert((new_light, ChunkNeedsLightUpload));
+                .insert((new_light, ChunkNeedsRenderLightUpload));
             changed_light_positions.insert(pos);
         }
         if heightmap_changed {
@@ -132,7 +132,7 @@ pub(crate) fn rebuild_chunk_light(
             let Some(entity) = loaded_chunks.get(&(pos + offset)) else {
                 continue;
             };
-            commands.entity(*entity).insert(ChunkNeedsLightUpload);
+            commands.entity(*entity).insert(ChunkNeedsRenderLightUpload);
         }
     }
 }
@@ -166,8 +166,8 @@ mod tests {
     use crate::{
         block::BlockType,
         world::chunk::{
-            CHUNK_SIZE, ChunkCell, ChunkNeedsLightRebuild, ChunkNeedsLightUpload,
-            ChunkNeedsMeshRebuild,
+            CHUNK_SIZE, ChunkCell, ChunkNeedsLightRebuild, ChunkNeedsMeshRebuild,
+            ChunkNeedsRenderLightUpload,
         },
     };
 
@@ -278,10 +278,14 @@ mod tests {
         );
         assert!(
             world
-                .get::<ChunkNeedsLightUpload>(neighbor_entity)
+                .get::<ChunkNeedsRenderLightUpload>(neighbor_entity)
                 .is_some()
         );
-        assert!(world.get::<ChunkNeedsLightUpload>(center_entity).is_some());
+        assert!(
+            world
+                .get::<ChunkNeedsRenderLightUpload>(center_entity)
+                .is_some()
+        );
         assert!(world.get::<ChunkNeedsMeshRebuild>(center_entity).is_none());
         assert!(
             world

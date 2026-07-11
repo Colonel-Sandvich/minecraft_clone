@@ -6,7 +6,7 @@ use bevy::prelude::*;
 use crate::{
     world::chunk::mesh::{ChunkMeshFaces, ChunkMeshLayer, ChunkMeshLight, PackedFace},
     world::{
-        chunk::{Chunk, ChunkBlockCounts, ChunkHeightmap, ChunkLight, ChunkPosition},
+        chunk::{Chunk, ChunkContentCounts, ChunkHeightmap, ChunkLight, ChunkPosition},
         dimension::{
             ChunkLoadTasks, ChunkSaveTasks, Dimension, ViewDistance, chunk_positions_in_view,
         },
@@ -199,7 +199,7 @@ fn update_memory_snapshot(
     time: Res<Time>,
     mut timer: ResMut<MemoryTrackingTimer>,
     mut snapshot: ResMut<GameMemorySnapshot>,
-    chunk_q: Query<(&ChunkBlockCounts, Option<&Children>), With<Chunk>>,
+    chunk_q: Query<(&ChunkContentCounts, Option<&Children>), With<Chunk>>,
     collider_q: Query<&Collider>,
     mesh_q: Query<&ChunkMeshLayer>,
     mesh_faces_q: Query<&ChunkMeshFaces>,
@@ -224,7 +224,7 @@ fn update_memory_snapshot(
     let mut collider_shape_bytes = 0usize;
 
     for (counts, children) in &chunk_q {
-        let chunk_solid_blocks = counts.rendered.saturating_sub(counts.translucent) as usize;
+        let chunk_solid_blocks = counts.solid as usize;
         chunk_count += 1;
         rendered_blocks += counts.rendered as usize;
         translucent_blocks += counts.translucent as usize;
@@ -360,7 +360,7 @@ fn compute_memory_bytes(input: MemoryByteInputs) -> GameMemoryBytes {
     let chunk_blocks = bytes_for::<Chunk>(input.chunk_count);
     let chunk_lights = bytes_for::<ChunkLight>(input.chunk_count);
     let chunk_heightmaps = bytes_for::<ChunkHeightmap>(input.chunk_count);
-    let chunk_metadata = bytes_for::<ChunkBlockCounts>(input.chunk_count)
+    let chunk_metadata = bytes_for::<ChunkContentCounts>(input.chunk_count)
         .saturating_add(bytes_for::<ChunkPosition>(input.chunk_count))
         .saturating_add(bytes_for::<Transform>(input.chunk_count))
         .saturating_add(bytes_for::<Visibility>(input.chunk_count));

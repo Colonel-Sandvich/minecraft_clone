@@ -9,8 +9,8 @@ use crate::block::{
 use crate::quad::Direction;
 use crate::world::chunk::mesh::mesher::{build, build_reference};
 use crate::world::chunk::{
-    CHUNK_ISIZE, CHUNK_SIZE, Chunk, ChunkCell, ChunkLight, ChunkNeedsLightUpload,
-    ChunkNeedsMeshRebuild, ChunkPosition,
+    CHUNK_ISIZE, CHUNK_SIZE, Chunk, ChunkCell, ChunkLight, ChunkNeedsMeshRebuild,
+    ChunkNeedsRenderLightUpload, ChunkPosition,
 };
 
 use super::{
@@ -487,7 +487,7 @@ fn light_upload_marker_updates_existing_chunk_mesh_light() {
             ChunkPosition(IVec3::ZERO),
             Chunk::default(),
             chunk_light,
-            ChunkNeedsLightUpload,
+            ChunkNeedsRenderLightUpload,
         ))
         .id();
     let child_entity = spawn_light_child(app.world_mut(), chunk_entity, empty_light_data());
@@ -496,7 +496,11 @@ fn light_upload_marker_updates_existing_chunk_mesh_light() {
     app.update();
 
     let world = app.world();
-    assert!(world.get::<ChunkNeedsLightUpload>(chunk_entity).is_none());
+    assert!(
+        world
+            .get::<ChunkNeedsRenderLightUpload>(chunk_entity)
+            .is_none()
+    );
     assert!(world.get::<ChunkNeedsMeshRebuild>(chunk_entity).is_none());
     let child_light = world.get::<ChunkMeshLight>(child_entity).unwrap();
     let sibling_child_light = world.get::<ChunkMeshLight>(sibling_child_entity).unwrap();

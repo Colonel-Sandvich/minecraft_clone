@@ -25,7 +25,7 @@ use crate::{
     textures::BlockTexturePlugin,
     ui::UIPlugin,
     world::chunk::{
-        Chunk, ChunkNeedsLightRebuild, ChunkNeedsLightUpload, ChunkNeedsMeshRebuild,
+        Chunk, ChunkNeedsLightRebuild, ChunkNeedsMeshRebuild, ChunkNeedsRenderLightUpload,
         ChunkPerfCounters, ChunkPosition, mesh::ChunkMeshLayer,
     },
     world::{WorldConfig, WorldMetadata, WorldPlugin, dimension::ViewDistance},
@@ -112,7 +112,10 @@ fn log_frame_perf(
     diagnostics: Res<DiagnosticsStore>,
     chunks: Query<(), With<Chunk>>,
     dirty_mesh_chunks: Query<&ChunkPosition, (With<Chunk>, With<ChunkNeedsMeshRebuild>)>,
-    dirty_light_upload_chunks: Query<&ChunkPosition, (With<Chunk>, With<ChunkNeedsLightUpload>)>,
+    dirty_light_upload_chunks: Query<
+        &ChunkPosition,
+        (With<Chunk>, With<ChunkNeedsRenderLightUpload>),
+    >,
     dirty_light_rebuild_chunks: Query<&ChunkPosition, (With<Chunk>, With<ChunkNeedsLightRebuild>)>,
     chunk_mesh_layers: Query<&ChunkMeshLayer>,
     mut chunk_perf: Option<ResMut<ChunkPerfCounters>>,

@@ -4,9 +4,9 @@ use crate::{
     player::Player,
     world::{
         chunk::{
-            ChunkHasActiveFluids, ChunkNeedsColliderRebuild, ChunkNeedsLightRebuild,
-            ChunkNeedsLightUpload, ChunkNeedsMeshRebuild, ChunkNeedsSave, ChunkPos, ChunkPosition,
-            chunk_neighbor_offsets,
+            ChunkNeedsColliderRebuild, ChunkNeedsFluidStep, ChunkNeedsLightRebuild,
+            ChunkNeedsMeshRebuild, ChunkNeedsRenderLightUpload, ChunkNeedsSave, ChunkPos,
+            ChunkPosition, chunk_neighbor_offsets,
         },
         generation::WorldMetadata,
         loading::{ChunkLoadRequest, load_or_generate_chunk},
@@ -159,8 +159,7 @@ pub(crate) fn finish_chunk_load_tasks(
         };
 
         load_tasks.record_success(pos);
-        let meta = loaded.chunk.compute_block_counts();
-        let has_active_fluids = loaded.chunk.has_fluids();
+        let meta = loaded.chunk.compute_content_counts();
         let chunk_light = loaded.light;
         let heightmap = loaded.heightmap;
 
@@ -176,10 +175,13 @@ pub(crate) fn finish_chunk_load_tasks(
             ChunkNeedsLightRebuild,
         ));
         if meta.rendered > 0 {
-            entity_commands.insert((ChunkNeedsMeshRebuild, ChunkNeedsColliderRebuild));
+            entity_commands.insert(ChunkNeedsMeshRebuild);
         }
-        if has_active_fluids {
-            entity_commands.insert(ChunkHasActiveFluids);
+        if meta.solid > 0 {
+            entity_commands.insert(ChunkNeedsColliderRebuild);
+        }
+        if meta.fluids > 0 {
+            entity_commands.insert(ChunkNeedsFluidStep);
         }
         let chunk_entity = entity_commands.id();
 
@@ -196,8 +198,8 @@ fn mark_loaded_neighbor_meshes_dirty(commands: &mut Commands, dimension: &Dimens
 
         commands.entity(entity).insert((
             ChunkNeedsMeshRebuild,
-            ChunkNeedsLightUpload,
-            ChunkHasActiveFluids,
+            ChunkNeedsRenderLightUpload,
+            ChunkNeedsFluidStep,
         ));
     }
 
@@ -345,7 +347,7 @@ mod tests {
         );
         assert!(
             world
-                .get::<ChunkHasActiveFluids>(chunks[&face_neighbor])
+                .get::<ChunkNeedsFluidStep>(chunks[&face_neighbor])
                 .is_some()
         );
         assert!(
@@ -355,7 +357,7 @@ mod tests {
         );
         assert!(
             world
-                .get::<ChunkHasActiveFluids>(chunks[&diagonal_neighbor])
+                .get::<ChunkNeedsFluidStep>(chunks[&diagonal_neighbor])
                 .is_some()
         );
         assert!(
@@ -365,7 +367,7 @@ mod tests {
         );
         assert!(
             world
-                .get::<ChunkHasActiveFluids>(chunks[&non_neighbor])
+                .get::<ChunkNeedsFluidStep>(chunks[&non_neighbor])
                 .is_none()
         );
     }

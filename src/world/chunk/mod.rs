@@ -19,8 +19,9 @@ use mesh::ChunkMeshPlugin;
 
 pub use codec::ChunkDecodeError;
 pub use components::{
-    ChunkBlockCounts, ChunkHasActiveFluids, ChunkNeedsColliderRebuild, ChunkNeedsLightRebuild,
-    ChunkNeedsLightUpload, ChunkNeedsMeshRebuild, ChunkNeedsSave, ChunkPerfCounters, ChunkPosition,
+    ChunkContentCounts, ChunkNeedsColliderRebuild, ChunkNeedsFluidStep, ChunkNeedsLightRebuild,
+    ChunkNeedsMeshRebuild, ChunkNeedsRenderLightUpload, ChunkNeedsSave, ChunkPerfCounters,
+    ChunkPosition,
 };
 pub use coords::{
     CHUNK_ISIZE, CHUNK_SIZE, CHUNK_VOLUME, ChunkBlockPos, ChunkIndex, ChunkPos,
