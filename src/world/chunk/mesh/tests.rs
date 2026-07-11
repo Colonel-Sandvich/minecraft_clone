@@ -10,8 +10,9 @@ use crate::quad::Direction;
 use crate::world::chunk::mesh::mesher::{build, build_reference};
 use crate::world::chunk::{
     CHUNK_ISIZE, CHUNK_SIZE, Chunk, ChunkCell, ChunkLight, ChunkNeedsMeshRebuild,
-    ChunkNeedsRenderLightUpload, ChunkPosition,
+    ChunkNeedsRenderLightUpload, ChunkPos, ChunkPosition, LocalBlockPos,
 };
+use crate::world::dimension::{Active, Dimension};
 
 use super::{
     ChunkMeshBlocks, ChunkMeshFaces, ChunkMeshLayer, ChunkMeshLight, face_ao_from_indices,
@@ -342,6 +343,7 @@ fn mesh_rebuild_marker_is_removed_after_rebuild() {
             ChunkNeedsMeshRebuild,
         ))
         .id();
+    register_active_chunk(&mut app, ChunkPos::ZERO, chunk_entity);
 
     app.update();
 
@@ -370,6 +372,7 @@ fn mesh_rebuild_reuses_layer_entity_and_uploads_same_count_topology_changes() {
             ChunkNeedsMeshRebuild,
         ))
         .id();
+    register_active_chunk(&mut app, ChunkPos::ZERO, chunk_entity);
 
     app.update();
 
@@ -440,6 +443,7 @@ fn mesh_rebuild_despawns_material_layers_no_longer_emitted() {
             ChunkNeedsMeshRebuild,
         ))
         .id();
+    register_active_chunk(&mut app, ChunkPos::ZERO, chunk_entity);
 
     app.update();
 
@@ -478,15 +482,76 @@ fn mesh_rebuild_despawns_material_layers_no_longer_emitted() {
 }
 
 #[test]
+fn mesh_rebuild_is_scoped_to_active_dimension_with_duplicate_coordinates() {
+    let mut app = mesh_rebuild_app();
+    let active_dimension = app.world().resource::<TestDimension>().0;
+    let foreign_dimension = app.world_mut().spawn(Dimension::default()).id();
+    let center = ChunkPos::ZERO;
+    let right = center.offset(IVec3::X);
+
+    let mut active_center_chunk = Chunk::default();
+    active_center_chunk.set_cell_xyz(15, 0, 0, block_cell(BlockType::Stone));
+    let active_center = app
+        .world_mut()
+        .spawn((
+            ChunkPosition::from(center),
+            active_center_chunk,
+            ChunkNeedsMeshRebuild,
+        ))
+        .id();
+    let active_right = app
+        .world_mut()
+        .spawn((ChunkPosition::from(right), Chunk::default()))
+        .id();
+
+    let mut foreign_center_chunk = Chunk::default();
+    foreign_center_chunk.set_cell_xyz(15, 0, 0, block_cell(BlockType::Stone));
+    let foreign_center = app
+        .world_mut()
+        .spawn((
+            ChunkPosition::from(center),
+            foreign_center_chunk,
+            ChunkNeedsMeshRebuild,
+        ))
+        .id();
+    let mut foreign_right_chunk = Chunk::default();
+    foreign_right_chunk.set_cell_xyz(0, 0, 0, block_cell(BlockType::Stone));
+    let foreign_right = app
+        .world_mut()
+        .spawn((ChunkPosition::from(right), foreign_right_chunk))
+        .id();
+
+    register_dimension_chunk(&mut app, active_dimension, center, active_center);
+    register_dimension_chunk(&mut app, active_dimension, right, active_right);
+    register_dimension_chunk(&mut app, foreign_dimension, center, foreign_center);
+    register_dimension_chunk(&mut app, foreign_dimension, right, foreign_right);
+
+    app.update();
+
+    let world = app.world();
+    assert!(world.get::<ChunkNeedsMeshRebuild>(active_center).is_none());
+    assert!(world.get::<ChunkNeedsMeshRebuild>(foreign_center).is_some());
+    assert!(world.get::<Children>(foreign_center).is_none());
+    let active_layer = world.get::<Children>(active_center).unwrap()[0];
+    assert_eq!(
+        world
+            .get::<ChunkMeshLayer>(active_layer)
+            .unwrap()
+            .face_count(),
+        6
+    );
+}
+
+#[test]
 fn light_upload_marker_updates_existing_chunk_mesh_light() {
     let mut app = light_upload_app();
 
     let mut chunk_light = ChunkLight::default();
-    chunk_light.set_sky_light(uvec3(0, 0, 0), 10);
-    chunk_light.set_block_light(uvec3(0, 0, 0), 15);
-    let expected_light_data = ChunkLight::build_padded_light_data(
-        IVec3::ZERO,
-        &HashMap::from([(IVec3::ZERO, &chunk_light)]),
+    chunk_light.set_sky_light(LocalBlockPos::ZERO, 10);
+    chunk_light.set_block_light(LocalBlockPos::ZERO, 15);
+    let expected_light_data = ChunkMeshLight::build_padded_data(
+        ChunkPos::ZERO,
+        &HashMap::from([(ChunkPos::ZERO, &chunk_light)]),
     );
 
     let chunk_entity = app
@@ -498,6 +563,7 @@ fn light_upload_marker_updates_existing_chunk_mesh_light() {
             ChunkNeedsRenderLightUpload,
         ))
         .id();
+    register_active_chunk(&mut app, ChunkPos::ZERO, chunk_entity);
     let child_entity = spawn_light_child(app.world_mut(), chunk_entity, empty_light_data());
     let sibling_child_entity = spawn_light_child(app.world_mut(), chunk_entity, empty_light_data());
 
@@ -521,6 +587,94 @@ fn light_upload_marker_updates_existing_chunk_mesh_light() {
 }
 
 #[test]
+fn light_upload_is_scoped_to_active_dimension_with_duplicate_coordinates() {
+    let mut app = light_upload_app();
+    let active_dimension = app.world().resource::<TestDimension>().0;
+    let foreign_dimension = app.world_mut().spawn(Dimension::default()).id();
+    let center = ChunkPos::ZERO;
+    let right = center.offset(IVec3::X);
+
+    let active_center_light = ChunkLight::default();
+    let mut active_neighbor_light = ChunkLight::default();
+    active_neighbor_light.set_block_light(LocalBlockPos::ZERO, 3);
+    let expected_active = ChunkMeshLight::build_padded_data(
+        center,
+        &HashMap::from([
+            (center, &active_center_light),
+            (right, &active_neighbor_light),
+        ]),
+    );
+
+    let foreign_center_light = ChunkLight::default();
+    let mut foreign_neighbor_light = ChunkLight::default();
+    foreign_neighbor_light.set_block_light(LocalBlockPos::ZERO, 12);
+    let expected_foreign = ChunkMeshLight::build_padded_data(
+        center,
+        &HashMap::from([
+            (center, &foreign_center_light),
+            (right, &foreign_neighbor_light),
+        ]),
+    );
+    assert_ne!(expected_active, expected_foreign);
+
+    let active_center = app
+        .world_mut()
+        .spawn((
+            ChunkPosition::from(center),
+            active_center_light,
+            ChunkNeedsRenderLightUpload,
+        ))
+        .id();
+    let active_neighbor = app
+        .world_mut()
+        .spawn((ChunkPosition::from(right), active_neighbor_light))
+        .id();
+    let foreign_center = app
+        .world_mut()
+        .spawn((
+            ChunkPosition::from(center),
+            foreign_center_light,
+            ChunkNeedsRenderLightUpload,
+        ))
+        .id();
+    let foreign_neighbor = app
+        .world_mut()
+        .spawn((ChunkPosition::from(right), foreign_neighbor_light))
+        .id();
+
+    register_dimension_chunk(&mut app, active_dimension, center, active_center);
+    register_dimension_chunk(&mut app, active_dimension, right, active_neighbor);
+    register_dimension_chunk(&mut app, foreign_dimension, center, foreign_center);
+    register_dimension_chunk(&mut app, foreign_dimension, right, foreign_neighbor);
+
+    let active_child = spawn_light_child(app.world_mut(), active_center, empty_light_data());
+    let foreign_initial: Arc<[u32]> = Arc::from([0xDEAD_BEEF]);
+    let foreign_child = spawn_light_child(app.world_mut(), foreign_center, foreign_initial.clone());
+
+    app.update();
+
+    let world = app.world();
+    assert!(
+        world
+            .get::<ChunkNeedsRenderLightUpload>(active_center)
+            .is_none()
+    );
+    assert!(
+        world
+            .get::<ChunkNeedsRenderLightUpload>(foreign_center)
+            .is_some()
+    );
+    assert_eq!(
+        world.get::<ChunkMeshLight>(active_child).unwrap().data(),
+        expected_active.as_ref()
+    );
+    assert_eq!(
+        world.get::<ChunkMeshLight>(foreign_child).unwrap().data(),
+        foreign_initial.as_ref()
+    );
+}
+
+#[test]
 fn mesh_rebuild_new_layer_child_reuses_existing_light_data() {
     let mut app = mesh_rebuild_app();
 
@@ -537,6 +691,7 @@ fn mesh_rebuild_new_layer_child_reuses_existing_light_data() {
             ChunkNeedsMeshRebuild,
         ))
         .id();
+    register_active_chunk(&mut app, ChunkPos::ZERO, chunk_entity);
     spawn_mesh_layer_child(
         app.world_mut(),
         chunk_entity,
@@ -563,11 +718,15 @@ fn mesh_rebuild_new_layer_child_reuses_existing_light_data() {
     );
 }
 
+#[derive(Resource)]
+struct TestDimension(Entity);
+
 fn mesh_rebuild_app() -> App {
     let mut app = App::new();
     app.add_plugins(MinimalPlugins)
         .add_systems(Update, super::systems::rebuild_chunk_meshes)
         .add_systems(PostUpdate, super::systems::drop_uploaded_faces);
+    add_active_dimension(&mut app);
     app
 }
 
@@ -575,11 +734,30 @@ fn light_upload_app() -> App {
     let mut app = App::new();
     app.add_plugins(MinimalPlugins)
         .add_systems(Update, super::systems::upload_chunk_lights);
+    add_active_dimension(&mut app);
     app
 }
 
+fn add_active_dimension(app: &mut App) {
+    let dimension = app.world_mut().spawn((Dimension::default(), Active)).id();
+    app.insert_resource(TestDimension(dimension));
+}
+
+fn register_active_chunk(app: &mut App, position: ChunkPos, chunk: Entity) {
+    let dimension = app.world().resource::<TestDimension>().0;
+    register_dimension_chunk(app, dimension, position, chunk);
+}
+
+fn register_dimension_chunk(app: &mut App, dimension: Entity, position: ChunkPos, chunk: Entity) {
+    app.world_mut()
+        .entity_mut(dimension)
+        .get_mut::<Dimension>()
+        .unwrap()
+        .register_chunk(position, chunk);
+}
+
 fn empty_light_data() -> Arc<[u32]> {
-    ChunkLight::build_padded_light_data(IVec3::ZERO, &HashMap::default()).into()
+    ChunkMeshLight::build_padded_data(ChunkPos::ZERO, &HashMap::default()).into()
 }
 
 fn spawn_light_child(world: &mut World, chunk_entity: Entity, light_data: Arc<[u32]>) -> Entity {

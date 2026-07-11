@@ -9,8 +9,10 @@ use crate::{
     memory::GameMemorySnapshot,
     player::Player,
     player::cam::MouseCam,
-    world::chunk::{CHUNK_ISIZE, ChunkLight, ChunkPos, ChunkPosition, WorldBlockPos},
-    world::dimension::ViewDistance,
+    world::chunk::{
+        CHUNK_ISIZE, ChunkBlockPos, ChunkLight, ChunkPos, ChunkPosition, WorldBlockPos,
+    },
+    world::dimension::{Active, Dimension, ViewDistance},
 };
 
 pub struct DebugPlugin;
@@ -99,8 +101,8 @@ fn update_debug_text(
     cam_q: Single<(&Transform, &GlobalTransform), (With<MouseCam>, Without<Player>)>,
     view_distance: Res<ViewDistance>,
     memory: Option<Res<GameMemorySnapshot>>,
-    chunk_count: Query<(), With<crate::world::chunk::Chunk>>,
-    chunk_lights: Query<(&ChunkPosition, &ChunkLight)>,
+    active_dimension: Option<Single<&Dimension, With<Active>>>,
+    chunk_lights: Query<&ChunkLight>,
     mut text: Single<&mut Text, With<DebugOverlay>>,
 ) {
     if !visible.0 {
@@ -120,19 +122,21 @@ fn update_debug_text(
     let (cam_transform, cam_global) = *cam_q;
     let light_world = cam_global.translation().floor().as_ivec3() + IVec3::NEG_Y;
     let light_address = WorldBlockPos::from_ivec3(light_world).split();
-    let light_map: HashMap<IVec3, &ChunkLight> = chunk_lights
-        .iter()
-        .map(|(p, l)| (p.as_ivec3(), l))
-        .collect();
-    let current_light = light_map
-        .get(&light_address.chunk().as_ivec3())
-        .map(|l| l.packed_light(light_address.local().as_uvec3()))
+    let current_light = active_dimension
+        .as_ref()
+        .and_then(|dimension| {
+            packed_light_at(dimension, light_address, |entity| {
+                chunk_lights.get(entity).ok()
+            })
+        })
         .unwrap_or(0xF0);
     let current_sky = current_light >> 4;
     let current_block = current_light & 0x0F;
 
     let facing = facing_dir(cam_transform);
-    let loaded = chunk_count.iter().count();
+    let loaded = active_dimension
+        .as_ref()
+        .map_or(0, |dimension| dimension.loaded_chunk_count());
     let memory = memory
         .as_deref()
         .map(|memory| format!("\n\nMemory:\n{}", memory.format_for_debug()))
@@ -212,7 +216,7 @@ fn toggle_light_overlay(
 const LIGHT_LABEL_RADIUS: i32 = 4;
 
 #[derive(Component)]
-struct LightLabelPos(IVec3);
+struct LightLabelPos(WorldBlockPos);
 
 #[derive(Component)]
 struct LightLabelParent;
@@ -223,7 +227,8 @@ fn manage_light_labels(
     parent: Single<Entity, With<LightLabelParent>>,
     labels: Query<(Entity, &LightLabelPos)>,
     cam_q: Single<&GlobalTransform, With<MouseCam>>,
-    chunk_lights: Query<(&ChunkPosition, &ChunkLight)>,
+    active_dimension: Option<Single<&Dimension, With<Active>>>,
+    chunk_lights: Query<&ChunkLight>,
 ) {
     if !overlay.0 {
         for (entity, _) in &labels {
@@ -232,23 +237,23 @@ fn manage_light_labels(
         return;
     }
 
-    let center = cam_q.translation().floor().as_ivec3() + IVec3::NEG_Y;
+    let center = WorldBlockPos::from_translation(cam_q.translation()).offset(IVec3::NEG_Y);
 
-    let light_map: HashMap<IVec3, &ChunkLight> = chunk_lights
+    let existing: Vec<(Entity, WorldBlockPos)> = labels
         .iter()
-        .map(|(p, l)| (p.as_ivec3(), l))
+        .map(|(entity, position)| (entity, position.0))
         .collect();
 
-    let existing: Vec<(Entity, IVec3)> = labels.iter().map(|(e, p)| (e, p.0)).collect();
-
-    let mut needed: HashMap<IVec3, String> = HashMap::new();
+    let mut needed: HashMap<WorldBlockPos, String> = HashMap::new();
     for dx in -LIGHT_LABEL_RADIUS..=LIGHT_LABEL_RADIUS {
         for dz in -LIGHT_LABEL_RADIUS..=LIGHT_LABEL_RADIUS {
-            let world = center + IVec3::new(dx, 0, dz);
-            let address = WorldBlockPos::from_ivec3(world).split();
-            let light = light_map
-                .get(&address.chunk().as_ivec3())
-                .map(|l| l.packed_light(address.local().as_uvec3()))
+            let world = center.offset(IVec3::new(dx, 0, dz));
+            let address = world.split();
+            let light = active_dimension
+                .as_ref()
+                .and_then(|dimension| {
+                    packed_light_at(dimension, address, |entity| chunk_lights.get(entity).ok())
+                })
                 .unwrap_or(0xF0);
             let sky = light >> 4;
             let block = light & 0x0F;
@@ -299,7 +304,7 @@ fn update_light_label_positions(
     let (camera, cam_transform) = *camera_q;
 
     for (pos, mut node) in &mut labels {
-        let world = pos.0.as_vec3() + Vec3::splat(0.5);
+        let world = pos.0.as_ivec3().as_vec3() + Vec3::splat(0.5);
         let screen = match camera.world_to_viewport(cam_transform, world) {
             Ok(vp) => vp,
             Err(_) => Vec2::new(-9999.0, -9999.0),
@@ -314,6 +319,7 @@ fn draw_chunk_borders(
     borders: Res<ChunkBordersVisible>,
     mut gizmos: Gizmos,
     player_q: Single<&Transform, With<Player>>,
+    active_dimension: Option<Single<&Dimension, With<Active>>>,
     chunks: Query<&ChunkPosition>,
     view_distance: Res<ViewDistance>,
 ) {
@@ -327,8 +333,17 @@ fn draw_chunk_borders(
     let s = CHUNK_ISIZE as f32;
     let color = Color::srgba(0.0, 1.0, 0.0, 0.8);
 
-    for chunk_pos in &chunks {
-        let pos = chunk_pos.as_ivec3();
+    let Some(dimension) = active_dimension else {
+        return;
+    };
+    for (position, entity) in dimension.iter_chunks() {
+        let Ok(actual_position) = chunks.get(entity) else {
+            continue;
+        };
+        if actual_position.chunk_pos() != position {
+            continue;
+        }
+        let pos = position.as_ivec3();
         let dx = (pos.x - player_chunk.x).abs();
         let dz = (pos.z - player_chunk.z).abs();
         if dx > vd || dz > vd {
@@ -352,5 +367,45 @@ fn draw_chunk_borders(
         gizmos.line(o + x, o + x + y, color);
         gizmos.line(o + z, o + z + y, color);
         gizmos.line(o + x + z, o + x + z + y, color);
+    }
+}
+
+fn packed_light_at<'a>(
+    dimension: &Dimension,
+    address: ChunkBlockPos,
+    light_for_entity: impl FnOnce(Entity) -> Option<&'a ChunkLight>,
+) -> Option<u8> {
+    let entity = dimension.chunk_entity(address.chunk())?;
+    light_for_entity(entity).map(|light| light.packed_light(address.local()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::world::chunk::LocalBlockPos;
+
+    #[test]
+    fn debug_light_lookup_uses_the_selected_dimension_registry() {
+        let mut world = World::new();
+        let active_entity = world.spawn_empty().id();
+        let foreign_entity = world.spawn_empty().id();
+        let position = ChunkPos::new(-4, 2, 9);
+        let local = LocalBlockPos::new(3, 5, 7);
+        let address = position.block(local);
+
+        let mut active_light = ChunkLight::default();
+        active_light.set_block_light(local, 3);
+        let mut foreign_light = ChunkLight::default();
+        foreign_light.set_block_light(local, 12);
+
+        let mut dimension = Dimension::default();
+        dimension.register_chunk(position, active_entity);
+        let packed = packed_light_at(&dimension, address, |entity| match entity {
+            entity if entity == active_entity => Some(&active_light),
+            entity if entity == foreign_entity => Some(&foreign_light),
+            _ => None,
+        });
+
+        assert_eq!(packed, Some(3));
     }
 }

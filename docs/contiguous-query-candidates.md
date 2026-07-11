@@ -189,7 +189,7 @@ Production target: `src/world/dimension/light.rs`
 
 Current loops scan dirty positions and sometimes all chunks to build fallback maps.
 
-Hypothesis: setup scans may get a small improvement, but sparse `get(entity)` lookups and `compute_light_region` probably dominate.
+Hypothesis: setup scans may get a small improvement, but sparse `get(entity)` lookups and `ChunkLightRegion::rebuild` probably dominate.
 
 Benchmark command: `cargo bench --bench ecs_queries`
 
@@ -219,7 +219,7 @@ Results for `fallback_map`, where no active dimension exists and the system buil
 - 16 dirty columns: iter 2.7225-2.8610 ms, contiguous 2.7132-2.7857 ms
 - 64 dirty columns: iter 9.0144-9.1047 ms, contiguous 8.9152-9.0746 ms
 
-Decision: no production change. The active-dimension path is mixed and mostly within noise; the fallback path trends slightly better for larger dirty sets but is not the normal runtime path and does not justify complicating `rebuild_chunk_light`. The expensive work is target expansion, context map construction, entity lookups, `compute_light_region`, and command writes, not the initial dirty/fallback query scans.
+Decision: no production change. The active-dimension path is mixed and mostly within noise; the fallback path trends slightly better for larger dirty sets but is not the normal runtime path and does not justify complicating `rebuild_chunk_light`. The expensive work is target expansion, region construction, entity lookups, `ChunkLightRegion::rebuild`, and command writes, not the initial dirty/fallback query scans.
 
 Production change: none.
 

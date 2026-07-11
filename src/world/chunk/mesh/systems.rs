@@ -4,10 +4,11 @@ use bevy::{camera::primitives::Aabb, platform::collections::HashMap, prelude::*,
 
 use crate::block::BlockMaterialLayer;
 use crate::textures::TextureState;
+use crate::world::dimension::{Active, Dimension};
 
 use super::super::{
     CHUNK_SIZE, Chunk, ChunkLight, ChunkNeedsMeshRebuild, ChunkNeedsRenderLightUpload,
-    ChunkPerfCounters, ChunkPosition,
+    ChunkPerfCounters, ChunkPos, ChunkPosition,
 };
 use super::{
     ChunkMeshBlocks, ChunkMeshFaces, ChunkMeshLayer, ChunkMeshLight,
@@ -46,46 +47,60 @@ pub(super) fn rebuild_chunk_meshes(
     mut mesh_q: Query<&mut ChunkMeshLayer>,
     mesh_light_q: Query<&ChunkMeshLight>,
     chunk_transform_q: Query<&Transform>,
+    dimension: Option<Single<&Dimension, With<Active>>>,
 ) {
     if dirty_chunks_q.is_empty() {
         return;
     }
 
-    let mut chunks_by_pos = HashMap::with_capacity(all_chunks_q.iter().len());
-    for (positions, chunks) in all_chunks_q
-        .contiguous_iter()
-        .expect("chunk mesh position map query should stay dense")
-    {
-        chunks_by_pos.extend(
-            positions
-                .iter()
-                .zip(chunks.iter())
-                .map(|(pos, chunk)| (pos.as_ivec3(), chunk)),
-        );
+    let Some(dimension) = dimension else {
+        return;
+    };
+    let dimension = dimension.into_inner();
+    let active_dirty = dimension
+        .iter_chunks()
+        .filter_map(|(registered, entity)| {
+            let (actual, _) = dirty_chunks_q.get(entity).ok()?;
+            (actual.chunk_pos() == registered).then_some((entity, registered))
+        })
+        .collect::<HashMap<_, _>>();
+    if active_dirty.is_empty() {
+        return;
     }
 
-    let mut lights_by_pos: HashMap<IVec3, &ChunkLight> =
-        HashMap::with_capacity(light_q.iter().len());
-    for (positions, lights) in light_q
-        .contiguous_iter()
-        .expect("chunk mesh light map query should stay dense")
-    {
-        lights_by_pos.extend(
-            positions
-                .iter()
-                .zip(lights.iter())
-                .map(|(pos, light)| (pos.as_ivec3(), light)),
-        );
+    let mut chunks_by_pos = HashMap::with_capacity(dimension.loaded_chunk_count());
+    for (registered, entity) in dimension.iter_chunks() {
+        let Ok((actual, chunk)) = all_chunks_q.get(entity) else {
+            continue;
+        };
+        if actual.chunk_pos() == registered {
+            chunks_by_pos.insert(registered.as_ivec3(), chunk);
+        }
+    }
+
+    let mut lights_by_pos: HashMap<ChunkPos, &ChunkLight> =
+        HashMap::with_capacity(dimension.loaded_chunk_count());
+    for (registered, entity) in dimension.iter_chunks() {
+        let Ok((actual, light)) = light_q.get(entity) else {
+            continue;
+        };
+        if actual.chunk_pos() == registered {
+            lights_by_pos.insert(registered, light);
+        }
     }
 
     let mut build_queue = Parallel::<Vec<ChunkMeshBuild>>::default();
     dirty_chunks_q.par_iter().for_each_init(
         || build_queue.borrow_local_mut(),
         |builds, (chunk_pos, chunk_entity)| {
-            let blocks = ChunkMeshBlocks::from_chunks(chunk_pos.as_ivec3(), &chunks_by_pos);
+            let Some(&position) = active_dirty.get(&chunk_entity) else {
+                return;
+            };
+            debug_assert_eq!(chunk_pos.chunk_pos(), position);
+            let blocks = ChunkMeshBlocks::from_chunks(position.as_ivec3(), &chunks_by_pos);
             builds.push(ChunkMeshBuild {
                 entity: chunk_entity,
-                chunk_pos: chunk_pos.as_ivec3(),
+                chunk_pos: position,
                 layers: mesher::build(&blocks),
             });
         },
@@ -122,7 +137,7 @@ pub(super) fn rebuild_chunk_meshes(
 
 struct ChunkMeshBuild {
     entity: Entity,
-    chunk_pos: IVec3,
+    chunk_pos: ChunkPos,
     layers: Vec<LayerMesh>,
 }
 
@@ -131,11 +146,11 @@ fn update_chunk_mesh_children(
     commands: &mut Commands,
     mesh_q: &mut Query<&mut ChunkMeshLayer>,
     chunk_entity: Entity,
-    chunk_pos: IVec3,
+    chunk_pos: ChunkPos,
     children: Option<&Children>,
     layers: Vec<LayerMesh>,
     chunk_origin: Vec3,
-    lights_by_pos: &HashMap<IVec3, &ChunkLight>,
+    lights_by_pos: &HashMap<ChunkPos, &ChunkLight>,
     mesh_light_q: &Query<&ChunkMeshLight>,
 ) {
     let existing = children
@@ -208,15 +223,12 @@ fn existing_child_light_data(
 
 fn light_data_for_new_mesh_child(
     shared_light_data: &mut Option<Arc<[u32]>>,
-    chunk_pos: IVec3,
-    lights_by_pos: &HashMap<IVec3, &ChunkLight>,
+    chunk_pos: ChunkPos,
+    lights_by_pos: &HashMap<ChunkPos, &ChunkLight>,
 ) -> Arc<[u32]> {
     shared_light_data
         .get_or_insert_with(|| {
-            Arc::from(ChunkLight::build_padded_light_data(
-                chunk_pos,
-                lights_by_pos,
-            ))
+            Arc::from(ChunkMeshLight::build_padded_data(chunk_pos, lights_by_pos))
         })
         .clone()
 }
@@ -228,29 +240,42 @@ pub(super) fn upload_chunk_lights(
     light_q: Query<(&ChunkPosition, &ChunkLight)>,
     children_q: Query<&Children>,
     mut mesh_light_q: Query<&mut ChunkMeshLight>,
+    dimension: Option<Single<&Dimension, With<Active>>>,
 ) {
     if dirty_chunks_q.is_empty() {
         return;
     }
-    let upload_count = dirty_chunks_q.iter().len();
 
-    let mut lights_by_pos: HashMap<IVec3, &ChunkLight> =
-        HashMap::with_capacity(light_q.iter().len());
-    for (positions, lights) in light_q
-        .contiguous_iter()
-        .expect("chunk light upload map query should stay dense")
-    {
-        lights_by_pos.extend(
-            positions
-                .iter()
-                .zip(lights.iter())
-                .map(|(pos, light)| (pos.as_ivec3(), light)),
-        );
+    let Some(dimension) = dimension else {
+        return;
+    };
+    let dimension = dimension.into_inner();
+    let dirty_chunks = dimension
+        .iter_chunks()
+        .filter_map(|(registered, entity)| {
+            let (actual, _) = dirty_chunks_q.get(entity).ok()?;
+            (actual.chunk_pos() == registered).then_some((registered, entity))
+        })
+        .collect::<Vec<_>>();
+    if dirty_chunks.is_empty() {
+        return;
+    }
+    let upload_count = dirty_chunks.len();
+
+    let mut lights_by_pos: HashMap<ChunkPos, &ChunkLight> =
+        HashMap::with_capacity(dimension.loaded_chunk_count());
+    for (registered, entity) in dimension.iter_chunks() {
+        let Ok((actual, light)) = light_q.get(entity) else {
+            continue;
+        };
+        if actual.chunk_pos() == registered {
+            lights_by_pos.insert(registered, light);
+        }
     }
 
-    for (chunk_pos, chunk_entity) in &dirty_chunks_q {
+    for (chunk_pos, chunk_entity) in dirty_chunks {
         let light_data: Arc<[u32]> =
-            ChunkLight::build_padded_light_data(chunk_pos.as_ivec3(), &lights_by_pos).into();
+            ChunkMeshLight::build_padded_data(chunk_pos, &lights_by_pos).into();
         if let Ok(children) = children_q.get(chunk_entity) {
             for child in children {
                 if let Ok(mut light) = mesh_light_q.get_mut(*child) {

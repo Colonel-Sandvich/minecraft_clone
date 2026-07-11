@@ -1,13 +1,10 @@
-use bevy::{
-    platform::collections::{HashMap, HashSet},
-    prelude::*,
-};
+use bevy::{platform::collections::HashSet, prelude::*};
 
 use crate::world::{
     chunk::{
-        Chunk, ChunkHeightmap, ChunkInvalidationPlan, ChunkLight, ChunkNeedsLightRebuild,
-        ChunkPerfCounters, ChunkPos, ChunkPosition, chunk_neighbor_offsets,
-        light::compute_light_region,
+        Chunk, ChunkColumn, ChunkHeightmap, ChunkInvalidationPlan, ChunkLight,
+        ChunkNeedsLightRebuild, ChunkPerfCounters, ChunkPos, ChunkPosition,
+        light::ChunkLightRegion,
     },
     generation::WorldMetadata,
 };
@@ -18,7 +15,7 @@ pub(crate) fn rebuild_chunk_light(
     mut commands: Commands,
     mut perf: Option<ResMut<ChunkPerfCounters>>,
     needs_rebuild: Query<(Entity, &ChunkPosition), With<ChunkNeedsLightRebuild>>,
-    all_chunks: Query<(Entity, &ChunkPosition, &Chunk, &ChunkLight, &ChunkHeightmap)>,
+    all_chunks: Query<(&ChunkPosition, &Chunk, &ChunkLight, &ChunkHeightmap)>,
     dimension: Single<&Dimension, With<Active>>,
     metadata: Res<WorldMetadata>,
 ) {
@@ -32,20 +29,16 @@ pub(crate) fn rebuild_chunk_light(
         .filter_map(|(registered_position, entity)| {
             let (_, actual_position) = needs_rebuild.get(entity).ok()?;
             (actual_position.chunk_pos() == registered_position)
-                .then_some((entity, registered_position.as_ivec3()))
+                .then_some((entity, registered_position))
         })
         .collect::<Vec<_>>();
     let dirty_positions = dirty_chunks
         .iter()
         .map(|(_, position)| *position)
         .collect::<Vec<_>>();
-    let loaded_chunks = dimension.chunk_entities();
 
-    let targets = light_rebuild_targets(
-        &dirty_positions,
-        loaded_chunks,
-        metadata.height_chunks as i32,
-    );
+    let mut region = ChunkLightRegion::new(metadata.height_chunks);
+    let targets = light_rebuild_targets(&dirty_positions, dimension, metadata.height_chunks);
     if let Some(perf) = perf.as_deref_mut() {
         perf.light_rebuild_targets += targets.len();
     }
@@ -57,93 +50,74 @@ pub(crate) fn rebuild_chunk_light(
         return;
     }
 
-    let mut light_context = targets.clone();
-    for &pos in &targets {
-        for offset in chunk_neighbor_offsets() {
-            light_context.insert(pos + offset);
-        }
+    for &position in &targets {
+        let entity = dimension
+            .chunk_entity(position)
+            .expect("light rebuild target must belong to the active dimension");
+        let (actual_position, chunk, light, heightmap) = all_chunks
+            .get(entity)
+            .expect("registered light rebuild target must have chunk lighting components");
+        assert_eq!(
+            actual_position.chunk_pos(),
+            position,
+            "dimension registry and ChunkPosition must agree"
+        );
+        region.insert_target(position, chunk, light, heightmap);
     }
 
-    let chunk_map: HashMap<IVec3, (Entity, &Chunk, &ChunkLight, &ChunkHeightmap)> = light_context
-        .iter()
-        .filter_map(|pos| {
-            let entity = *loaded_chunks.get(&ChunkPos::from_ivec3(*pos))?;
-            let Ok((entity, actual_pos, chunk, light, heightmap)) = all_chunks.get(entity) else {
-                return None;
-            };
-
-            (actual_pos.as_ivec3() == *pos).then_some((*pos, (entity, chunk, light, heightmap)))
-        })
-        .collect();
-
-    let chunks = targets
-        .iter()
-        .filter_map(|pos| chunk_map.get(pos).map(|(_, chunk, _, _)| (*pos, *chunk)))
-        .collect::<HashMap<_, _>>();
-    let mut lights = light_context
-        .iter()
-        .filter_map(|pos| {
-            chunk_map
-                .get(pos)
-                .map(|(_, _, light, _)| (*pos, (*light).clone()))
-        })
-        .collect::<HashMap<_, _>>();
-    let mut heightmaps = targets
-        .iter()
-        .filter_map(|pos| {
-            chunk_map
-                .get(pos)
-                .map(|(_, _, _, heightmap)| (*pos, **heightmap))
-        })
-        .collect::<HashMap<_, _>>();
-
-    compute_light_region(
-        &chunks,
-        &mut lights,
-        &mut heightmaps,
-        &targets,
-        metadata.height_chunks as i32,
-    );
-
-    let mut invalidations = ChunkInvalidationPlan::new();
-    for &pos in &targets {
-        let Some((entity, _, old_light, old_heightmap)) = chunk_map.get(&pos) else {
+    for position in region.required_boundary_positions() {
+        let Some(entity) = dimension.chunk_entity(position) else {
             continue;
         };
-        let new_light = lights.get(&pos).cloned().unwrap_or_default();
-        let new_heightmap = heightmaps.get(&pos).copied().unwrap_or_default();
-        let light_changed = new_light != **old_light;
-        let heightmap_changed = new_heightmap != **old_heightmap;
+        let (actual_position, _, light, _) = all_chunks
+            .get(entity)
+            .expect("registered light boundary must have chunk lighting components");
+        assert_eq!(
+            actual_position.chunk_pos(),
+            position,
+            "dimension registry and ChunkPosition must agree"
+        );
+        region.insert_boundary_light(position, light);
+    }
+
+    let mut invalidations = ChunkInvalidationPlan::new();
+    for rebuilt in region.rebuild() {
+        let entity = dimension
+            .chunk_entity(rebuilt.position)
+            .expect("rebuilt light target must remain in the active dimension");
+        let light_changed = rebuilt.light_changed();
+        let heightmap_changed = rebuilt.heightmap_changed();
 
         if light_changed {
-            commands.entity(*entity).insert(new_light);
-            invalidations.record_render_light_changed(ChunkPos::from_ivec3(pos));
+            commands.entity(entity).insert(rebuilt.light);
+            invalidations.record_render_light_changed(rebuilt.position);
         }
         if heightmap_changed {
-            commands.entity(*entity).insert(new_heightmap);
+            commands.entity(entity).insert(rebuilt.heightmap);
         }
-        commands.entity(*entity).remove::<ChunkNeedsLightRebuild>();
+        commands.entity(entity).remove::<ChunkNeedsLightRebuild>();
     }
 
     apply_chunk_invalidations(&mut commands, dimension, &invalidations);
 }
 
 fn light_rebuild_targets(
-    dirty_positions: &[IVec3],
-    loaded_chunks: &HashMap<ChunkPos, Entity>,
-    height_chunks: i32,
-) -> HashSet<IVec3> {
+    dirty_positions: &[ChunkPos],
+    dimension: &Dimension,
+    height_chunks: usize,
+) -> HashSet<ChunkPos> {
     let columns = dirty_positions
         .iter()
-        .map(|pos| ivec2(pos.x, pos.z))
+        .copied()
+        .map(ChunkColumn::from)
         .collect::<HashSet<_>>();
 
     let mut targets = HashSet::new();
     for column in columns {
-        for y in 0..height_chunks {
-            let pos = ivec3(column.x, y, column.y);
-            if loaded_chunks.contains_key(&ChunkPos::from_ivec3(pos)) {
-                targets.insert(pos);
+        for y in 0..height_chunks as i32 {
+            let position = column.chunk(y);
+            if dimension.contains_chunk(position) {
+                targets.insert(position);
             }
         }
     }
@@ -158,7 +132,7 @@ mod tests {
         block::BlockType,
         world::chunk::{
             CHUNK_SIZE, ChunkCell, ChunkNeedsLightRebuild, ChunkNeedsMeshRebuild,
-            ChunkNeedsRenderLightUpload,
+            ChunkNeedsRenderLightUpload, LocalBlockPos,
         },
     };
 
@@ -237,14 +211,14 @@ mod tests {
             world
                 .get::<ChunkLight>(upper_entity)
                 .unwrap()
-                .sky_light(uvec3(8, 1, 8)),
+                .sky_light(LocalBlockPos::new(8, 1, 8)),
             15
         );
         assert_eq!(
             world
                 .get::<ChunkLight>(lower_entity)
                 .unwrap()
-                .sky_light(uvec3(8, 15, 8)),
+                .sky_light(LocalBlockPos::new(8, 15, 8)),
             0
         );
         assert!(world.get::<ChunkNeedsLightRebuild>(lower_entity).is_none());
@@ -282,7 +256,7 @@ mod tests {
             world
                 .get::<ChunkLight>(center_entity)
                 .unwrap()
-                .sky_light(uvec3(8, 8, 8)),
+                .sky_light(LocalBlockPos::new(8, 8, 8)),
             15
         );
         assert!(
@@ -340,7 +314,7 @@ mod tests {
             app.world()
                 .get::<ChunkLight>(left_entity)
                 .unwrap()
-                .block_light(uvec3(15, 8, 8)),
+                .block_light(LocalBlockPos::new(15, 8, 8)),
             14
         );
 
@@ -362,14 +336,14 @@ mod tests {
             app.world()
                 .get::<ChunkLight>(right_entity)
                 .unwrap()
-                .block_light(uvec3(0, 8, 8)),
+                .block_light(LocalBlockPos::new(0, 8, 8)),
             0
         );
         assert_eq!(
             app.world()
                 .get::<ChunkLight>(left_entity)
                 .unwrap()
-                .block_light(uvec3(15, 8, 8)),
+                .block_light(LocalBlockPos::new(15, 8, 8)),
             0
         );
     }
@@ -403,29 +377,46 @@ mod tests {
 
     #[test]
     fn light_rebuild_targets_do_not_expand_dirty_column_set() {
-        let mut loaded_chunks = HashMap::new();
+        let mut dimension = Dimension::default();
         for x in -2..=2 {
             for z in -2..=2 {
                 for y in 0..2 {
-                    loaded_chunks.insert(ChunkPos::new(x, y, z), Entity::PLACEHOLDER);
+                    dimension.register_chunk(ChunkPos::new(x, y, z), Entity::PLACEHOLDER);
                 }
             }
         }
 
         let dirty_positions = (-1..=1)
-            .flat_map(|x| (-1..=1).map(move |z| ivec3(x, 0, z)))
+            .flat_map(|x| (-1..=1).map(move |z| ChunkPos::new(x, 0, z)))
             .collect::<Vec<_>>();
-        let targets = light_rebuild_targets(&dirty_positions, &loaded_chunks, 2);
+        let targets = light_rebuild_targets(&dirty_positions, &dimension, 2);
 
         assert_eq!(targets.len(), 18);
         for x in -1..=1 {
             for z in -1..=1 {
                 for y in 0..2 {
-                    assert!(targets.contains(&ivec3(x, y, z)));
+                    assert!(targets.contains(&ChunkPos::new(x, y, z)));
                 }
             }
         }
-        assert!(!targets.contains(&ivec3(-2, 0, 0)));
-        assert!(!targets.contains(&ivec3(2, 0, 0)));
+        assert!(!targets.contains(&ChunkPos::new(-2, 0, 0)));
+        assert!(!targets.contains(&ChunkPos::new(2, 0, 0)));
+    }
+
+    #[test]
+    fn light_rebuild_targets_keep_loaded_gaps_and_world_height_bounds() {
+        let column = ChunkColumn::new(-8, 13);
+        let mut dimension = Dimension::default();
+        for y in [0, 2, 4] {
+            dimension.register_chunk(column.chunk(y), Entity::PLACEHOLDER);
+        }
+
+        let targets = light_rebuild_targets(
+            &[column.chunk(0), column.chunk(2), column.chunk(2)],
+            &dimension,
+            4,
+        );
+
+        assert_eq!(targets, HashSet::from([column.chunk(0), column.chunk(2)]));
     }
 }

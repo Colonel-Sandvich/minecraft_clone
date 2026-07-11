@@ -11,11 +11,11 @@ use minecraft_clone::{
     world::{
         WORLD_COLLISION_LAYERS, WorldMetadata,
         chunk::{
-            CHUNK_SIZE, Chunk, ChunkCell, ChunkContentCounts, ChunkHeightmap, ChunkLight,
-            ChunkNeedsColliderRebuild, ChunkNeedsFluidStep, ChunkNeedsLightRebuild,
+            CHUNK_SIZE, Chunk, ChunkCell, ChunkColumn, ChunkContentCounts, ChunkHeightmap,
+            ChunkLight, ChunkNeedsColliderRebuild, ChunkNeedsFluidStep, ChunkNeedsLightRebuild,
             ChunkNeedsMeshRebuild, ChunkNeedsRenderLightUpload, ChunkNeedsSave, ChunkPos,
             ChunkPosition, FluidProfile, FluidState,
-            light::compute_light_region,
+            light::ChunkLightRegion,
             mesh::{ChunkMeshBlocks, ChunkMeshLight, mesher::build},
         },
         dimension::{Active, Dimension},
@@ -125,7 +125,7 @@ fn mesh_rebuild_iter_system(
         .collect::<HashMap<_, _>>();
     let lights_by_pos = light_q
         .iter()
-        .map(|(pos, light)| (pos.as_ivec3(), light))
+        .map(|(pos, light)| (pos.chunk_pos(), light))
         .collect::<HashMap<_, _>>();
 
     let mut dirty_chunks = 0;
@@ -135,8 +135,8 @@ fn mesh_rebuild_iter_system(
         let blocks = ChunkMeshBlocks::from_chunks(chunk_pos.as_ivec3(), &chunks_by_pos);
         let layers = build(&blocks);
         faces += layers.iter().map(|layer| layer.faces.len()).sum::<usize>();
-        black_box(ChunkLight::build_padded_light_data(
-            chunk_pos.as_ivec3(),
+        black_box(ChunkMeshLight::build_padded_data(
+            chunk_pos.chunk_pos(),
             &lights_by_pos,
         ));
     }
@@ -177,7 +177,7 @@ fn mesh_rebuild_contiguous_system(
             positions
                 .iter()
                 .zip(lights.iter())
-                .map(|(pos, light)| (pos.as_ivec3(), light)),
+                .map(|(pos, light)| (pos.chunk_pos(), light)),
         );
     }
 
@@ -188,8 +188,8 @@ fn mesh_rebuild_contiguous_system(
         let blocks = ChunkMeshBlocks::from_chunks(chunk_pos.as_ivec3(), &chunks_by_pos);
         let layers = build(&blocks);
         faces += layers.iter().map(|layer| layer.faces.len()).sum::<usize>();
-        black_box(ChunkLight::build_padded_light_data(
-            chunk_pos.as_ivec3(),
+        black_box(ChunkMeshLight::build_padded_data(
+            chunk_pos.chunk_pos(),
             &lights_by_pos,
         ));
     }
@@ -221,8 +221,8 @@ fn build_light_upload_world(dirty_chunks: usize) -> World {
 
 fn build_lights_by_pos<'w>(
     light_q: &'w Query<'w, '_, (&ChunkPosition, &ChunkLight)>,
-) -> HashMap<IVec3, &'w ChunkLight> {
-    let mut lights_by_pos: HashMap<IVec3, &ChunkLight> =
+) -> HashMap<ChunkPos, &'w ChunkLight> {
+    let mut lights_by_pos: HashMap<ChunkPos, &ChunkLight> =
         HashMap::with_capacity(light_q.iter().len());
     for (positions, lights) in light_q
         .contiguous_iter()
@@ -232,7 +232,7 @@ fn build_lights_by_pos<'w>(
             positions
                 .iter()
                 .zip(lights.iter())
-                .map(|(pos, light)| (pos.as_ivec3(), light)),
+                .map(|(pos, light)| (pos.chunk_pos(), light)),
         );
     }
 
@@ -241,10 +241,10 @@ fn build_lights_by_pos<'w>(
 
 fn build_lights_by_pos_iter<'w>(
     light_q: &'w Query<'w, '_, (&ChunkPosition, &ChunkLight)>,
-) -> HashMap<IVec3, &'w ChunkLight> {
+) -> HashMap<ChunkPos, &'w ChunkLight> {
     light_q
         .iter()
-        .map(|(pos, light)| (pos.as_ivec3(), light))
+        .map(|(pos, light)| (pos.chunk_pos(), light))
         .collect()
 }
 
@@ -291,7 +291,7 @@ fn run_light_upload_dirty_loop(
     dirty_chunks_q: &Query<(&ChunkPosition, Entity), With<ChunkNeedsRenderLightUpload>>,
     children_q: &Query<&Children>,
     mesh_light_q: &mut Query<&mut ChunkMeshLight>,
-    lights_by_pos: &HashMap<IVec3, &ChunkLight>,
+    lights_by_pos: &HashMap<ChunkPos, &ChunkLight>,
     stats: &mut LightUploadBenchStats,
 ) {
     let mut dirty_chunks = 0;
@@ -300,7 +300,7 @@ fn run_light_upload_dirty_loop(
     for (chunk_pos, chunk_entity) in dirty_chunks_q {
         dirty_chunks += 1;
         let light_data: Arc<[u32]> =
-            ChunkLight::build_padded_light_data(chunk_pos.as_ivec3(), lights_by_pos).into();
+            ChunkMeshLight::build_padded_data(chunk_pos.chunk_pos(), lights_by_pos).into();
         if let Ok(children) = children_q.get(chunk_entity) {
             for child in children {
                 if let Ok(mut light) = mesh_light_q.get_mut(*child) {
@@ -357,7 +357,7 @@ fn light_upload_dirty_contiguous_system(
         dirty_chunks += positions.len();
         for (chunk_pos, chunk_entity) in positions.iter().zip(entities.iter().copied()) {
             let light_data: Arc<[u32]> =
-                ChunkLight::build_padded_light_data(chunk_pos.as_ivec3(), &lights_by_pos).into();
+                ChunkMeshLight::build_padded_data(chunk_pos.chunk_pos(), &lights_by_pos).into();
             if let Ok(children) = children_q.get(chunk_entity) {
                 for child in children {
                     if let Ok(mut light) = mesh_light_q.get_mut(*child) {
@@ -691,21 +691,22 @@ fn chunk_neighbor_offsets() -> impl Iterator<Item = IVec3> {
 }
 
 fn light_rebuild_targets(
-    dirty_positions: &[IVec3],
+    dirty_positions: &[ChunkPos],
     loaded_chunks: &HashMap<ChunkPos, Entity>,
-    height_chunks: i32,
-) -> HashSet<IVec3> {
+    height_chunks: usize,
+) -> HashSet<ChunkPos> {
     let columns = dirty_positions
         .iter()
-        .map(|pos| ivec2(pos.x, pos.z))
+        .copied()
+        .map(ChunkColumn::from)
         .collect::<HashSet<_>>();
 
     let mut targets = HashSet::new();
     for column in columns {
-        for y in 0..height_chunks {
-            let pos = ivec3(column.x, y, column.y);
-            if loaded_chunks.contains_key(&ChunkPos::from_ivec3(pos)) {
-                targets.insert(pos);
+        for y in 0..height_chunks as i32 {
+            let position = column.chunk(y);
+            if loaded_chunks.contains_key(&position) {
+                targets.insert(position);
             }
         }
     }
@@ -727,7 +728,7 @@ fn rebuild_chunk_light_iter_system(
 
     let dirty_positions = needs_rebuild
         .iter()
-        .map(|(_, pos)| pos.as_ivec3())
+        .map(|(_, pos)| pos.chunk_pos())
         .collect::<Vec<_>>();
 
     let fallback_loaded_chunks;
@@ -747,7 +748,7 @@ fn rebuild_chunk_light_iter_system(
         &all_chunks,
         loaded_chunks,
         &dirty_positions,
-        metadata.height_chunks as i32,
+        metadata.height_chunks,
         &mut stats,
     );
 }
@@ -769,7 +770,7 @@ fn rebuild_chunk_light_contiguous_system(
         .contiguous_iter()
         .expect("chunk light rebuild dirty query should stay dense")
     {
-        dirty_positions.extend(positions.iter().map(|pos| pos.as_ivec3()));
+        dirty_positions.extend(positions.iter().map(|pos| pos.chunk_pos()));
     }
 
     let fallback_loaded_chunks;
@@ -786,7 +787,7 @@ fn rebuild_chunk_light_contiguous_system(
         &all_chunks,
         loaded_chunks,
         &dirty_positions,
-        metadata.height_chunks as i32,
+        metadata.height_chunks,
         &mut stats,
     );
 }
@@ -815,8 +816,8 @@ fn rebuild_chunk_light_rest(
     needs_rebuild: &Query<(Entity, &ChunkPosition), With<ChunkNeedsLightRebuild>>,
     all_chunks: &Query<(Entity, &ChunkPosition, &Chunk, &ChunkLight, &ChunkHeightmap)>,
     loaded_chunks: &HashMap<ChunkPos, Entity>,
-    dirty_positions: &[IVec3],
-    height_chunks: i32,
+    dirty_positions: &[ChunkPos],
+    height_chunks: usize,
     stats: &mut LightRebuildBenchStats,
 ) {
     let targets = light_rebuild_targets(dirty_positions, loaded_chunks, height_chunks);
@@ -831,79 +832,47 @@ fn rebuild_chunk_light_rest(
         return;
     }
 
-    let mut light_context = targets.clone();
-    for &pos in &targets {
-        for offset in chunk_neighbor_offsets() {
-            light_context.insert(pos + offset);
-        }
+    let mut region = ChunkLightRegion::new(height_chunks);
+    for &position in &targets {
+        let entity = loaded_chunks[&position];
+        let (_, actual_position, chunk, light, heightmap) = all_chunks
+            .get(entity)
+            .expect("bench light target must have all lighting components");
+        assert_eq!(actual_position.chunk_pos(), position);
+        region.insert_target(position, chunk, light, heightmap);
     }
-
-    let chunk_map: HashMap<IVec3, (Entity, &Chunk, &ChunkLight, &ChunkHeightmap)> = light_context
-        .iter()
-        .filter_map(|pos| {
-            let entity = *loaded_chunks.get(&ChunkPos::from_ivec3(*pos))?;
-            let Ok((entity, actual_pos, chunk, light, heightmap)) = all_chunks.get(entity) else {
-                return None;
-            };
-
-            (actual_pos.as_ivec3() == *pos).then_some((*pos, (entity, chunk, light, heightmap)))
-        })
-        .collect();
-
-    let chunks = targets
-        .iter()
-        .filter_map(|pos| chunk_map.get(pos).map(|(_, chunk, _, _)| (*pos, *chunk)))
-        .collect::<HashMap<_, _>>();
-    let mut lights = light_context
-        .iter()
-        .filter_map(|pos| {
-            chunk_map
-                .get(pos)
-                .map(|(_, _, light, _)| (*pos, (*light).clone()))
-        })
-        .collect::<HashMap<_, _>>();
-    let mut heightmaps = targets
-        .iter()
-        .filter_map(|pos| {
-            chunk_map
-                .get(pos)
-                .map(|(_, _, _, heightmap)| (*pos, **heightmap))
-        })
-        .collect::<HashMap<_, _>>();
-
-    compute_light_region(
-        &chunks,
-        &mut lights,
-        &mut heightmaps,
-        &targets,
-        height_chunks,
-    );
-
-    let mut changed_light_positions = HashSet::new();
-    for &pos in &targets {
-        let Some((entity, _, old_light, old_heightmap)) = chunk_map.get(&pos) else {
+    for position in region.required_boundary_positions() {
+        let Some(&entity) = loaded_chunks.get(&position) else {
             continue;
         };
-        let new_light = lights.get(&pos).cloned().unwrap_or_default();
-        let new_heightmap = heightmaps.get(&pos).copied().unwrap_or_default();
-        let light_changed = new_light != **old_light;
-        let heightmap_changed = new_heightmap != **old_heightmap;
+        let (_, actual_position, _, light, _) = all_chunks
+            .get(entity)
+            .expect("bench light boundary must have all lighting components");
+        assert_eq!(actual_position.chunk_pos(), position);
+        region.insert_boundary_light(position, light);
+    }
+
+    let mut changed_light_positions = HashSet::new();
+    for rebuilt in region.rebuild() {
+        let entity = loaded_chunks[&rebuilt.position];
+        let light_changed = rebuilt.light_changed();
+        let heightmap_changed = rebuilt.heightmap_changed();
 
         if light_changed {
             commands
-                .entity(*entity)
-                .insert((new_light, ChunkNeedsRenderLightUpload));
-            changed_light_positions.insert(pos);
+                .entity(entity)
+                .insert((rebuilt.light, ChunkNeedsRenderLightUpload));
+            changed_light_positions.insert(rebuilt.position);
         }
         if heightmap_changed {
-            commands.entity(*entity).insert(new_heightmap);
+            commands.entity(entity).insert(rebuilt.heightmap);
         }
-        commands.entity(*entity).remove::<ChunkNeedsLightRebuild>();
+        commands.entity(entity).remove::<ChunkNeedsLightRebuild>();
     }
 
-    for pos in &changed_light_positions {
+    for &position in &changed_light_positions {
         for offset in chunk_neighbor_offsets() {
-            let neighbor = ChunkPos::from_ivec3(*pos + offset);
+            let neighbor = position.offset(offset);
             let Some(entity) = loaded_chunks.get(&neighbor) else {
                 continue;
             };

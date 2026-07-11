@@ -15,7 +15,10 @@ use minecraft_clone::{
             ChunkMeshBlocks, ChunkMeshLight,
             mesher::{LayerMesh, benchmark_binary_floor, build, build_reference},
         },
-        chunk::{CHUNK_SIZE, Chunk, ChunkCell, ChunkLight, ChunkNeedsMeshRebuild, ChunkPosition},
+        chunk::{
+            CHUNK_SIZE, Chunk, ChunkCell, ChunkLight, ChunkNeedsMeshRebuild, ChunkPos,
+            ChunkPosition, LocalBlockPos,
+        },
         generation::generate_chunk,
     },
 };
@@ -248,7 +251,7 @@ fn chunk_mesh_face_count(layers: &[LayerMesh]) -> usize {
     layers.iter().map(|layer| layer.faces.len()).sum()
 }
 
-fn light_upload_lights(chunk_count: usize) -> Vec<(IVec3, ChunkLight)> {
+fn light_upload_lights(chunk_count: usize) -> Vec<(ChunkPos, ChunkLight)> {
     let edge = (chunk_count as f32).cbrt().ceil() as i32;
     let mut lights = Vec::with_capacity(chunk_count);
     for x in 0..edge {
@@ -257,7 +260,7 @@ fn light_upload_lights(chunk_count: usize) -> Vec<(IVec3, ChunkLight)> {
                 if lights.len() == chunk_count {
                     return lights;
                 }
-                let pos = ivec3(x, y, z);
+                let pos = ChunkPos::new(x, y, z);
                 lights.push((pos, patterned_light(pos)));
             }
         }
@@ -265,7 +268,8 @@ fn light_upload_lights(chunk_count: usize) -> Vec<(IVec3, ChunkLight)> {
     lights
 }
 
-fn patterned_light(chunk_pos: IVec3) -> ChunkLight {
+fn patterned_light(chunk_pos: ChunkPos) -> ChunkLight {
+    let chunk_pos = chunk_pos.as_ivec3();
     let mut light = ChunkLight::default();
     for x in 0..CHUNK_SIZE {
         for z in 0..CHUNK_SIZE {
@@ -282,7 +286,7 @@ fn patterned_light(chunk_pos: IVec3) -> ChunkLight {
                     + chunk_pos.x * 17
                     + chunk_pos.y * 11
                     + chunk_pos.z * 13) as u8;
-                let pos = uvec3(x as u32, y as u32, z as u32);
+                let pos = LocalBlockPos::new(x as u32, y as u32, z as u32);
                 light.set_sky_light(pos, sky);
                 light.set_block_light(pos, block);
             }
@@ -497,12 +501,12 @@ fn bench_light_upload(c: &mut Criterion) {
         .iter()
         .map(|pos| {
             let light_data: Arc<[u32]> =
-                ChunkLight::build_padded_light_data(*pos, &light_refs).into();
+                ChunkMeshLight::build_padded_data(*pos, &light_refs).into();
             light_data
         })
         .collect::<Vec<_>>();
     let empty_light: Arc<[u32]> =
-        ChunkLight::build_padded_light_data(IVec3::ZERO, &HashMap::default()).into();
+        ChunkMeshLight::build_padded_data(ChunkPos::ZERO, &HashMap::default()).into();
     let mut components = (0..chunk_count * layer_count)
         .map(|_| ChunkMeshLight::new(empty_light.clone()))
         .collect::<Vec<_>>();

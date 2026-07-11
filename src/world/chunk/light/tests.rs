@@ -1,65 +1,91 @@
-#[cfg(test)]
-use super::*;
+use bevy::{
+    platform::collections::{HashMap, HashSet},
+    prelude::*,
+};
 
-fn test_chunk_with_blocks<F>(mut fill: F) -> Chunk
-where
-    F: FnMut(u32, u32, u32) -> ChunkCell,
-{
-    let mut chunk = Chunk::default();
-    for x in 0..CHUNK_SIZE {
-        for z in 0..CHUNK_SIZE {
-            for y in 0..CHUNK_SIZE {
-                chunk.set_cell_xyz(x, y, z, fill(x as u32, y as u32, z as u32));
-            }
-        }
-    }
-    chunk
+use crate::{
+    block::BlockType,
+    world::chunk::{CHUNK_SIZE, Chunk, ChunkCell, ChunkPos, LocalBlockPos},
+};
+
+use super::storage::SKY_LIGHT_MAX;
+use super::{ChunkHeightmap, ChunkLight, ChunkLightRegion, RebuiltChunkLight};
+
+fn local(x: u32, y: u32, z: u32) -> LocalBlockPos {
+    LocalBlockPos::new(x, y, z)
 }
 
 fn block_cell(block: BlockType) -> ChunkCell {
     block.into()
 }
 
+fn chunk_with_cells(mut cell_at: impl FnMut(u32, u32, u32) -> ChunkCell) -> Chunk {
+    let mut chunk = Chunk::default();
+    for x in 0..CHUNK_SIZE {
+        for z in 0..CHUNK_SIZE {
+            for y in 0..CHUNK_SIZE {
+                chunk.set_cell_xyz(x, y, z, cell_at(x as u32, y as u32, z as u32));
+            }
+        }
+    }
+    chunk
+}
+
+fn rebuild_single(
+    height_chunks: usize,
+    position: ChunkPos,
+    chunk: &Chunk,
+    light: &ChunkLight,
+    heightmap: &ChunkHeightmap,
+) -> RebuiltChunkLight {
+    let mut region = ChunkLightRegion::new(height_chunks);
+    region.insert_target(position, chunk, light, heightmap);
+    let mut rebuilt = region.rebuild();
+    assert_eq!(rebuilt.len(), 1);
+    rebuilt.pop().unwrap()
+}
+
+fn rebuilt_by_position(region: ChunkLightRegion<'_>) -> HashMap<ChunkPos, RebuiltChunkLight> {
+    region
+        .rebuild()
+        .into_iter()
+        .map(|rebuilt| (rebuilt.position, rebuilt))
+        .collect()
+}
+
 #[test]
-fn sky_light_vertical_pass_above_surface_is_full() {
-    let chunk = test_chunk_with_blocks(|_, y, _| {
+fn sky_light_above_an_opaque_surface_is_full() {
+    let chunk = chunk_with_cells(|_, y, _| {
         if y < 10 {
             block_cell(BlockType::Stone)
         } else {
             ChunkCell::EMPTY
         }
     });
-    let mut light = ChunkLight::default();
-    let mut heightmap = ChunkHeightmap::default();
-    let blocks = HashMap::new();
-    let mut lights = HashMap::new();
-
-    let mut dirty = 0;
-    compute_sky_light(
+    let position = ChunkPos::new(-4, 0, -9);
+    let rebuilt = rebuild_single(
+        1,
+        position,
         &chunk,
-        &mut light,
-        &mut heightmap,
-        &blocks,
-        &mut lights,
-        &mut dirty,
-        0,
-        false,
+        &ChunkLight::default(),
+        &ChunkHeightmap::default(),
     );
 
-    assert_eq!(heightmap.heights[8][8], 9);
+    assert_eq!(rebuilt.position, position);
+    assert_eq!(rebuilt.heightmap.heights[8][8], 9);
     for y in 10..16 {
         assert_eq!(
-            light.sky_light(uvec3(8, y, 8)),
+            rebuilt.light.sky_light(local(8, y, 8)),
             SKY_LIGHT_MAX,
-            "sky light above surface at y={y}"
+            "sky light above the surface at y={y}"
         );
     }
+    assert_eq!(rebuilt.light.sky_light(local(8, 9, 8)), 0);
 }
 
 #[test]
-fn sky_light_vertical_pass_attenuates_through_transparent() {
-    let chunk = test_chunk_with_blocks(|x, y, z| {
-        let _ = (x, z);
+fn sky_light_attenuates_through_transparent_blocks() {
+    let chunk = chunk_with_cells(|_, y, _| {
         if y < 10 {
             block_cell(BlockType::Stone)
         } else if y < 13 {
@@ -68,828 +94,388 @@ fn sky_light_vertical_pass_attenuates_through_transparent() {
             ChunkCell::EMPTY
         }
     });
-    let mut light = ChunkLight::default();
-    let mut heightmap = ChunkHeightmap::default();
-    let blocks = HashMap::new();
-    let mut lights = HashMap::new();
-
-    let mut dirty = 0;
-    compute_sky_light(
+    let rebuilt = rebuild_single(
+        1,
+        ChunkPos::new(-3, 0, 6),
         &chunk,
-        &mut light,
-        &mut heightmap,
-        &blocks,
-        &mut lights,
-        &mut dirty,
-        0,
-        false,
+        &ChunkLight::default(),
+        &ChunkHeightmap::default(),
     );
 
-    assert_eq!(heightmap.heights[0][0], 9);
-    assert_eq!(light.sky_light(uvec3(0, 15, 0)), SKY_LIGHT_MAX);
-    assert_eq!(light.sky_light(uvec3(0, 14, 0)), SKY_LIGHT_MAX);
-    assert_eq!(light.sky_light(uvec3(0, 12, 0)), SKY_LIGHT_MAX - 1);
-    assert_eq!(light.sky_light(uvec3(0, 11, 0)), SKY_LIGHT_MAX - 2);
-    assert_eq!(light.sky_light(uvec3(0, 9, 0)), 0);
+    assert_eq!(rebuilt.light.sky_light(local(0, 15, 0)), 15);
+    assert_eq!(rebuilt.light.sky_light(local(0, 13, 0)), 15);
+    assert_eq!(rebuilt.light.sky_light(local(0, 12, 0)), 14);
+    assert_eq!(rebuilt.light.sky_light(local(0, 11, 0)), 13);
+    assert_eq!(rebuilt.light.sky_light(local(0, 10, 0)), 12);
+    assert_eq!(rebuilt.light.sky_light(local(0, 9, 0)), 0);
 }
 
 #[test]
-fn sky_light_vertical_pass_fully_opaque_stops_light() {
-    let chunk = test_chunk_with_blocks(|_x, y, _z| {
-        if y < 10 {
-            block_cell(BlockType::Stone)
-        } else {
-            ChunkCell::EMPTY
-        }
-    });
-    let mut light = ChunkLight::default();
-    let mut heightmap = ChunkHeightmap::default();
-    let blocks = HashMap::new();
-    let mut lights = HashMap::new();
-
-    let mut dirty = 0;
-    compute_sky_light(
-        &chunk,
-        &mut light,
-        &mut heightmap,
-        &blocks,
-        &mut lights,
-        &mut dirty,
-        0,
-        false,
-    );
-
-    assert_eq!(heightmap.heights[0][0], 9);
-    for y in 10..16 {
-        assert_eq!(
-            light.sky_light(uvec3(0, y as u32, 0)),
-            15,
-            "sky_light at y={y} should be 15"
-        );
-    }
-    for y in 0..10 {
-        let sl = light.sky_light(uvec3(0, y as u32, 0));
-        assert_eq!(
-            sl,
-            0,
-            "sky_light at y={y} should be 0, but got {sl}. Block={:?}",
-            chunk.cell_xyz(0, y as usize, 0)
-        );
-    }
-}
-
-#[test]
-fn sky_light_horizontal_bfs_into_cave() {
-    let chunk = test_chunk_with_blocks(|x, y, z| {
+fn sky_light_spreads_sideways_into_a_cave() {
+    let chunk = chunk_with_cells(|x, y, z| {
         if z == 8 && (x == 0 || (x == 1 && (6..=10).contains(&y))) {
             ChunkCell::EMPTY
         } else {
             block_cell(BlockType::Stone)
         }
     });
-
-    let mut light = ChunkLight::default();
-    let mut heightmap = ChunkHeightmap::default();
-    let blocks = HashMap::new();
-    let mut lights = HashMap::new();
-
-    let mut dirty = 0;
-    compute_sky_light(
+    let rebuilt = rebuild_single(
+        1,
+        ChunkPos::new(-8, 0, -2),
         &chunk,
-        &mut light,
-        &mut heightmap,
-        &blocks,
-        &mut lights,
-        &mut dirty,
-        0,
-        false,
+        &ChunkLight::default(),
+        &ChunkHeightmap::default(),
     );
 
-    assert_eq!(light.sky_light(uvec3(0, 15, 8)), SKY_LIGHT_MAX);
-    assert!(light.sky_light(uvec3(1, 8, 8)) > 0);
-    assert!(light.sky_light(uvec3(1, 8, 8)) < SKY_LIGHT_MAX);
+    assert_eq!(rebuilt.light.sky_light(local(0, 15, 8)), 15);
+    let cave_light = rebuilt.light.sky_light(local(1, 8, 8));
+    assert!(cave_light > 0);
+    assert!(cave_light < SKY_LIGHT_MAX);
 }
 
 #[test]
-fn block_light_bfs_emitter_propagates() {
-    let mut chunk = Chunk::default();
-    chunk.set_cell_xyz(8, 8, 8, block_cell(BlockType::Glowstone));
-
-    let mut light = ChunkLight::default();
-    let blocks = HashMap::new();
-    let mut lights = HashMap::new();
-
-    let mut dirty = 0;
-    compute_block_light(&chunk, &mut light, &blocks, &mut lights, &mut dirty);
-
-    assert_eq!(light.block_light(uvec3(8, 8, 8)), 15);
-    assert_eq!(light.block_light(uvec3(7, 8, 8)), 14);
-    assert_eq!(light.block_light(uvec3(8, 9, 8)), 14);
-    assert_eq!(light.block_light(uvec3(6, 8, 8)), 13);
-}
-
-#[test]
-fn block_light_bfs_stopped_by_opaque() {
-    let mut chunk = Chunk::filled(block_cell(BlockType::Stone));
-    chunk.set_cell_xyz(8, 8, 8, block_cell(BlockType::Glowstone));
-    chunk.set_cell_xyz(7, 8, 8, ChunkCell::EMPTY);
-
-    let mut light = ChunkLight::default();
-    let blocks = HashMap::new();
-    let mut lights = HashMap::new();
-
-    let mut dirty = 0;
-    compute_block_light(&chunk, &mut light, &blocks, &mut lights, &mut dirty);
-
-    assert_eq!(light.block_light(uvec3(8, 8, 8)), 15);
-    assert_eq!(light.block_light(uvec3(7, 8, 8)), 14);
-    assert_eq!(light.block_light(uvec3(6, 8, 8)), 0);
-}
-
-#[test]
-fn block_light_bfs_through_transparent() {
+fn block_light_emission_respects_transparent_and_opaque_cells() {
     let mut chunk = Chunk::default();
     chunk.set_cell_xyz(8, 8, 8, block_cell(BlockType::Glowstone));
     chunk.set_cell_xyz(7, 8, 8, block_cell(BlockType::OakLeaves));
+    chunk.set_cell_xyz(9, 8, 8, block_cell(BlockType::Stone));
 
-    let mut light = ChunkLight::default();
-    let blocks = HashMap::new();
-    let mut lights = HashMap::new();
-
-    let mut dirty = 0;
-    compute_block_light(&chunk, &mut light, &blocks, &mut lights, &mut dirty);
-
-    assert_eq!(light.block_light(uvec3(8, 8, 8)), 15);
-    assert_eq!(light.block_light(uvec3(7, 8, 8)), 14);
-    assert_eq!(light.block_light(uvec3(6, 8, 8)), 13);
-}
-
-#[test]
-fn cross_chunk_sky_light_propagates_upward() {
-    let lower_chunk = Chunk::default();
-    let mut lower_light = ChunkLight::default();
-    let upper_chunk = Chunk::default();
-    let mut upper_light = ChunkLight::default();
-    let mut heightmap = ChunkHeightmap::default();
-
-    lower_light.set_sky_light(uvec3(8, 15, 8), SKY_LIGHT_MAX);
-
-    let blocks: HashMap<IVec3, &Chunk> = HashMap::from([(ivec3(0, -1, 0), &lower_chunk)]);
-    let mut lights: HashMap<IVec3, ChunkLight> = HashMap::from([(ivec3(0, -1, 0), lower_light)]);
-    let mut dirty = 0;
-    compute_sky_light(
-        &upper_chunk,
-        &mut upper_light,
-        &mut heightmap,
-        &blocks,
-        &mut lights,
-        &mut dirty,
-        0,
-        false,
-    );
-
-    assert!(upper_light.sky_light(uvec3(8, 0, 8)) > 0);
-}
-
-#[test]
-fn cross_chunk_block_light_propagates_between_chunks() {
-    let left_chunk = Chunk::default();
-    let left_light = ChunkLight::default();
-    let mut right_chunk = Chunk::default();
-    let mut right_light = ChunkLight::default();
-
-    right_chunk.set_cell_xyz(0, 8, 8, block_cell(BlockType::Glowstone));
-
-    let blocks: HashMap<IVec3, &Chunk> = HashMap::from([(ivec3(-1, 0, 0), &left_chunk)]);
-
-    let mut lights: HashMap<IVec3, ChunkLight> =
-        HashMap::from([(ivec3(-1, 0, 0), left_light.clone())]);
-    let mut dirty = 0;
-    compute_block_light(
-        &right_chunk,
-        &mut right_light,
-        &blocks,
-        &mut lights,
-        &mut dirty,
-    );
-    let modified_left = lights.remove(&ivec3(-1, 0, 0)).unwrap();
-
-    assert_eq!(right_light.block_light(uvec3(0, 8, 8)), 15);
-    assert_eq!(right_light.block_light(uvec3(1, 8, 8)), 14);
-    assert_eq!(modified_left.block_light(uvec3(15, 8, 8)), 14);
-}
-
-#[test]
-fn block_light_decrease_when_emitter_removed() {
-    let left_chunk = Chunk::default();
-    let mut right_chunk = Chunk::default();
-    let mut right_light = ChunkLight::default();
-
-    right_chunk.set_cell_xyz(0, 8, 8, block_cell(BlockType::Glowstone));
-
-    let blocks: HashMap<IVec3, &Chunk> = HashMap::from([(ivec3(-1, 0, 0), &left_chunk)]);
-
-    // First: propagate light from Glowstone into neighbor.
-    let mut lights: HashMap<IVec3, ChunkLight> =
-        HashMap::from([(ivec3(-1, 0, 0), ChunkLight::default())]);
-    let mut dirty = 0;
-    compute_block_light(
-        &right_chunk,
-        &mut right_light,
-        &blocks,
-        &mut lights,
-        &mut dirty,
-    );
-    let left_after_emit = lights.remove(&ivec3(-1, 0, 0)).unwrap();
-    assert_eq!(left_after_emit.block_light(uvec3(15, 8, 8)), 14);
-
-    // Second: remove Glowstone and recompute.
-    right_chunk.set_cell_xyz(0, 8, 8, ChunkCell::EMPTY);
-    let mut lights: HashMap<IVec3, ChunkLight> =
-        HashMap::from([(ivec3(-1, 0, 0), left_after_emit)]);
-    let mut dirty = 0;
-    compute_block_light(
-        &right_chunk,
-        &mut right_light,
-        &blocks,
-        &mut lights,
-        &mut dirty,
-    );
-    clear_stale_neighbor_block_light(
-        &right_chunk,
-        &mut right_light,
-        &blocks,
-        &mut lights,
-        &mut dirty,
-    );
-    let left_after_remove = lights.remove(&ivec3(-1, 0, 0)).unwrap();
-
-    assert_eq!(
-        right_light.block_light(uvec3(0, 8, 8)),
-        0,
-        "emitter position should be 0"
-    );
-    assert_eq!(
-        right_light.block_light(uvec3(1, 8, 8)),
-        0,
-        "no emitter means no center propagation"
-    );
-    assert_eq!(
-        left_after_remove.block_light(uvec3(15, 8, 8)),
-        0,
-        "neighbor light must clear when emitter is removed"
-    );
-}
-
-#[test]
-fn light_packed_roundtrip() {
-    let mut light = ChunkLight::default();
-    let pos = uvec3(7, 5, 3);
-    light.set_sky_light(pos, 13);
-    light.set_block_light(pos, 9);
-
-    assert_eq!(light.sky_light(pos), 13);
-    assert_eq!(light.block_light(pos), 9);
-    let packed = light.packed_light(pos);
-    assert_eq!((packed >> 4) & 0x0F, 13);
-    assert_eq!(packed & 0x0F, 9);
-}
-
-#[test]
-fn padded_light_data_packs_four_cells_per_word() {
-    let center_pos = IVec3::ZERO;
-    let mut center = ChunkLight::default();
-    center.set_sky_light(uvec3(0, 0, 0), 1);
-    center.set_block_light(uvec3(0, 0, 0), 2);
-
-    let mut right = ChunkLight::default();
-    right.set_sky_light(uvec3(0, 0, 0), 10);
-    right.set_block_light(uvec3(0, 0, 0), 11);
-
-    let lights = HashMap::from([(center_pos, &center), (IVec3::X, &right)]);
-    let data = ChunkLight::build_padded_light_data(center_pos, &lights);
-
-    assert_eq!(data.len(), PADDED_LIGHT_WORDS);
-    assert_eq!(
-        unpack_padded_light(&data, padded_light_index(1, 1, 1)),
-        0x12
-    );
-    assert_eq!(
-        unpack_padded_light(&data, padded_light_index(17, 1, 1)),
-        0xAB
-    );
-    assert_eq!(
-        unpack_padded_light(&data, padded_light_index(0, 0, 0)),
-        0xF0
-    );
-}
-
-fn padded_light_index(x: usize, y: usize, z: usize) -> usize {
-    padded_chunk_index(x, y, z)
-}
-
-fn unpack_padded_light(data: &[u32], idx: usize) -> u8 {
-    ((data[idx / 4] >> ((idx % 4) * 8)) & 0xFF) as u8
-}
-
-#[test]
-fn light_resets_clear_correctly() {
-    let mut light = ChunkLight::default();
-    for x in 0..CHUNK_SIZE {
-        for z in 0..CHUNK_SIZE {
-            for y in 0..CHUNK_SIZE {
-                light.set_sky_light(uvec3(x as u32, y as u32, z as u32), 15);
-                light.set_block_light(uvec3(x as u32, y as u32, z as u32), 15);
-            }
-        }
-    }
-    light.reset_all_sky_light();
-    light.reset_all_block_light();
-
-    assert_eq!(light.packed_light(uvec3(8, 8, 8)), 0);
-}
-
-#[test]
-fn heightmap_all_air_chunk_is_zero() {
-    let chunk = Chunk::default();
-    let mut light = ChunkLight::default();
-    let mut heightmap = ChunkHeightmap::default();
-    let blocks = HashMap::new();
-    let mut lights = HashMap::new();
-
-    let mut dirty = 0;
-    compute_sky_light(
+    let rebuilt = rebuild_single(
+        1,
+        ChunkPos::new(-12, 0, 5),
         &chunk,
-        &mut light,
-        &mut heightmap,
-        &blocks,
-        &mut lights,
-        &mut dirty,
-        0,
-        false,
+        &ChunkLight::default(),
+        &ChunkHeightmap::default(),
     );
 
-    for x in 0..CHUNK_SIZE {
-        for z in 0..CHUNK_SIZE {
-            assert_eq!(heightmap.heights[x][z], 0);
-        }
-    }
-}
-
-fn empty_chunk() -> Chunk {
-    Chunk::default()
-}
-
-fn target_set(positions: impl IntoIterator<Item = IVec3>) -> HashSet<IVec3> {
-    positions.into_iter().collect()
+    assert_eq!(rebuilt.light.block_light(local(8, 8, 8)), 15);
+    assert_eq!(rebuilt.light.block_light(local(7, 8, 8)), 14);
+    assert_eq!(rebuilt.light.block_light(local(6, 8, 8)), 13);
+    assert_eq!(rebuilt.light.block_light(local(9, 8, 8)), 0);
 }
 
 #[test]
-fn region_sky_occlusion_spans_vertical_chunks() {
-    let lower = empty_chunk();
-    let mut upper = empty_chunk();
+fn full_rebuild_removes_stale_light_without_harming_other_emitters() {
+    let position = ChunkPos::new(-6, 0, -7);
+    let mut chunk = Chunk::default();
+    chunk.set_cell_xyz(4, 8, 4, block_cell(BlockType::Glowstone));
+    chunk.set_cell_xyz(12, 8, 12, block_cell(BlockType::Glowstone));
+
+    let first = rebuild_single(
+        1,
+        position,
+        &chunk,
+        &ChunkLight::default(),
+        &ChunkHeightmap::default(),
+    );
+    assert_eq!(first.light.block_light(local(4, 8, 4)), 15);
+    assert_eq!(first.light.block_light(local(12, 8, 12)), 15);
+
+    chunk.set_cell_xyz(4, 8, 4, ChunkCell::EMPTY);
+    let second = rebuild_single(1, position, &chunk, &first.light, &first.heightmap);
+    assert!(second.light_changed());
+    assert!(second.heightmap_changed());
+    assert_eq!(second.light.block_light(local(4, 8, 4)), 0);
+    assert_eq!(second.light.block_light(local(12, 8, 12)), 15);
+
+    chunk.set_cell_xyz(12, 8, 12, ChunkCell::EMPTY);
+    let third = rebuild_single(1, position, &chunk, &second.light, &second.heightmap);
+    assert_eq!(third.light.block_light(local(4, 8, 4)), 0);
+    assert_eq!(third.light.block_light(local(12, 8, 12)), 0);
+}
+
+#[test]
+fn block_light_crosses_all_six_faces_at_absolute_negative_positions() {
+    let source_position = ChunkPos::new(-7, 1, -11);
+    let cases = [
+        (IVec3::X, local(15, 8, 8), local(0, 8, 8)),
+        (IVec3::NEG_X, local(0, 8, 8), local(15, 8, 8)),
+        (IVec3::Y, local(8, 15, 8), local(8, 0, 8)),
+        (IVec3::NEG_Y, local(8, 0, 8), local(8, 15, 8)),
+        (IVec3::Z, local(8, 8, 15), local(8, 8, 0)),
+        (IVec3::NEG_Z, local(8, 8, 0), local(8, 8, 15)),
+    ];
+
+    for (offset, source_local, neighbor_local) in cases {
+        let mut source = Chunk::default();
+        source.set_cell(source_local.as_uvec3(), block_cell(BlockType::Glowstone));
+        let neighbor = Chunk::default();
+        let neighbor_position = source_position.offset(offset);
+        let source_light = ChunkLight::default();
+        let neighbor_light = ChunkLight::default();
+        let source_heightmap = ChunkHeightmap::default();
+        let neighbor_heightmap = ChunkHeightmap::default();
+
+        let mut region = ChunkLightRegion::new(4);
+        region.insert_target(source_position, &source, &source_light, &source_heightmap);
+        region.insert_target(
+            neighbor_position,
+            &neighbor,
+            &neighbor_light,
+            &neighbor_heightmap,
+        );
+        let rebuilt = rebuilt_by_position(region);
+
+        assert_eq!(
+            rebuilt[&source_position].light.block_light(source_local),
+            15,
+            "source for face offset {offset:?}"
+        );
+        assert_eq!(
+            rebuilt[&neighbor_position]
+                .light
+                .block_light(neighbor_local),
+            14,
+            "neighbor for face offset {offset:?}"
+        );
+    }
+}
+
+#[test]
+fn vertical_sky_occlusion_spans_an_entire_loaded_column() {
+    let lower_position = ChunkPos::new(-9, 0, -4);
+    let upper_position = ChunkPos::new(-9, 1, -4);
+    let lower = Chunk::default();
+    let mut upper = Chunk::default();
     for x in 0..CHUNK_SIZE {
         for z in 0..CHUNK_SIZE {
             upper.set_cell_xyz(x, 0, z, block_cell(BlockType::Stone));
         }
     }
+    let lower_light = ChunkLight::default();
+    let upper_light = ChunkLight::default();
+    let lower_heightmap = ChunkHeightmap::default();
+    let upper_heightmap = ChunkHeightmap::default();
 
-    let chunks: HashMap<IVec3, &Chunk> =
-        HashMap::from([(ivec3(0, 0, 0), &lower), (ivec3(0, 1, 0), &upper)]);
-    let mut lights = HashMap::from([
-        (ivec3(0, 0, 0), ChunkLight::default()),
-        (ivec3(0, 1, 0), ChunkLight::default()),
-    ]);
-    let mut heightmaps = HashMap::from([
-        (ivec3(0, 0, 0), ChunkHeightmap::default()),
-        (ivec3(0, 1, 0), ChunkHeightmap::default()),
-    ]);
-    let targets = target_set([ivec3(0, 0, 0), ivec3(0, 1, 0)]);
+    let mut region = ChunkLightRegion::new(2);
+    region.insert_target(lower_position, &lower, &lower_light, &lower_heightmap);
+    region.insert_target(upper_position, &upper, &upper_light, &upper_heightmap);
+    let rebuilt = rebuilt_by_position(region);
 
-    compute_light_region(&chunks, &mut lights, &mut heightmaps, &targets, 2);
-
-    assert_eq!(lights[&ivec3(0, 1, 0)].sky_light(uvec3(8, 1, 8)), 15);
-    assert_eq!(lights[&ivec3(0, 1, 0)].sky_light(uvec3(8, 0, 8)), 0);
-    assert_eq!(lights[&ivec3(0, 0, 0)].sky_light(uvec3(8, 15, 8)), 0);
-    assert_eq!(heightmaps[&ivec3(0, 0, 0)].heights[8][8], 16);
-    assert_eq!(heightmaps[&ivec3(0, 1, 0)].heights[8][8], 16);
-}
-
-#[test]
-fn region_sky_waits_for_missing_upper_chunk() {
-    let lower = empty_chunk();
-    let chunks: HashMap<IVec3, &Chunk> = HashMap::from([(ivec3(0, 0, 0), &lower)]);
-    let mut lights = HashMap::from([(ivec3(0, 0, 0), ChunkLight::default())]);
-    let mut heightmaps = HashMap::from([(ivec3(0, 0, 0), ChunkHeightmap::default())]);
-    let targets = target_set([ivec3(0, 0, 0)]);
-
-    compute_light_region(&chunks, &mut lights, &mut heightmaps, &targets, 2);
-
-    assert_eq!(lights[&ivec3(0, 0, 0)].sky_light(uvec3(8, 15, 8)), 0);
-}
-
-#[test]
-fn region_all_air_chunk_clears_stale_block_light() {
-    let chunk = empty_chunk();
-    let pos = IVec3::ZERO;
-    let chunks: HashMap<IVec3, &Chunk> = HashMap::from([(pos, &chunk)]);
-    let mut stale = ChunkLight::default();
-    stale.set_block_light(uvec3(8, 8, 8), 15);
-    let mut lights = HashMap::from([(pos, stale)]);
-    let mut heightmaps = HashMap::from([(pos, ChunkHeightmap::default())]);
-    let targets = target_set([pos]);
-
-    compute_light_region(&chunks, &mut lights, &mut heightmaps, &targets, 1);
-
-    assert_eq!(lights[&pos].block_light(uvec3(8, 8, 8)), 0);
-    assert_eq!(lights[&pos].sky_light(uvec3(8, 8, 8)), 15);
-}
-
-#[test]
-fn region_block_light_crosses_y_boundary() {
-    let lower = empty_chunk();
-    let mut upper = empty_chunk();
-    upper.set_cell_xyz(8, 0, 8, block_cell(BlockType::Glowstone));
-    let chunks: HashMap<IVec3, &Chunk> =
-        HashMap::from([(ivec3(0, 0, 0), &lower), (ivec3(0, 1, 0), &upper)]);
-    let mut lights = HashMap::from([
-        (ivec3(0, 0, 0), ChunkLight::default()),
-        (ivec3(0, 1, 0), ChunkLight::default()),
-    ]);
-    let mut heightmaps = HashMap::from([
-        (ivec3(0, 0, 0), ChunkHeightmap::default()),
-        (ivec3(0, 1, 0), ChunkHeightmap::default()),
-    ]);
-    let targets = target_set([ivec3(0, 0, 0), ivec3(0, 1, 0)]);
-
-    compute_light_region(&chunks, &mut lights, &mut heightmaps, &targets, 2);
-
-    assert_eq!(lights[&ivec3(0, 1, 0)].block_light(uvec3(8, 0, 8)), 15);
-    assert_eq!(lights[&ivec3(0, 0, 0)].block_light(uvec3(8, 15, 8)), 14);
-}
-
-#[test]
-fn region_block_light_crosses_z_boundary() {
-    let center = empty_chunk();
-    let mut back = empty_chunk();
-    back.set_cell_xyz(8, 8, 0, block_cell(BlockType::Glowstone));
-    let chunks: HashMap<IVec3, &Chunk> = HashMap::from([(IVec3::ZERO, &center), (IVec3::Z, &back)]);
-    let mut lights = HashMap::from([
-        (IVec3::ZERO, ChunkLight::default()),
-        (IVec3::Z, ChunkLight::default()),
-    ]);
-    let mut heightmaps = HashMap::from([
-        (IVec3::ZERO, ChunkHeightmap::default()),
-        (IVec3::Z, ChunkHeightmap::default()),
-    ]);
-    let targets = target_set([IVec3::ZERO, IVec3::Z]);
-
-    compute_light_region(&chunks, &mut lights, &mut heightmaps, &targets, 1);
-
-    assert_eq!(lights[&IVec3::Z].block_light(uvec3(8, 8, 0)), 15);
-    assert_eq!(lights[&IVec3::ZERO].block_light(uvec3(8, 8, 15)), 14);
-}
-
-fn neighbor_with_glowstone(x: u32, y: u32, z: u32) -> (Chunk, ChunkLight) {
-    let mut chunk = empty_chunk();
-    chunk.set_cell_xyz(
-        x as usize,
-        y as usize,
-        z as usize,
-        block_cell(BlockType::Glowstone),
-    );
-    let mut light = ChunkLight::default();
-    let blocks = HashMap::new();
-    let mut lights = HashMap::new();
-    let mut dirty = 0;
-    compute_block_light(&chunk, &mut light, &blocks, &mut lights, &mut dirty);
-    (chunk, light)
-}
-
-// ── Pull-from-neighbor tests ──────────────────────────────────────────
-
-#[test]
-fn block_light_pulls_from_neighbor_emitter() {
-    let left_chunk = empty_chunk();
-    let mut left_light = ChunkLight::default();
-    left_light.set_block_light(uvec3(15, 8, 8), 15);
-    left_light.set_block_light(uvec3(14, 8, 8), 14);
-    left_light.set_block_light(uvec3(15, 9, 8), 14);
-
-    let right_chunk = empty_chunk();
-    let mut right_light = ChunkLight::default();
-
-    let blocks: HashMap<IVec3, &Chunk> = HashMap::from([(ivec3(-1, 0, 0), &left_chunk)]);
-    let mut lights: HashMap<IVec3, ChunkLight> = HashMap::from([(ivec3(-1, 0, 0), left_light)]);
-    let mut dirty = 0;
-    compute_block_light(
-        &right_chunk,
-        &mut right_light,
-        &blocks,
-        &mut lights,
-        &mut dirty,
-    );
-    pull_neighbor_block_light(
-        &right_chunk,
-        &mut right_light,
-        &blocks,
-        &mut lights,
-        &mut dirty,
-    );
-
-    assert!(
-        right_light.block_light(uvec3(0, 8, 8)) >= 14,
-        "center must pull light from neighbor emitter; got {}",
-        right_light.block_light(uvec3(0, 8, 8))
-    );
-    assert!(
-        right_light.block_light(uvec3(1, 8, 8)) >= 13,
-        "center propagation from pulled face light; got {}",
-        right_light.block_light(uvec3(1, 8, 8))
-    );
-}
-
-#[test]
-fn block_light_pulls_from_neighbor_emitter_across_corner() {
-    let diag_chunk = empty_chunk();
-    let mut diag_light = ChunkLight::default();
-    diag_light.set_block_light(uvec3(15, 8, 0), 15);
-    diag_light.set_block_light(uvec3(14, 8, 0), 14);
-    let center_chunk = empty_chunk();
-    let mut center_light = ChunkLight::default();
-
-    let blocks: HashMap<IVec3, &Chunk> = HashMap::from([(ivec3(-1, 0, 0), &diag_chunk)]);
-    let mut lights: HashMap<IVec3, ChunkLight> = HashMap::from([(ivec3(-1, 0, 0), diag_light)]);
-    let mut dirty = 0;
-    compute_block_light(
-        &center_chunk,
-        &mut center_light,
-        &blocks,
-        &mut lights,
-        &mut dirty,
-    );
-    pull_neighbor_block_light(
-        &center_chunk,
-        &mut center_light,
-        &blocks,
-        &mut lights,
-        &mut dirty,
-    );
-
-    assert!(
-        center_light.block_light(uvec3(0, 8, 0)) >= 14,
-        "corner neighbor light must pull into center; got {}",
-        center_light.block_light(uvec3(0, 8, 0))
-    );
-}
-
-#[test]
-fn empty_chunk_does_not_clear_neighbor_own_emitter_light() {
-    let (left_chunk, left_light) = neighbor_with_glowstone(15, 8, 8);
-    let right_chunk = empty_chunk();
-    let mut right_light = ChunkLight::default();
-
-    let blocks: HashMap<IVec3, &Chunk> = HashMap::from([(ivec3(-1, 0, 0), &left_chunk)]);
-    let mut lights: HashMap<IVec3, ChunkLight> =
-        HashMap::from([(ivec3(-1, 0, 0), left_light.clone())]);
-    let mut dirty = 0;
-    compute_block_light(
-        &right_chunk,
-        &mut right_light,
-        &blocks,
-        &mut lights,
-        &mut dirty,
-    );
-
-    let modified_left = lights.get(&ivec3(-1, 0, 0)).unwrap();
-    assert_eq!(
-        modified_left.block_light(uvec3(15, 8, 8)),
-        15,
-        "neighbor Glowstone must remain lit"
-    );
-    assert!(
-        modified_left.block_light(uvec3(14, 8, 8)) > 0,
-        "neighbor propagation from its own emitter must survive"
-    );
-}
-
-#[test]
-fn empty_chunk_neighbor_pull_from_multiple_sides() {
-    let left_chunk = empty_chunk();
-    let mut left_light = ChunkLight::default();
-    left_light.set_block_light(uvec3(15, 8, 8), 15);
-    left_light.set_block_light(uvec3(14, 8, 8), 14);
-
-    let right_chunk = empty_chunk();
-    let mut right_light = ChunkLight::default();
-    right_light.set_block_light(uvec3(0, 8, 8), 15);
-    right_light.set_block_light(uvec3(1, 8, 8), 14);
-
-    let center_chunk = empty_chunk();
-    let mut center_light = ChunkLight::default();
-
-    let blocks: HashMap<IVec3, &Chunk> = HashMap::from([
-        (ivec3(-1, 0, 0), &left_chunk),
-        (ivec3(1, 0, 0), &right_chunk),
-    ]);
-    let mut lights: HashMap<IVec3, ChunkLight> =
-        HashMap::from([(ivec3(-1, 0, 0), left_light), (ivec3(1, 0, 0), right_light)]);
-    let mut dirty = 0;
-    compute_block_light(
-        &center_chunk,
-        &mut center_light,
-        &blocks,
-        &mut lights,
-        &mut dirty,
-    );
-    pull_neighbor_block_light(
-        &center_chunk,
-        &mut center_light,
-        &blocks,
-        &mut lights,
-        &mut dirty,
-    );
-
-    assert!(
-        center_light.block_light(uvec3(0, 8, 8)) >= 14,
-        "light from left neighbor face; got {}",
-        center_light.block_light(uvec3(0, 8, 8))
-    );
-    assert!(
-        center_light.block_light(uvec3(15, 8, 8)) >= 14,
-        "light from right neighbor face; got {}",
-        center_light.block_light(uvec3(15, 8, 8))
-    );
-    let mid = center_light.block_light(uvec3(7, 8, 8));
-    assert!(
-        mid > 0,
-        "midpoint should receive converging light; got {}",
-        mid
-    );
-}
-
-// ── Multiple emitters ─────────────────────────────────────────────────
-
-#[test]
-fn multiple_emitters_propagate_independently() {
-    let mut chunk = empty_chunk();
-    chunk.set_cell_xyz(4, 8, 4, block_cell(BlockType::Glowstone));
-    chunk.set_cell_xyz(12, 8, 12, block_cell(BlockType::Glowstone));
-
-    let mut light = ChunkLight::default();
-    let blocks = HashMap::new();
-    let mut lights = HashMap::new();
-    let mut dirty = 0;
-    compute_block_light(&chunk, &mut light, &blocks, &mut lights, &mut dirty);
-
-    assert_eq!(light.block_light(uvec3(4, 8, 4)), 15);
-    assert_eq!(light.block_light(uvec3(12, 8, 12)), 15);
-    assert!(
-        light.block_light(uvec3(7, 8, 7)) > 0,
-        "midpoint between emitters must receive light"
-    );
-}
-
-#[test]
-fn multiple_emitters_on_faces_propagate_cross_chunk() {
-    let left_chunk = empty_chunk();
-    let mut right_chunk = empty_chunk();
-
-    let left_light = ChunkLight::default();
-    let mut right_light = ChunkLight::default();
-
-    right_chunk.set_cell_xyz(0, 8, 8, block_cell(BlockType::Glowstone));
-    right_chunk.set_cell_xyz(0, 8, 4, block_cell(BlockType::Glowstone));
-    right_chunk.set_cell_xyz(0, 8, 12, block_cell(BlockType::Glowstone));
-
-    let blocks: HashMap<IVec3, &Chunk> = HashMap::from([(ivec3(-1, 0, 0), &left_chunk)]);
-    let mut lights: HashMap<IVec3, ChunkLight> =
-        HashMap::from([(ivec3(-1, 0, 0), left_light.clone())]);
-    let mut dirty = 0;
-    compute_block_light(
-        &right_chunk,
-        &mut right_light,
-        &blocks,
-        &mut lights,
-        &mut dirty,
-    );
-    let modified_left = lights.remove(&ivec3(-1, 0, 0)).unwrap();
-
-    assert_eq!(modified_left.block_light(uvec3(15, 8, 8)), 14);
-    assert_eq!(modified_left.block_light(uvec3(15, 8, 4)), 14);
-    assert_eq!(modified_left.block_light(uvec3(15, 8, 12)), 14);
-}
-
-// ── Emitter removal with neighborhood ─────────────────────────────────
-
-#[test]
-fn removal_of_one_emitter_preserves_other_emitter_light() {
-    let left_chunk = empty_chunk();
-    let mut right_chunk = empty_chunk();
-    right_chunk.set_cell_xyz(0, 8, 8, block_cell(BlockType::Glowstone));
-    right_chunk.set_cell_xyz(0, 10, 8, block_cell(BlockType::Glowstone));
-
-    let blocks: HashMap<IVec3, &Chunk> = HashMap::from([(ivec3(-1, 0, 0), &left_chunk)]);
-
-    let mut lights: HashMap<IVec3, ChunkLight> =
-        HashMap::from([(ivec3(-1, 0, 0), ChunkLight::default())]);
-    let mut right_light = ChunkLight::default();
-    let mut dirty = 0;
-    compute_block_light(
-        &right_chunk,
-        &mut right_light,
-        &blocks,
-        &mut lights,
-        &mut dirty,
-    );
-
-    let left_after_both = lights.remove(&ivec3(-1, 0, 0)).unwrap();
-    assert!(left_after_both.block_light(uvec3(15, 8, 8)) > 0);
-
-    right_chunk.set_cell_xyz(0, 8, 8, ChunkCell::EMPTY);
-    let mut lights: HashMap<IVec3, ChunkLight> =
-        HashMap::from([(ivec3(-1, 0, 0), left_after_both)]);
-    let mut dirty = 0;
-    compute_block_light(
-        &right_chunk,
-        &mut right_light,
-        &blocks,
-        &mut lights,
-        &mut dirty,
-    );
-    clear_stale_neighbor_block_light(
-        &right_chunk,
-        &mut right_light,
-        &blocks,
-        &mut lights,
-        &mut dirty,
-    );
-
-    let left_after_remove = lights.get(&ivec3(-1, 0, 0)).unwrap();
-    assert_eq!(
-        right_light.block_light(uvec3(0, 10, 8)),
-        15,
-        "remaining emitter must stay lit"
-    );
-    assert!(
-        left_after_remove.block_light(uvec3(15, 10, 8)) > 0,
-        "neighbor light from remaining emitter must survive; got 0"
-    );
-    assert!(
-        left_after_remove.block_light(uvec3(15, 8, 8))
-            < left_after_remove.block_light(uvec3(15, 10, 8)),
-        "neighbor light at removed emitter location must decrease"
-    );
-}
-
-#[test]
-fn removal_of_all_emitters_clears_all_boundary_light() {
-    let left_chunk = empty_chunk();
-    let mut right_chunk = empty_chunk();
-    right_chunk.set_cell_xyz(0, 8, 8, block_cell(BlockType::Glowstone));
-
-    let blocks: HashMap<IVec3, &Chunk> = HashMap::from([(ivec3(-1, 0, 0), &left_chunk)]);
-
-    let mut lights: HashMap<IVec3, ChunkLight> =
-        HashMap::from([(ivec3(-1, 0, 0), ChunkLight::default())]);
-    let mut right_light = ChunkLight::default();
-    let mut dirty = 0;
-    compute_block_light(
-        &right_chunk,
-        &mut right_light,
-        &blocks,
-        &mut lights,
-        &mut dirty,
-    );
-    let left_with = lights.remove(&ivec3(-1, 0, 0)).unwrap();
-    assert_eq!(left_with.block_light(uvec3(15, 8, 8)), 14);
-
-    right_chunk.set_cell_xyz(0, 8, 8, ChunkCell::EMPTY);
-    let mut lights: HashMap<IVec3, ChunkLight> = HashMap::from([(ivec3(-1, 0, 0), left_with)]);
-    let mut dirty = 0;
-    compute_block_light(
-        &right_chunk,
-        &mut right_light,
-        &blocks,
-        &mut lights,
-        &mut dirty,
-    );
-    clear_stale_neighbor_block_light(
-        &right_chunk,
-        &mut right_light,
-        &blocks,
-        &mut lights,
-        &mut dirty,
-    );
-    let left_after = lights.remove(&ivec3(-1, 0, 0)).unwrap();
-
-    for xz in 0..CHUNK_SIZE {
-        for y in 0..CHUNK_SIZE {
-            assert_eq!(
-                left_after.block_light(uvec3(xz as u32, y as u32, 8)),
-                0,
-                "all neighbor boundary light must be 0 after removal; got light at ({xz},{y},8)"
-            );
-        }
+    assert_eq!(rebuilt[&upper_position].light.sky_light(local(8, 1, 8)), 15);
+    assert_eq!(rebuilt[&upper_position].light.sky_light(local(8, 0, 8)), 0);
+    assert_eq!(rebuilt[&lower_position].light.sky_light(local(8, 15, 8)), 0);
+    for position in [lower_position, upper_position] {
+        assert_eq!(rebuilt[&position].heightmap.heights[8][8], 16);
     }
+}
+
+#[test]
+fn sky_light_waits_for_a_missing_top_chunk() {
+    let position = ChunkPos::new(-2, 0, -13);
+    let rebuilt = rebuild_single(
+        2,
+        position,
+        &Chunk::default(),
+        &ChunkLight::default(),
+        &ChunkHeightmap::default(),
+    );
+
+    assert_eq!(rebuilt.light.sky_light(local(8, 15, 8)), 0);
+}
+
+#[test]
+fn a_missing_middle_chunk_blocks_sky_until_the_column_is_complete() {
+    let bottom_position = ChunkPos::new(-10, 0, -3);
+    let middle_position = ChunkPos::new(-10, 1, -3);
+    let top_position = ChunkPos::new(-10, 2, -3);
+    let bottom = Chunk::default();
+    let middle = Chunk::default();
+    let top = Chunk::default();
+    let bottom_light = ChunkLight::default();
+    let top_light = ChunkLight::default();
+    let bottom_heightmap = ChunkHeightmap::default();
+    let top_heightmap = ChunkHeightmap::default();
+
+    let mut incomplete = ChunkLightRegion::new(3);
+    incomplete.insert_target(bottom_position, &bottom, &bottom_light, &bottom_heightmap);
+    incomplete.insert_target(top_position, &top, &top_light, &top_heightmap);
+    let first = rebuilt_by_position(incomplete);
+
+    assert_eq!(first[&top_position].light.sky_light(local(8, 15, 8)), 15);
+    assert_eq!(first[&bottom_position].light.sky_light(local(8, 15, 8)), 0);
+
+    let middle_light = ChunkLight::default();
+    let middle_heightmap = ChunkHeightmap::default();
+    let mut complete = ChunkLightRegion::new(3);
+    complete.insert_target(
+        bottom_position,
+        &bottom,
+        &first[&bottom_position].light,
+        &first[&bottom_position].heightmap,
+    );
+    complete.insert_target(middle_position, &middle, &middle_light, &middle_heightmap);
+    complete.insert_target(
+        top_position,
+        &top,
+        &first[&top_position].light,
+        &first[&top_position].heightmap,
+    );
+    let second = rebuilt_by_position(complete);
+
+    for position in [bottom_position, middle_position, top_position] {
+        assert_eq!(
+            second[&position].light.sky_light(local(8, 8, 8)),
+            15,
+            "completed column chunk {position:?}"
+        );
+    }
+}
+
+#[test]
+fn boundary_light_is_read_only_and_only_targets_are_rebuilt() {
+    let target_position = ChunkPos::new(-5, 0, -8);
+    let boundary_position = target_position.offset(IVec3::NEG_X);
+    let target = Chunk::default();
+    let target_light = ChunkLight::default();
+    let target_heightmap = ChunkHeightmap::default();
+    let mut boundary_light = ChunkLight::default();
+    boundary_light.set_block_light(local(15, 8, 8), 15);
+    boundary_light.set_sky_light(local(15, 9, 8), 11);
+    let boundary_before = boundary_light.clone();
+
+    let mut region = ChunkLightRegion::new(2);
+    region.insert_target(target_position, &target, &target_light, &target_heightmap);
+    assert_eq!(
+        region.required_boundary_positions(),
+        HashSet::from([
+            target_position.offset(IVec3::X),
+            target_position.offset(IVec3::NEG_X),
+            target_position.offset(IVec3::Y),
+            target_position.offset(IVec3::NEG_Y),
+            target_position.offset(IVec3::Z),
+            target_position.offset(IVec3::NEG_Z),
+        ])
+    );
+    region.insert_boundary_light(boundary_position, &boundary_light);
+    let rebuilt = region.rebuild();
+
+    assert_eq!(rebuilt.len(), 1);
+    assert_eq!(rebuilt[0].position, target_position);
+    assert_eq!(rebuilt[0].light.block_light(local(0, 8, 8)), 14);
+    assert_eq!(rebuilt[0].light.sky_light(local(0, 9, 8)), 10);
+    assert_eq!(boundary_light, boundary_before);
+}
+
+#[test]
+fn target_insertion_order_does_not_change_region_output() {
+    let left_position = ChunkPos::new(-14, 0, -9);
+    let right_position = left_position.offset(IVec3::X);
+    let mut left = Chunk::default();
+    left.set_cell_xyz(15, 8, 8, block_cell(BlockType::Glowstone));
+    let right = Chunk::default();
+    let left_light = ChunkLight::default();
+    let right_light = ChunkLight::default();
+    let left_heightmap = ChunkHeightmap::default();
+    let right_heightmap = ChunkHeightmap::default();
+
+    let mut left_first = ChunkLightRegion::new(1);
+    left_first.insert_target(left_position, &left, &left_light, &left_heightmap);
+    left_first.insert_target(right_position, &right, &right_light, &right_heightmap);
+    let left_first = rebuilt_by_position(left_first)
+        .into_iter()
+        .map(|(position, rebuilt)| (position, (rebuilt.light, rebuilt.heightmap)))
+        .collect::<HashMap<_, _>>();
+
+    let mut right_first = ChunkLightRegion::new(1);
+    right_first.insert_target(right_position, &right, &right_light, &right_heightmap);
+    right_first.insert_target(left_position, &left, &left_light, &left_heightmap);
+    let right_first = rebuilt_by_position(right_first)
+        .into_iter()
+        .map(|(position, rebuilt)| (position, (rebuilt.light, rebuilt.heightmap)))
+        .collect::<HashMap<_, _>>();
+
+    assert_eq!(left_first, right_first);
+}
+
+#[test]
+fn rebuilding_identical_state_reports_no_changes() {
+    let position = ChunkPos::new(-4, 0, -6);
+    let chunk = chunk_with_cells(|_, y, _| {
+        if y < 7 {
+            block_cell(BlockType::Stone)
+        } else if y == 10 {
+            block_cell(BlockType::Glowstone)
+        } else {
+            ChunkCell::EMPTY
+        }
+    });
+    let first = rebuild_single(
+        1,
+        position,
+        &chunk,
+        &ChunkLight::default(),
+        &ChunkHeightmap::default(),
+    );
+    assert!(first.light_changed());
+    assert!(first.heightmap_changed());
+
+    let second = rebuild_single(1, position, &chunk, &first.light, &first.heightmap);
+    assert!(!second.light_changed());
+    assert!(!second.heightmap_changed());
+    assert_eq!(second.light, first.light);
+    assert_eq!(second.heightmap, first.heightmap);
+}
+
+#[test]
+fn sixteen_chunk_height_preserves_the_highest_heightmap_value() {
+    const HEIGHT_CHUNKS: usize = 16;
+
+    let column = ChunkPos::new(-11, 0, -15);
+    let mut chunks = (0..HEIGHT_CHUNKS)
+        .map(|_| Chunk::default())
+        .collect::<Vec<_>>();
+    chunks[HEIGHT_CHUNKS - 1].set_cell_xyz(0, CHUNK_SIZE - 1, 0, block_cell(BlockType::Stone));
+    let lights = (0..HEIGHT_CHUNKS)
+        .map(|_| ChunkLight::default())
+        .collect::<Vec<_>>();
+    let heightmaps = (0..HEIGHT_CHUNKS)
+        .map(|_| ChunkHeightmap::default())
+        .collect::<Vec<_>>();
+
+    let mut region = ChunkLightRegion::new(HEIGHT_CHUNKS);
+    for y in 0..HEIGHT_CHUNKS {
+        region.insert_target(
+            ChunkPos::new(column.as_ivec3().x, y as i32, column.as_ivec3().z),
+            &chunks[y],
+            &lights[y],
+            &heightmaps[y],
+        );
+    }
+    let rebuilt = region.rebuild();
+
+    assert_eq!(rebuilt.len(), HEIGHT_CHUNKS);
+    assert!(
+        rebuilt
+            .iter()
+            .all(|chunk| chunk.heightmap.heights[0][0] == u8::MAX)
+    );
+}
+
+#[test]
+#[should_panic]
+fn heights_above_sixteen_chunks_are_rejected() {
+    let _ = ChunkLightRegion::new(17);
+}
+
+#[test]
+#[should_panic]
+fn targets_outside_the_vertical_range_are_rejected() {
+    let chunk = Chunk::default();
+    let light = ChunkLight::default();
+    let heightmap = ChunkHeightmap::default();
+    let mut region = ChunkLightRegion::new(2);
+    region.insert_target(ChunkPos::new(-3, 2, -5), &chunk, &light, &heightmap);
+}
+
+#[test]
+fn packed_light_round_trips_through_a_local_position() {
+    let mut light = ChunkLight::default();
+    let position = local(7, 5, 3);
+    light.set_sky_light(position, 13);
+    light.set_block_light(position, 9);
+
+    assert_eq!(light.sky_light(position), 13);
+    assert_eq!(light.block_light(position), 9);
+    assert_eq!(light.packed_light(position), 0xD9);
 }

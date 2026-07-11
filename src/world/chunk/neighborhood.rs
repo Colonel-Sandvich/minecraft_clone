@@ -53,14 +53,6 @@ impl NeighborOffset {
         })
     }
 
-    pub(crate) const fn bit_index(self) -> u32 {
-        let ix = (self.0.x + 1) as u32;
-        let iy = (self.0.y + 1) as u32;
-        let iz = (self.0.z + 1) as u32;
-        let flat = ix * 9 + iy * 3 + iz;
-        if flat > 13 { flat - 1 } else { flat }
-    }
-
     pub(crate) fn source_axis_range(axis: i32) -> Range<usize> {
         match axis {
             -1 => CHUNK_SIZE - 1..CHUNK_SIZE,
@@ -232,15 +224,6 @@ mod tests {
             HashSet::from([IVec3::NEG_X, IVec3::NEG_Y, IVec3::new(-1, -1, 0)])
         );
         assert_eq!(NeighborOffset::touching(LocalBlockPos::ZERO).count(), 7);
-    }
-
-    #[test]
-    fn neighbor_bit_indices_are_unique() {
-        let bits = NeighborOffset::all()
-            .map(NeighborOffset::bit_index)
-            .collect::<HashSet<_>>();
-        assert_eq!(bits.len(), 26);
-        assert!(bits.iter().all(|bit| *bit < 26));
     }
 
     #[test]

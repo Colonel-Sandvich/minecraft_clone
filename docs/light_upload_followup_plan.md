@@ -60,10 +60,10 @@ pub struct VertexPullingLight {
 
 Implementation sketch:
 
-- Convert `ChunkLight::build_padded_light_data` output into `Arc<[u32]>` in mesh creation and light upload systems.
+- Convert `ChunkMeshLight::build_padded_data` output into `Arc<[u32]>` in mesh creation and light upload systems.
 - Assign the same `Arc` clone to all material-layer children for a chunk.
 - When a mesh rebuild adds a new layer child to a chunk that already has another layer child, clone the existing sibling's `VertexPullingLight` `Arc` instead of rebuilding padded light data.
-- Only call `ChunkLight::build_padded_light_data` during mesh rebuild if no existing child light data is available.
+- Only call `ChunkMeshLight::build_padded_data` during mesh rebuild if no existing child light data is available.
 - Keep `VertexPullingLight` on children for now. This avoids parent/child render-world lookup complexity.
 
 Why this phase is attractive:

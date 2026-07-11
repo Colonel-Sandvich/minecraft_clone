@@ -1,4 +1,4 @@
-use bevy::math::Vec3;
+use bevy::math::{IVec3, Vec3};
 use strum::EnumIter;
 
 /// Canonical face order shared by meshing tables and the terrain shader.
@@ -15,9 +15,45 @@ pub enum Direction {
 
 impl Direction {
     pub const COUNT: usize = 6;
+    pub const ALL: [Self; Self::COUNT] = [
+        Self::Left,
+        Self::Right,
+        Self::Down,
+        Self::Up,
+        Self::Forward,
+        Self::Backward,
+    ];
 
     pub const fn index(self) -> usize {
         self as usize
+    }
+
+    pub const fn opposite(self) -> Self {
+        match self {
+            Self::Left => Self::Right,
+            Self::Right => Self::Left,
+            Self::Down => Self::Up,
+            Self::Up => Self::Down,
+            Self::Forward => Self::Backward,
+            Self::Backward => Self::Forward,
+        }
+    }
+
+    pub const fn offset(self) -> IVec3 {
+        match self {
+            Self::Left => IVec3::NEG_X,
+            Self::Right => IVec3::X,
+            Self::Down => IVec3::NEG_Y,
+            Self::Up => IVec3::Y,
+            Self::Forward => IVec3::NEG_Z,
+            Self::Backward => IVec3::Z,
+        }
+    }
+}
+
+impl From<Direction> for IVec3 {
+    fn from(value: Direction) -> Self {
+        value.offset()
     }
 }
 

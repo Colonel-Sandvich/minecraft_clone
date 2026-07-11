@@ -2,6 +2,8 @@ use std::ops::{Add, Sub};
 
 use bevy::math::{IVec3, UVec3, Vec3};
 
+use crate::quad::Direction;
+
 pub const CHUNK_SIZE: usize = 16;
 pub const CHUNK_ISIZE: i32 = CHUNK_SIZE as i32;
 pub const CHUNK_VOLUME: usize = CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE;
@@ -314,6 +316,62 @@ impl ChunkBlockPos {
     pub fn offset(self, offset: IVec3) -> Self {
         self.world().offset(offset).split()
     }
+
+    /// Steps to one face-adjacent block without normalizing through world coordinates.
+    pub fn neighbor(self, direction: Direction) -> Self {
+        let mut local = self.local.as_uvec3();
+        let chunk = match direction {
+            Direction::Left if local.x == 0 => {
+                local.x = CHUNK_SIZE as u32 - 1;
+                self.chunk.offset(IVec3::NEG_X)
+            }
+            Direction::Left => {
+                local.x -= 1;
+                self.chunk
+            }
+            Direction::Right if local.x == CHUNK_SIZE as u32 - 1 => {
+                local.x = 0;
+                self.chunk.offset(IVec3::X)
+            }
+            Direction::Right => {
+                local.x += 1;
+                self.chunk
+            }
+            Direction::Down if local.y == 0 => {
+                local.y = CHUNK_SIZE as u32 - 1;
+                self.chunk.offset(IVec3::NEG_Y)
+            }
+            Direction::Down => {
+                local.y -= 1;
+                self.chunk
+            }
+            Direction::Up if local.y == CHUNK_SIZE as u32 - 1 => {
+                local.y = 0;
+                self.chunk.offset(IVec3::Y)
+            }
+            Direction::Up => {
+                local.y += 1;
+                self.chunk
+            }
+            Direction::Forward if local.z == 0 => {
+                local.z = CHUNK_SIZE as u32 - 1;
+                self.chunk.offset(IVec3::NEG_Z)
+            }
+            Direction::Forward => {
+                local.z -= 1;
+                self.chunk
+            }
+            Direction::Backward if local.z == CHUNK_SIZE as u32 - 1 => {
+                local.z = 0;
+                self.chunk.offset(IVec3::Z)
+            }
+            Direction::Backward => {
+                local.z += 1;
+                self.chunk
+            }
+        };
+        Self::new(chunk, LocalBlockPos::new(local.x, local.y, local.z))
+    }
 }
 
 /// A Y-fast index into the canonical 16^3 chunk storage layout.
@@ -398,6 +456,20 @@ mod tests {
         let next = ChunkPos::ZERO.block(LocalBlockPos::MAX).offset(IVec3::ONE);
         assert_eq!(next.chunk(), ChunkPos::new(1, 1, 1));
         assert_eq!(next.local(), LocalBlockPos::ZERO);
+    }
+
+    #[test]
+    fn directional_neighbors_match_general_offsets_exhaustively() {
+        let chunk = ChunkPos::new(-7, 3, -11);
+        for index in ChunkIndex::iter() {
+            let address = chunk.block(index.local());
+            for direction in Direction::ALL {
+                assert_eq!(
+                    address.neighbor(direction),
+                    address.offset(direction.offset())
+                );
+            }
+        }
     }
 
     #[test]

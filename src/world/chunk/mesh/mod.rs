@@ -7,6 +7,7 @@
 mod blocks;
 mod components;
 mod face;
+mod light;
 pub mod mesher;
 mod render;
 mod systems;
