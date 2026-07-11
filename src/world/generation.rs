@@ -2,7 +2,7 @@ use bevy::prelude::*;
 
 use crate::{
     block::BlockType,
-    world::chunk::{CHUNK_ISIZE, CHUNK_SIZE, Chunk, ChunkCell},
+    world::chunk::{CHUNK_ISIZE, CHUNK_SIZE, Chunk, ChunkCell, ChunkPos, WorldBlockPos},
 };
 
 // KEEP THIS AT 1. IF THERE ARE BREAKING CHANGES IN CHUNK FORMAT THAT'S FINE I WILL JUST DELETE THE dev save world and make a new one!
@@ -86,10 +86,11 @@ pub fn terrain_height(metadata: &WorldMetadata, world_x: i32, world_z: i32) -> i
 }
 
 pub fn candidate_oak_tree_source_chunks(target_chunk: IVec3) -> Vec<IVec2> {
-    let min_x = target_chunk.x * CHUNK_ISIZE - OAK_TREE_MAX_CANOPY_RADIUS;
-    let max_x = target_chunk.x * CHUNK_ISIZE + CHUNK_ISIZE - 1 + OAK_TREE_MAX_CANOPY_RADIUS;
-    let min_z = target_chunk.z * CHUNK_ISIZE - OAK_TREE_MAX_CANOPY_RADIUS;
-    let max_z = target_chunk.z * CHUNK_ISIZE + CHUNK_ISIZE - 1 + OAK_TREE_MAX_CANOPY_RADIUS;
+    let origin = ChunkPos::from_ivec3(target_chunk).origin().as_ivec3();
+    let min_x = origin.x - OAK_TREE_MAX_CANOPY_RADIUS;
+    let max_x = origin.x + CHUNK_ISIZE - 1 + OAK_TREE_MAX_CANOPY_RADIUS;
+    let min_z = origin.z - OAK_TREE_MAX_CANOPY_RADIUS;
+    let max_z = origin.z + CHUNK_ISIZE - 1 + OAK_TREE_MAX_CANOPY_RADIUS;
 
     let source_min_x = div_floor(min_x, CHUNK_ISIZE);
     let source_max_x = div_floor(max_x, CHUNK_ISIZE);
@@ -179,7 +180,10 @@ pub fn oak_tree_blocks(tree: OakTree) -> Vec<(IVec3, BlockType)> {
 
 pub fn apply_oak_tree_to_chunk(tree: OakTree, chunk_pos: IVec3, chunk: &mut Chunk) {
     for (global_pos, block) in oak_tree_blocks(tree) {
-        let Some(local_pos) = global_to_local_in_chunk(chunk_pos, global_pos) else {
+        let Some(local_pos) = ChunkPos::from_ivec3(chunk_pos)
+            .local_of(WorldBlockPos::from_ivec3(global_pos))
+            .map(Into::into)
+        else {
             continue;
         };
 
@@ -198,17 +202,18 @@ pub fn apply_oak_tree_to_chunk(tree: OakTree, chunk_pos: IVec3, chunk: &mut Chun
 
 fn generate_terrain_chunk(metadata: &WorldMetadata, chunk_pos: IVec3) -> Chunk {
     let mut surface_heights = [[0; CHUNK_SIZE]; CHUNK_SIZE];
+    let origin = ChunkPos::from_ivec3(chunk_pos).origin().as_ivec3();
 
     for x in 0..CHUNK_SIZE {
         for z in 0..CHUNK_SIZE {
-            let world_x = chunk_pos.x * CHUNK_ISIZE + x as i32;
-            let world_z = chunk_pos.z * CHUNK_ISIZE + z as i32;
+            let world_x = origin.x + x as i32;
+            let world_z = origin.z + z as i32;
             surface_heights[x][z] = terrain_height(metadata, world_x, world_z);
         }
     }
 
     Chunk::from_cell_fn(|x, y, z| {
-        let world_y = chunk_pos.y * CHUNK_ISIZE + y as i32;
+        let world_y = origin.y + y as i32;
         terrain_cell_at(world_y, surface_heights[x][z])
     })
 }
@@ -230,17 +235,6 @@ fn terrain_cell_at(world_y: i32, surface_y: i32) -> ChunkCell {
         BlockType::Dirt.into()
     } else {
         BlockType::Stone.into()
-    }
-}
-
-fn global_to_local_in_chunk(chunk_pos: IVec3, global_pos: IVec3) -> Option<UVec3> {
-    let local = global_pos - chunk_pos * CHUNK_ISIZE;
-    let in_bounds = |value: i32| (0..CHUNK_ISIZE).contains(&value);
-
-    if in_bounds(local.x) && in_bounds(local.y) && in_bounds(local.z) {
-        Some(local.as_uvec3())
-    } else {
-        None
     }
 }
 

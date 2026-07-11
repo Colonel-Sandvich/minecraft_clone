@@ -385,7 +385,7 @@ fn padded_light_data_packs_four_cells_per_word() {
 }
 
 fn padded_light_index(x: usize, y: usize, z: usize) -> usize {
-    x + z * PADDED_CHUNK_SIZE + y * PADDED_CHUNK_LAYER_SIZE
+    padded_chunk_index(x, y, z)
 }
 
 fn unpack_padded_light(data: &[u32], idx: usize) -> u8 {

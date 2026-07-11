@@ -1,14 +1,13 @@
 use bevy::{platform::collections::HashMap, prelude::*};
 use serde::{Deserialize, Serialize};
 
-use super::super::{CHUNK_ISIZE, CHUNK_SIZE, chunk_neighbor_offsets};
+use super::super::{
+    CHUNK_ISIZE, CHUNK_SIZE, LocalBlockPos, chunk_neighbor_offsets,
+    neighborhood::{NeighborOffset, PADDED_CHUNK_VOLUME, PaddedChunkIndex, padded_chunk_index},
+};
 
 pub(super) const SKY_LIGHT_MAX: u8 = 15;
 
-pub(super) const PADDED_CHUNK_SIZE: usize = CHUNK_SIZE + 2;
-pub(super) const PADDED_CHUNK_LAYER_SIZE: usize = PADDED_CHUNK_SIZE * PADDED_CHUNK_SIZE;
-pub(super) const PADDED_CHUNK_VOLUME: usize =
-    PADDED_CHUNK_SIZE * PADDED_CHUNK_SIZE * PADDED_CHUNK_SIZE;
 pub(super) const PADDED_LIGHT_WORDS: usize = PADDED_CHUNK_VOLUME.div_ceil(4);
 const MISSING_PADDED_LIGHT_WORD: u32 = 0xF0F0F0F0;
 
@@ -22,15 +21,6 @@ impl Default for ChunkLight {
         Self {
             light: [[[0u8; CHUNK_SIZE]; CHUNK_SIZE]; CHUNK_SIZE],
         }
-    }
-}
-
-fn source_range_for_neighbor_axis(delta: i32) -> std::ops::Range<usize> {
-    match delta {
-        -1 => CHUNK_SIZE - 1..CHUNK_SIZE,
-        0 => 0..CHUNK_SIZE,
-        1 => 0..1,
-        _ => unreachable!("invalid neighbor offset"),
     }
 }
 
@@ -70,9 +60,10 @@ impl ChunkLight {
             for x in 0..CHUNK_SIZE {
                 for z in 0..CHUNK_SIZE {
                     for y in 0..CHUNK_SIZE {
-                        let padded_idx = (x + 1)
-                            + (z + 1) * PADDED_CHUNK_SIZE
-                            + (y + 1) * PADDED_CHUNK_LAYER_SIZE;
+                        let padded_idx = PaddedChunkIndex::from_local(LocalBlockPos::new(
+                            x as u32, y as u32, z as u32,
+                        ))
+                        .as_usize();
                         write_padded_light(&mut data, padded_idx, center.packed_light_at(x, z, y));
                     }
                 }
@@ -85,15 +76,13 @@ impl ChunkLight {
                 continue;
             };
 
-            for x in source_range_for_neighbor_axis(offset.x) {
-                for z in source_range_for_neighbor_axis(offset.z) {
-                    for y in source_range_for_neighbor_axis(offset.y) {
+            for x in NeighborOffset::source_axis_range(offset.x) {
+                for z in NeighborOffset::source_axis_range(offset.z) {
+                    for y in NeighborOffset::source_axis_range(offset.y) {
                         let px = (x as i32 + offset.x * CHUNK_ISIZE) + 1;
                         let pz = (z as i32 + offset.z * CHUNK_ISIZE) + 1;
                         let py = (y as i32 + offset.y * CHUNK_ISIZE) + 1;
-                        let padded_idx = px as usize
-                            + pz as usize * PADDED_CHUNK_SIZE
-                            + py as usize * PADDED_CHUNK_LAYER_SIZE;
+                        let padded_idx = padded_chunk_index(px as usize, py as usize, pz as usize);
                         write_padded_light(
                             &mut data,
                             padded_idx,

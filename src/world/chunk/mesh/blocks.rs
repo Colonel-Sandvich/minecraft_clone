@@ -4,20 +4,22 @@ use bevy::prelude::*;
 use crate::block::{BLOCK_FLAG_FULL_CUBE, BLOCK_FLAG_RENDERED};
 use crate::quad::Direction;
 
-use super::super::{CHUNK_ISIZE, CHUNK_SIZE, CHUNK_VOLUME, Chunk, chunk_neighbor_offsets};
+pub(crate) use super::super::neighborhood::{
+    PADDED_CHUNK_LAYER_SIZE, PADDED_CHUNK_SIZE, PADDED_CHUNK_VOLUME, padded_chunk_index,
+};
+use super::super::{
+    CHUNK_ISIZE, CHUNK_SIZE, CHUNK_VOLUME, Chunk, chunk_neighbor_offsets,
+    neighborhood::{NeighborOffset, PaddedChunkIndex, PaddedChunkOffset},
+};
 
-pub(crate) const PADDED_CHUNK_SIZE: usize = CHUNK_SIZE + 2;
-pub(crate) const PADDED_CHUNK_VOLUME: usize =
-    PADDED_CHUNK_SIZE * PADDED_CHUNK_SIZE * PADDED_CHUNK_SIZE;
-pub(crate) const PADDED_CHUNK_LAYER_SIZE: usize = PADDED_CHUNK_SIZE * PADDED_CHUNK_SIZE;
 pub(crate) const DIRECTION_COUNT: usize = Direction::COUNT;
 pub(crate) const DIRECTION_INDEX_OFFSETS: [isize; DIRECTION_COUNT] = [
-    -1,
-    1,
-    -(PADDED_CHUNK_LAYER_SIZE as isize),
-    PADDED_CHUNK_LAYER_SIZE as isize,
-    -(PADDED_CHUNK_SIZE as isize),
-    PADDED_CHUNK_SIZE as isize,
+    PaddedChunkOffset::for_direction(Direction::Left).as_isize(),
+    PaddedChunkOffset::for_direction(Direction::Right).as_isize(),
+    PaddedChunkOffset::for_direction(Direction::Down).as_isize(),
+    PaddedChunkOffset::for_direction(Direction::Up).as_isize(),
+    PaddedChunkOffset::for_direction(Direction::Forward).as_isize(),
+    PaddedChunkOffset::for_direction(Direction::Backward).as_isize(),
 ];
 
 const _: () = {
@@ -28,11 +30,6 @@ const _: () = {
     assert!(Direction::Forward.index() == 4);
     assert!(Direction::Backward.index() == 5);
 };
-
-#[inline(always)]
-pub(crate) const fn padded_chunk_index(x: usize, y: usize, z: usize) -> usize {
-    x + PADDED_CHUNK_SIZE * (z + PADDED_CHUNK_SIZE * y)
-}
 
 pub struct ChunkMeshBlocks {
     pub(crate) blocks: Box<[u16; PADDED_CHUNK_VOLUME]>,
@@ -109,9 +106,9 @@ impl ChunkMeshBlocks {
     }
 
     fn copy_neighbor_chunk_region(&mut self, offset: IVec3, chunk: &Chunk) {
-        for x in source_range_for_neighbor_axis(offset.x) {
-            for y in source_range_for_neighbor_axis(offset.y) {
-                for z in source_range_for_neighbor_axis(offset.z) {
+        for x in NeighborOffset::source_axis_range(offset.x) {
+            for y in NeighborOffset::source_axis_range(offset.y) {
+                for z in NeighborOffset::source_axis_range(offset.z) {
                     let meta = chunk.hot_meta_xyz(x, y, z);
                     self.set_cell_kind(
                         x as i32 + offset.x * CHUNK_ISIZE,
@@ -135,10 +132,9 @@ impl ChunkMeshBlocks {
         debug_assert!(is_in_padded_chunk(y));
         debug_assert!(is_in_padded_chunk(z));
 
-        let x = (x + 1) as usize;
-        let y = (y + 1) as usize;
-        let z = (z + 1) as usize;
-        self.blocks[padded_chunk_index(x, y, z)] = cell;
+        let index = PaddedChunkIndex::from_relative(IVec3::new(x, y, z))
+            .expect("mesh coordinate must fit the padded chunk");
+        self.blocks[index.as_usize()] = cell;
     }
 
     fn set_fluid_level(&mut self, x: i32, y: i32, z: i32, level: u8) {
@@ -146,10 +142,9 @@ impl ChunkMeshBlocks {
         debug_assert!(is_in_padded_chunk(y));
         debug_assert!(is_in_padded_chunk(z));
 
-        let x = (x + 1) as usize;
-        let y = (y + 1) as usize;
-        let z = (z + 1) as usize;
-        self.fluid_levels[padded_chunk_index(x, y, z)] = level;
+        let index = PaddedChunkIndex::from_relative(IVec3::new(x, y, z))
+            .expect("mesh coordinate must fit the padded chunk");
+        self.fluid_levels[index.as_usize()] = level;
     }
 
     #[inline(always)]
@@ -186,9 +181,9 @@ fn neighbor_face_shells_full_cube(center_pos: IVec3, chunks: &HashMap<IVec3, &Ch
             return false;
         };
 
-        for x in source_range_for_neighbor_axis(offset.x) {
-            for y in source_range_for_neighbor_axis(offset.y) {
-                for z in source_range_for_neighbor_axis(offset.z) {
+        for x in NeighborOffset::source_axis_range(offset.x) {
+            for y in NeighborOffset::source_axis_range(offset.y) {
+                for z in NeighborOffset::source_axis_range(offset.z) {
                     if chunk.hot_meta_xyz(x, y, z).mesh_flags & BLOCK_FLAG_FULL_CUBE == 0 {
                         return false;
                     }
@@ -198,15 +193,6 @@ fn neighbor_face_shells_full_cube(center_pos: IVec3, chunks: &HashMap<IVec3, &Ch
     }
 
     true
-}
-
-fn source_range_for_neighbor_axis(delta: i32) -> std::ops::Range<usize> {
-    match delta {
-        -1 => CHUNK_SIZE - 1..CHUNK_SIZE,
-        0 => 0..CHUNK_SIZE,
-        1 => 0..1,
-        _ => unreachable!("invalid neighbor offset"),
-    }
 }
 
 fn is_in_padded_chunk(value: i32) -> bool {

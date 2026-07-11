@@ -1,4 +1,7 @@
-use crate::{block::BlockType, world::chunk::ChunkCell};
+use crate::{
+    block::BlockType,
+    world::chunk::{ChunkBlockPos, ChunkCell, ChunkPos, LocalBlockPos},
+};
 
 use super::*;
 use bevy::time::TimeUpdateStrategy;
@@ -26,11 +29,8 @@ fn count_interaction_requests(
     }
 }
 
-fn block_pos(block: UVec3) -> BlockPos {
-    BlockPos {
-        chunk: IVec3::ZERO,
-        block,
-    }
+fn block_pos(block: UVec3) -> ChunkBlockPos {
+    ChunkBlockPos::new(ChunkPos::ZERO, LocalBlockPos::try_from(block).unwrap())
 }
 
 fn target() -> BlockTarget {

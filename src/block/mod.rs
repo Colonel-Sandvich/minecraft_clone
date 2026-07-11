@@ -1,7 +1,7 @@
 use bevy::{platform::collections::HashMap, prelude::*};
 use strum::{Display, EnumCount, EnumIter, EnumString, FromRepr};
 
-use crate::{quad::Direction, world::chunk::CHUNK_ISIZE};
+use crate::{quad::Direction, world::chunk::ChunkBlockPos};
 
 pub struct BlockPlugin;
 
@@ -468,25 +468,6 @@ mod tests {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct BlockPos {
-    pub chunk: IVec3,
-    pub block: UVec3,
-}
-
-impl BlockPos {
-    pub fn from_global(pos: IVec3) -> Self {
-        let chunk = (pos.as_vec3() / CHUNK_ISIZE as f32).floor().as_ivec3();
-        let block = (pos - chunk * CHUNK_ISIZE).as_uvec3();
-
-        Self { chunk, block }
-    }
-
-    pub fn to_global(&self) -> IVec3 {
-        self.chunk * CHUNK_ISIZE + self.block.as_ivec3()
-    }
-}
-
 pub enum BlockUpdateKind {
     Break,
     Place(BlockType),
@@ -495,6 +476,6 @@ pub enum BlockUpdateKind {
 #[derive(Message)]
 pub struct BlockUpdateMessage {
     pub chunk: Entity,
-    pub pos: BlockPos,
+    pub pos: ChunkBlockPos,
     pub kind: BlockUpdateKind,
 }

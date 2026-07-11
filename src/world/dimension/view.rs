@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 use bevy_settings::{ReflectSettingsGroup, SettingsGroup};
 
-use crate::world::chunk::CHUNK_ISIZE;
+use crate::world::chunk::ChunkPos;
 
 #[derive(Resource, SettingsGroup, Reflect, Debug, Clone, Copy, PartialEq, Eq)]
 #[reflect(Resource, SettingsGroup, Default)]
@@ -40,8 +40,7 @@ pub fn chunk_positions_in_view(
     height_chunks: usize,
     view_distance: i32,
 ) -> Vec<IVec3> {
-    let centre_in_chunk_coords = (centre_translation / CHUNK_ISIZE as f32).with_y(0.0);
-    let centre_chunk = centre_in_chunk_coords.floor().as_ivec3();
+    let centre_chunk = ChunkPos::containing_translation(centre_translation).as_ivec3();
     let view_distance = view_distance.max(0);
 
     let mut columns = (-view_distance..=view_distance)

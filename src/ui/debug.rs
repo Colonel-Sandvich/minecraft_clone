@@ -9,7 +9,7 @@ use crate::{
     memory::GameMemorySnapshot,
     player::Player,
     player::cam::MouseCam,
-    world::chunk::{CHUNK_ISIZE, ChunkLight, ChunkPosition, light::world_to_chunk_local},
+    world::chunk::{CHUNK_ISIZE, ChunkLight, ChunkPos, ChunkPosition, WorldBlockPos},
     world::dimension::ViewDistance,
 };
 
@@ -115,16 +115,16 @@ fn update_debug_text(
 
     let pos = player_q.translation;
     let block = pos.floor().as_ivec3();
-    let chunk = (pos / CHUNK_ISIZE as f32).floor().as_ivec3();
+    let chunk = ChunkPos::containing_translation(pos).as_ivec3();
 
     let (cam_transform, cam_global) = *cam_q;
     let light_world = cam_global.translation().floor().as_ivec3() + IVec3::NEG_Y;
-    let (light_chunk, light_local) = world_to_chunk_local(light_world);
+    let light_address = WorldBlockPos::from_ivec3(light_world).split();
     let light_map: HashMap<IVec3, &ChunkLight> =
         chunk_lights.iter().map(|(p, l)| (p.0, l)).collect();
     let current_light = light_map
-        .get(&light_chunk)
-        .map(|l| l.packed_light(light_local))
+        .get(&light_address.chunk().as_ivec3())
+        .map(|l| l.packed_light(light_address.local().as_uvec3()))
         .unwrap_or(0xF0);
     let current_sky = current_light >> 4;
     let current_block = current_light & 0x0F;
@@ -241,10 +241,10 @@ fn manage_light_labels(
     for dx in -LIGHT_LABEL_RADIUS..=LIGHT_LABEL_RADIUS {
         for dz in -LIGHT_LABEL_RADIUS..=LIGHT_LABEL_RADIUS {
             let world = center + IVec3::new(dx, 0, dz);
-            let (chunk, local) = world_to_chunk_local(world);
+            let address = WorldBlockPos::from_ivec3(world).split();
             let light = light_map
-                .get(&chunk)
-                .map(|l| l.packed_light(local))
+                .get(&address.chunk().as_ivec3())
+                .map(|l| l.packed_light(address.local().as_uvec3()))
                 .unwrap_or(0xF0);
             let sky = light >> 4;
             let block = light & 0x0F;
@@ -317,9 +317,7 @@ fn draw_chunk_borders(
         return;
     }
 
-    let player_chunk = (player_q.translation / CHUNK_ISIZE as f32)
-        .floor()
-        .as_ivec3();
+    let player_chunk = ChunkPos::containing_translation(player_q.translation).as_ivec3();
 
     let vd = view_distance.chunks();
     let s = CHUNK_ISIZE as f32;

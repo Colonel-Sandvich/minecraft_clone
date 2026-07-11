@@ -5,14 +5,14 @@ use avian3d::{
 use bevy::{color::palettes::basic, input::InputSystems, prelude::*};
 
 use crate::{
-    block::{BlockPos, BlockUpdateKind, BlockUpdateMessage},
+    block::{BlockUpdateKind, BlockUpdateMessage},
     ui::Hotbar,
     world::{
         ACTOR_LAYER, WORLD_LAYER,
         chunk::{
-            Chunk, ChunkBlockCounts, ChunkCell, ChunkHasActiveFluids, ChunkNeedsColliderRebuild,
-            ChunkNeedsLightRebuild, ChunkNeedsMeshRebuild, ChunkNeedsSave,
-            chunk_neighbor_offsets_for_block,
+            Chunk, ChunkBlockCounts, ChunkBlockPos, ChunkCell, ChunkHasActiveFluids,
+            ChunkNeedsColliderRebuild, ChunkNeedsLightRebuild, ChunkNeedsMeshRebuild,
+            ChunkNeedsSave, WorldBlockPos, chunk_neighbor_offsets_for_block,
         },
         dimension::Dimension,
     },
@@ -47,8 +47,8 @@ pub struct CurrentBlockTarget(pub Option<BlockTarget>);
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BlockTarget {
-    pub hit_block: BlockPos,
-    pub adjacent_block: BlockPos,
+    pub hit_block: ChunkBlockPos,
+    pub adjacent_block: ChunkBlockPos,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -65,7 +65,7 @@ pub struct BlockInteractionRequest {
 }
 
 impl BlockInteractionRequest {
-    fn block_pos(self) -> BlockPos {
+    fn block_pos(self) -> ChunkBlockPos {
         match self.kind {
             BlockInteractionKind::Pick | BlockInteractionKind::Break => self.target.hit_block,
             BlockInteractionKind::Place => self.target.adjacent_block,
@@ -111,8 +111,8 @@ fn raycast_block_target(
     let adjacent_block = hit_block + block_face_normal(ray.normal);
 
     Some(BlockTarget {
-        hit_block: BlockPos::from_global(hit_block),
-        adjacent_block: BlockPos::from_global(adjacent_block),
+        hit_block: WorldBlockPos::from_ivec3(hit_block).split(),
+        adjacent_block: WorldBlockPos::from_ivec3(adjacent_block).split(),
     })
 }
 
@@ -130,7 +130,7 @@ fn block_face_normal(normal: Vec3) -> IVec3 {
 
 fn draw_block_target_gizmos(gizmos: &mut Gizmos, target: BlockTarget) {
     gizmos.cube(
-        Transform::from_translation(target.hit_block.to_global().as_vec3() + 0.5)
+        Transform::from_translation(target.hit_block.world().as_ivec3().as_vec3() + 0.5)
             .with_scale(Vec3::splat(1.01)),
         basic::BLACK,
     );
@@ -169,7 +169,7 @@ fn apply_block_interaction_requests(
     for request in requests.read().copied() {
         let pos = request.block_pos();
 
-        let Some(chunk_entity) = dimension.chunk_entity(pos.chunk) else {
+        let Some(chunk_entity) = dimension.chunk_entity(pos.chunk().as_ivec3()) else {
             warn!("Interacted with missing chunk");
             continue;
         };
@@ -180,10 +180,10 @@ fn apply_block_interaction_requests(
 
         match request.kind {
             BlockInteractionKind::Pick => {
-                hotbar.set_selected_cell(chunk.get_cell(pos.block));
+                hotbar.set_selected_cell(chunk.get_cell(pos.local().as_uvec3()));
             }
             BlockInteractionKind::Break => {
-                let Some(delta) = chunk.break_block(pos.block) else {
+                let Some(delta) = chunk.break_block(pos.local().as_uvec3()) else {
                     continue;
                 };
                 if let Ok(mut meta) = meta_q.get_mut(chunk_entity) {
@@ -203,7 +203,11 @@ fn apply_block_interaction_requests(
                     ChunkNeedsLightRebuild,
                 ));
                 mark_boundary_neighbor_meshes_dirty(&mut commands, &dimension, pos);
-                mark_block_edit_light_columns_dirty(&mut commands, &dimension, pos.chunk);
+                mark_block_edit_light_columns_dirty(
+                    &mut commands,
+                    &dimension,
+                    pos.chunk().as_ivec3(),
+                );
             }
             BlockInteractionKind::Place => {
                 let Some(cell) = hotbar.selected_cell() else {
@@ -215,7 +219,7 @@ fn apply_block_interaction_requests(
                     continue;
                 }
 
-                let Some(delta) = chunk.place_cell(pos.block, cell) else {
+                let Some(delta) = chunk.place_cell(pos.local().as_uvec3(), cell) else {
                     continue;
                 };
                 if let Ok(mut meta) = meta_q.get_mut(chunk_entity) {
@@ -237,7 +241,11 @@ fn apply_block_interaction_requests(
                     ChunkNeedsLightRebuild,
                 ));
                 mark_boundary_neighbor_meshes_dirty(&mut commands, &dimension, pos);
-                mark_block_edit_light_columns_dirty(&mut commands, &dimension, pos.chunk);
+                mark_block_edit_light_columns_dirty(
+                    &mut commands,
+                    &dimension,
+                    pos.chunk().as_ivec3(),
+                );
             }
         }
     }
@@ -256,10 +264,10 @@ fn mark_chunk_fluid_activity(commands: &mut Commands, chunk_entity: Entity, chun
 fn mark_boundary_neighbor_meshes_dirty(
     commands: &mut Commands,
     dimension: &Dimension,
-    pos: BlockPos,
+    pos: ChunkBlockPos,
 ) {
-    for offset in chunk_neighbor_offsets_for_block(pos.block) {
-        let Some(entity) = dimension.chunk_entity(pos.chunk + offset) else {
+    for offset in chunk_neighbor_offsets_for_block(pos.local().as_uvec3()) {
+        let Some(entity) = dimension.chunk_entity(pos.chunk().as_ivec3() + offset) else {
             continue;
         };
 
@@ -287,11 +295,11 @@ fn placement_requires_actor_clearance(cell: ChunkCell) -> bool {
     cell.is_solid()
 }
 
-fn block_place_would_intersect(pos: BlockPos, spatial_query: &SpatialQuery) -> bool {
+fn block_place_would_intersect(pos: ChunkBlockPos, spatial_query: &SpatialQuery) -> bool {
     !spatial_query
         .shape_intersections(
             &Collider::cuboid(0.90, 0.90, 0.90),
-            pos.to_global().as_vec3() + 0.5,
+            pos.world().as_ivec3().as_vec3() + 0.5,
             Quat::IDENTITY,
             &SpatialQueryFilter::from_mask(ACTOR_LAYER),
         )

@@ -2,8 +2,8 @@ use bevy::prelude::*;
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use super::{
-    CHUNK_ISIZE, CHUNK_SIZE, CHUNK_VOLUME, Chunk, ChunkCell, FluidProfile, FluidState,
-    chunk_linear_index,
+    CHUNK_SIZE, CHUNK_VOLUME, Chunk, ChunkCell, ChunkPos, FluidProfile, FluidState, LocalBlockPos,
+    WorldBlockPos, chunk_linear_index,
 };
 
 const HORIZONTAL_DIRS: [IVec3; 4] = [IVec3::NEG_X, IVec3::X, IVec3::NEG_Z, IVec3::Z];
@@ -24,10 +24,10 @@ impl FluidSnapshot {
     }
 
     pub(crate) fn cell(&self, world_pos: IVec3) -> Option<ChunkCell> {
-        let (chunk_pos, local) = world_to_chunk_local(world_pos);
-        self.chunks.get(&chunk_pos).map(|cells| {
-            cells[chunk_linear_index(local.x as usize, local.y as usize, local.z as usize)]
-        })
+        let address = WorldBlockPos::from_ivec3(world_pos).split();
+        self.chunks
+            .get(&address.chunk().as_ivec3())
+            .map(|cells| cells[address.local().index().as_usize()])
     }
 
     fn fluid_positions_in_chunk(
@@ -51,7 +51,10 @@ impl FluidSnapshot {
                     }
 
                     positions.push((
-                        chunk_local_to_world(chunk_pos, uvec3(x as u32, y as u32, z as u32)),
+                        ChunkPos::from_ivec3(chunk_pos)
+                            .block(LocalBlockPos::new(x as u32, y as u32, z as u32))
+                            .world()
+                            .as_ivec3(),
                         fluid,
                     ));
                 }
@@ -140,24 +143,6 @@ pub(crate) fn simulate_fluid_step(
 
     updates.sort_by_key(|update| (update.pos.x, update.pos.y, update.pos.z));
     FluidStep { updates }
-}
-
-pub(crate) fn world_to_chunk_local(world: IVec3) -> (IVec3, UVec3) {
-    let chunk = ivec3(
-        world.x.div_euclid(CHUNK_ISIZE),
-        world.y.div_euclid(CHUNK_ISIZE),
-        world.z.div_euclid(CHUNK_ISIZE),
-    );
-    let local = uvec3(
-        world.x.rem_euclid(CHUNK_ISIZE) as u32,
-        world.y.rem_euclid(CHUNK_ISIZE) as u32,
-        world.z.rem_euclid(CHUNK_ISIZE) as u32,
-    );
-    (chunk, local)
-}
-
-fn chunk_local_to_world(chunk: IVec3, local: UVec3) -> IVec3 {
-    chunk * CHUNK_ISIZE + local.as_ivec3()
 }
 
 fn write_next_fluid(
@@ -386,16 +371,16 @@ mod tests {
         }
 
         fn set_cell(&mut self, pos: IVec3, cell: ChunkCell) {
-            let (chunk_pos, local) = world_to_chunk_local(pos);
-            let chunk = self.chunks.entry(chunk_pos).or_default();
-            chunk.set_cell(local, cell);
+            let address = WorldBlockPos::from_ivec3(pos).split();
+            let chunk = self.chunks.entry(address.chunk().as_ivec3()).or_default();
+            chunk.set_cell(address.local().as_uvec3(), cell);
         }
 
         fn cell(&self, pos: IVec3) -> Option<ChunkCell> {
-            let (chunk_pos, local) = world_to_chunk_local(pos);
+            let address = WorldBlockPos::from_ivec3(pos).split();
             self.chunks
-                .get(&chunk_pos)
-                .map(|chunk| chunk.get_cell(local))
+                .get(&address.chunk().as_ivec3())
+                .map(|chunk| chunk.get_cell(address.local().as_uvec3()))
         }
 
         fn has_fluids(&self) -> bool {
@@ -427,11 +412,11 @@ mod tests {
 
         fn apply(&mut self, step: &FluidStep) {
             for update in &step.updates {
-                let (chunk_pos, local) = world_to_chunk_local(update.pos);
-                let Some(chunk) = self.chunks.get_mut(&chunk_pos) else {
+                let address = WorldBlockPos::from_ivec3(update.pos).split();
+                let Some(chunk) = self.chunks.get_mut(&address.chunk().as_ivec3()) else {
                     continue;
                 };
-                chunk.set_cell(local, update.cell);
+                chunk.set_cell(address.local().as_uvec3(), update.cell);
             }
         }
     }

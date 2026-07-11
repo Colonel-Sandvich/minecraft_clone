@@ -34,7 +34,7 @@ impl Plugin for ChunkMeshPlugin {
 }
 
 #[cfg(test)]
-pub(crate) use blocks::padded_chunk_index;
+pub(crate) use super::neighborhood::padded_chunk_index;
 #[cfg(test)]
 pub(crate) use mesher::{face_ao_from_indices, water_below_pair, water_corner_heights};
 

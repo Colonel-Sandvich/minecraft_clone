@@ -1,13 +1,11 @@
-use std::ops::Mul;
-
 use bevy::{platform::collections::HashSet, prelude::*, tasks::futures::check_ready};
 
 use crate::{
     player::Player,
     world::{
         chunk::{
-            CHUNK_SIZE, ChunkHasActiveFluids, ChunkNeedsColliderRebuild, ChunkNeedsLightRebuild,
-            ChunkNeedsLightUpload, ChunkNeedsMeshRebuild, ChunkNeedsSave, ChunkPosition,
+            ChunkHasActiveFluids, ChunkNeedsColliderRebuild, ChunkNeedsLightRebuild,
+            ChunkNeedsLightUpload, ChunkNeedsMeshRebuild, ChunkNeedsSave, ChunkPos, ChunkPosition,
             chunk_neighbor_offsets,
         },
         generation::WorldMetadata,
@@ -173,7 +171,7 @@ pub(crate) fn finish_chunk_load_tasks(
             chunk_light,
             heightmap,
             meta,
-            Transform::from_translation(pos.as_vec3().mul(CHUNK_SIZE as f32)),
+            Transform::from_translation(ChunkPos::from_ivec3(pos).origin_translation()),
             Visibility::default(),
             ChunkNeedsLightRebuild,
         ));
@@ -221,7 +219,7 @@ mod tests {
     use super::*;
     use bevy::platform::collections::HashMap;
 
-    use crate::world::chunk::{Chunk, ChunkHeightmap, ChunkLight};
+    use crate::world::chunk::{CHUNK_SIZE, Chunk, ChunkHeightmap, ChunkLight};
     use crate::world::loading::{ChunkLoadOutput, ChunkLoadSource, LoadedChunk};
     use crate::world::storage::{
         ChunkStore, ChunkStoreError, ChunkStoreResult, InMemoryChunkStore,

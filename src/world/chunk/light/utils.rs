@@ -1,6 +1,6 @@
 use bevy::{platform::collections::HashMap, prelude::*};
 
-use super::super::{CHUNK_ISIZE, Chunk, ChunkCell};
+use super::super::{Chunk, ChunkCell, ChunkPos, LocalBlockPos, neighborhood::NeighborOffset};
 use super::storage::{ChunkLight, SKY_LIGHT_MAX};
 
 pub(super) fn face_local_pair(offset: IVec3, a: usize, b: usize) -> Option<(UVec3, UVec3)> {
@@ -18,14 +18,9 @@ pub(super) fn face_local_pair(offset: IVec3, a: usize, b: usize) -> Option<(UVec
 }
 
 pub(crate) fn offset_to_bit_index(offset: IVec3) -> u32 {
-    debug_assert!(
-        offset != IVec3::ZERO && offset.x.abs() <= 1 && offset.y.abs() <= 1 && offset.z.abs() <= 1
-    );
-    let ix = (offset.x + 1) as u32;
-    let iy = (offset.y + 1) as u32;
-    let iz = (offset.z + 1) as u32;
-    let flat = ix * 9 + iy * 3 + iz;
-    if flat > 13 { flat - 1 } else { flat }
+    NeighborOffset::try_new(offset)
+        .expect("light neighbor offset must be adjacent and non-zero")
+        .bit_index()
 }
 
 // ── Coordinate helpers ─────────────────────────────────────────────────────
@@ -123,43 +118,13 @@ pub(super) fn write_block_light(
     }
 }
 
-pub fn world_to_chunk_local(world: IVec3) -> (IVec3, UVec3) {
-    let chunk = (world.as_vec3() / CHUNK_ISIZE as f32).floor().as_ivec3();
-    let local = (world - chunk * CHUNK_ISIZE).as_uvec3();
-    (chunk, local)
-}
-
 pub(super) fn neighbor_chunk_local(
     chunk_pos: IVec3,
     local: UVec3,
     offset: IVec3,
 ) -> (IVec3, UVec3) {
-    let mut chunk = chunk_pos;
-    let mut local = local.as_ivec3() + offset;
-
-    if local.x < 0 {
-        chunk.x -= 1;
-        local.x += CHUNK_ISIZE;
-    } else if local.x >= CHUNK_ISIZE {
-        chunk.x += 1;
-        local.x -= CHUNK_ISIZE;
-    }
-
-    if local.y < 0 {
-        chunk.y -= 1;
-        local.y += CHUNK_ISIZE;
-    } else if local.y >= CHUNK_ISIZE {
-        chunk.y += 1;
-        local.y -= CHUNK_ISIZE;
-    }
-
-    if local.z < 0 {
-        chunk.z -= 1;
-        local.z += CHUNK_ISIZE;
-    } else if local.z >= CHUNK_ISIZE {
-        chunk.z += 1;
-        local.z -= CHUNK_ISIZE;
-    }
-
-    (chunk, local.as_uvec3())
+    let address = ChunkPos::from_ivec3(chunk_pos)
+        .block(LocalBlockPos::try_from(local).expect("light position must be chunk-local"))
+        .offset(offset);
+    (address.chunk().as_ivec3(), address.local().as_uvec3())
 }

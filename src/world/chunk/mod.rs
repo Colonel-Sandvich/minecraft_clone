@@ -1,9 +1,11 @@
 pub mod ambient_occlusion;
 pub mod collider;
+mod coords;
 mod fluid;
 mod fluid_sim;
 pub mod light;
 pub mod mesh;
+pub(crate) mod neighborhood;
 
 use bevy::prelude::*;
 use collider::ChunkColliderPlugin;
@@ -12,7 +14,12 @@ use mesh::ChunkMeshPlugin;
 use std::{fmt, num::NonZeroU8, str::FromStr};
 use strum::{Display, EnumCount, EnumString};
 
+pub use coords::{
+    CHUNK_ISIZE, CHUNK_SIZE, CHUNK_VOLUME, ChunkBlockPos, ChunkIndex, ChunkPos,
+    InvalidLocalBlockPos, LocalBlockPos, WorldBlockPos, chunk_linear_index,
+};
 pub use light::{ChunkHeightmap, ChunkLight};
+pub(crate) use neighborhood::{chunk_neighbor_offsets, chunk_neighbor_offsets_for_block};
 
 use crate::block::{
     BLOCK_FLAG_FULL_CUBE, BLOCK_FLAG_RENDERED, BlockStateId, BlockType, HotBlockStateMeta,
@@ -43,11 +50,6 @@ impl ChunkPerfCounters {
     }
 }
 
-pub const CHUNK_SIZE: usize = 16;
-pub const CHUNK_ISIZE: i32 = 16;
-
-pub const CHUNK_VOLUME: usize = CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE;
-
 pub const AIR_BLOCK_STATE_ID: BlockStateId = BlockStateId(0);
 const FIRST_BLOCK_STATE_ID: u32 = 1;
 const FIRST_FLUID_STATE_ID: u32 = FIRST_BLOCK_STATE_ID + BlockType::COUNT as u32;
@@ -65,12 +67,6 @@ impl BlockRegistry {
     pub fn cell(&self, state: BlockStateId) -> Option<ChunkCell> {
         cell_from_state_id(state)
     }
-}
-
-/// Logical scan order is y-fastest, then z, then x.
-#[inline(always)]
-pub const fn chunk_linear_index(x: usize, y: usize, z: usize) -> usize {
-    y + CHUNK_SIZE * (z + CHUNK_SIZE * x)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Reflect, EnumString, Display)]
@@ -509,34 +505,6 @@ fn meta_counts(meta: HotBlockStateMeta) -> (u16, u16, u16) {
     (rendered, full_cubes, rendered.saturating_sub(full_cubes))
 }
 
-pub(crate) fn chunk_neighbor_offsets() -> impl Iterator<Item = IVec3> {
-    (-1..=1).flat_map(|x| {
-        (-1..=1).flat_map(move |y| {
-            (-1..=1).filter_map(move |z| {
-                let offset = ivec3(x, y, z);
-                (offset != IVec3::ZERO).then_some(offset)
-            })
-        })
-    })
-}
-
-pub(crate) fn chunk_neighbor_offsets_for_block(block: UVec3) -> impl Iterator<Item = IVec3> {
-    chunk_neighbor_offsets().filter(move |offset| {
-        neighbor_axis_can_sample_block(offset.x, block.x)
-            && neighbor_axis_can_sample_block(offset.y, block.y)
-            && neighbor_axis_can_sample_block(offset.z, block.z)
-    })
-}
-
-fn neighbor_axis_can_sample_block(offset: i32, coord: u32) -> bool {
-    match offset {
-        -1 => coord == 0,
-        0 => true,
-        1 => coord == CHUNK_SIZE as u32 - 1,
-        _ => false,
-    }
-}
-
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ChunkPosition(pub IVec3);
 
@@ -898,9 +866,9 @@ impl Chunk {
         let snapshot = fluid_sim::FluidSnapshot::from_chunk(IVec3::ZERO, self);
         let step = fluid_sim::simulate_fluid_step(&snapshot, &[IVec3::ZERO], *profile);
         for update in step.updates {
-            let (chunk_pos, local) = fluid_sim::world_to_chunk_local(update.pos);
-            if chunk_pos == IVec3::ZERO {
-                self.set_cell(local, update.cell);
+            let address = WorldBlockPos::from_ivec3(update.pos).split();
+            if address.chunk() == ChunkPos::ZERO {
+                self.set_cell(address.local().as_uvec3(), update.cell);
             }
         }
 

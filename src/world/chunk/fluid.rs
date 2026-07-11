@@ -3,8 +3,8 @@ use std::collections::{HashMap, HashSet};
 
 use super::{
     CHUNK_VOLUME, Chunk, ChunkBlockCounts, ChunkCell, ChunkHasActiveFluids, ChunkNeedsMeshRebuild,
-    ChunkNeedsSave, ChunkPosition, FluidProfile, chunk_neighbor_offsets,
-    fluid_sim::{FluidSnapshot, simulate_fluid_step, world_to_chunk_local},
+    ChunkNeedsSave, ChunkPosition, FluidProfile, WorldBlockPos, chunk_neighbor_offsets,
+    fluid_sim::{FluidSnapshot, simulate_fluid_step},
 };
 
 pub(crate) struct ChunkFluidPlugin;
@@ -109,8 +109,8 @@ fn step_chunk_fluids(
 
     let mut old_cells_by_entity: HashMap<Entity, Box<[ChunkCell; CHUNK_VOLUME]>> = HashMap::new();
     for update in step.updates {
-        let (chunk_pos, local) = world_to_chunk_local(update.pos);
-        let Some(entity) = chunks_by_pos.get(&chunk_pos).copied() else {
+        let address = WorldBlockPos::from_ivec3(update.pos).split();
+        let Some(entity) = chunks_by_pos.get(&address.chunk().as_ivec3()).copied() else {
             continue;
         };
 
@@ -121,7 +121,7 @@ fn step_chunk_fluids(
         old_cells_by_entity
             .entry(entity)
             .or_insert_with(|| Box::new(chunk.to_cell_buffer()));
-        chunk.set_cell(local, update.cell);
+        chunk.set_cell(address.local().as_uvec3(), update.cell);
     }
 
     let changed_entities = old_cells_by_entity.keys().copied().collect::<HashSet<_>>();

@@ -4,7 +4,7 @@ use bevy::{
 };
 
 use crate::world::{
-    chunk::{Chunk, ChunkCell, fluid_sim::world_to_chunk_local},
+    chunk::{Chunk, ChunkCell, WorldBlockPos},
     dimension::Dimension,
 };
 
@@ -182,11 +182,11 @@ fn chunk_cell_at_world(
     chunks: &Query<&Chunk>,
     world_pos: IVec3,
 ) -> Option<ChunkCell> {
-    let (chunk_pos, local) = world_to_chunk_local(world_pos);
+    let address = WorldBlockPos::from_ivec3(world_pos).split();
     chunks
-        .get(dimension.chunk_entity(chunk_pos)?)
+        .get(dimension.chunk_entity(address.chunk().as_ivec3())?)
         .ok()
-        .map(|chunk| chunk.get_cell(local))
+        .map(|chunk| chunk.get_cell(address.local().as_uvec3()))
 }
 
 fn camera_y_is_below_fluid_surface(
