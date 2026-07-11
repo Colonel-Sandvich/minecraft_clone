@@ -6,6 +6,7 @@ mod coords;
 mod data;
 mod fluid;
 mod fluid_sim;
+mod invalidation;
 pub mod light;
 pub mod mesh;
 pub(crate) mod neighborhood;
@@ -29,6 +30,9 @@ pub use coords::{
 };
 pub use data::{BlockIterator, CellStorage, Chunk, ChunkPalette, PaletteEntry};
 pub use fluid_sim::FluidStepResult;
+pub use invalidation::{
+    ChunkColumn, ChunkInvalidationEffects, ChunkInvalidationPlan, classify_cell_delta,
+};
 pub use light::{ChunkHeightmap, ChunkLight};
 pub use state::{
     AIR_BLOCK_STATE_ID, BLOCK_REGISTRY, BlockRegistry, CellDelta, ChunkCell, FluidForm, FluidLevel,
