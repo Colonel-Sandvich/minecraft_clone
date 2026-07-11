@@ -82,6 +82,53 @@ impl FluidStep {
     }
 }
 
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FluidStepResult {
+    pub changed: bool,
+    pub boundary_changed: bool,
+}
+
+impl Chunk {
+    pub fn step_fluids(&mut self, profile: &FluidProfile) -> FluidStepResult {
+        let old_cells = self.to_cell_buffer();
+
+        let snapshot = FluidSnapshot::from_chunk(IVec3::ZERO, self);
+        let step = simulate_fluid_step(&snapshot, &[IVec3::ZERO], *profile);
+        for update in step.updates {
+            let address = WorldBlockPos::from_ivec3(update.pos).split();
+            if address.chunk() == ChunkPos::ZERO {
+                self.set_cell(address.local().as_uvec3(), update.cell);
+            }
+        }
+
+        self.fluid_step_result_from(&old_cells)
+    }
+
+    pub(super) fn fluid_step_result_from(
+        &self,
+        old_cells: &[ChunkCell; CHUNK_VOLUME],
+    ) -> FluidStepResult {
+        let mut result = FluidStepResult::default();
+        for y in 0..CHUNK_SIZE {
+            for z in 0..CHUNK_SIZE {
+                for x in 0..CHUNK_SIZE {
+                    let index = chunk_linear_index(x, y, z);
+                    if old_cells[index] != self.cell_linear(index) {
+                        result.changed = true;
+                        result.boundary_changed |= x == 0
+                            || x == CHUNK_SIZE - 1
+                            || y == 0
+                            || y == CHUNK_SIZE - 1
+                            || z == 0
+                            || z == CHUNK_SIZE - 1;
+                    }
+                }
+            }
+        }
+        result
+    }
+}
+
 pub(crate) fn simulate_fluid_step(
     snapshot: &FluidSnapshot,
     source_chunks: &[IVec3],
