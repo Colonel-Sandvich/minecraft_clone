@@ -336,7 +336,11 @@ fn mesh_rebuild_marker_is_removed_after_rebuild() {
     chunk.set_cell_xyz(0, 0, 0, block_cell(BlockType::Stone));
     let chunk_entity = app
         .world_mut()
-        .spawn((ChunkPosition(IVec3::ZERO), chunk, ChunkNeedsMeshRebuild))
+        .spawn((
+            ChunkPosition::from(IVec3::ZERO),
+            chunk,
+            ChunkNeedsMeshRebuild,
+        ))
         .id();
 
     app.update();
@@ -360,7 +364,7 @@ fn mesh_rebuild_reuses_layer_entity_and_uploads_same_count_topology_changes() {
     let chunk_entity = app
         .world_mut()
         .spawn((
-            ChunkPosition(IVec3::ZERO),
+            ChunkPosition::from(IVec3::ZERO),
             chunk,
             Transform::from_xyz(16.0, 0.0, 0.0),
             ChunkNeedsMeshRebuild,
@@ -430,7 +434,11 @@ fn mesh_rebuild_despawns_material_layers_no_longer_emitted() {
     chunk.set_cell_xyz(1, 0, 0, block_cell(BlockType::Glass));
     let chunk_entity = app
         .world_mut()
-        .spawn((ChunkPosition(IVec3::ZERO), chunk, ChunkNeedsMeshRebuild))
+        .spawn((
+            ChunkPosition::from(IVec3::ZERO),
+            chunk,
+            ChunkNeedsMeshRebuild,
+        ))
         .id();
 
     app.update();
@@ -484,7 +492,7 @@ fn light_upload_marker_updates_existing_chunk_mesh_light() {
     let chunk_entity = app
         .world_mut()
         .spawn((
-            ChunkPosition(IVec3::ZERO),
+            ChunkPosition::from(IVec3::ZERO),
             Chunk::default(),
             chunk_light,
             ChunkNeedsRenderLightUpload,
@@ -523,7 +531,11 @@ fn mesh_rebuild_new_layer_child_reuses_existing_light_data() {
 
     let chunk_entity = app
         .world_mut()
-        .spawn((ChunkPosition(IVec3::ZERO), chunk, ChunkNeedsMeshRebuild))
+        .spawn((
+            ChunkPosition::from(IVec3::ZERO),
+            chunk,
+            ChunkNeedsMeshRebuild,
+        ))
         .id();
     spawn_mesh_layer_child(
         app.world_mut(),

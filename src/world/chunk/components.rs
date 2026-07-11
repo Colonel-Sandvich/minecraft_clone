@@ -90,21 +90,37 @@ fn apply_count_delta(count: u16, old: u16, new: u16, name: &str) -> u16 {
 }
 
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ChunkPosition(pub IVec3);
+pub struct ChunkPosition(ChunkPos);
 
 impl ChunkPosition {
     pub const fn from_chunk_pos(position: ChunkPos) -> Self {
-        Self(position.as_ivec3())
+        Self(position)
     }
 
     pub const fn chunk_pos(self) -> ChunkPos {
-        ChunkPos::from_ivec3(self.0)
+        self.0
+    }
+
+    pub const fn as_ivec3(self) -> IVec3 {
+        self.0.as_ivec3()
     }
 }
 
 impl From<ChunkPos> for ChunkPosition {
     fn from(position: ChunkPos) -> Self {
         Self::from_chunk_pos(position)
+    }
+}
+
+impl From<IVec3> for ChunkPosition {
+    fn from(position: IVec3) -> Self {
+        Self::from_chunk_pos(ChunkPos::from_ivec3(position))
+    }
+}
+
+impl From<ChunkPosition> for ChunkPos {
+    fn from(position: ChunkPosition) -> Self {
+        position.chunk_pos()
     }
 }
 
@@ -141,6 +157,21 @@ mod tests {
             old: ChunkCell::EMPTY,
             new: cell,
         });
+    }
+
+    #[test]
+    fn chunk_position_preserves_typed_and_vector_inputs() {
+        let position = ChunkPos::new(-7, 3, 11);
+
+        assert_eq!(ChunkPosition::from(position).chunk_pos(), position);
+        assert_eq!(
+            ChunkPosition::from(position.as_ivec3()).chunk_pos(),
+            position
+        );
+        assert_eq!(
+            ChunkPosition::from(position).as_ivec3(),
+            position.as_ivec3()
+        );
     }
 
     #[test]

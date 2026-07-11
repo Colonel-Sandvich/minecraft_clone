@@ -232,7 +232,7 @@ mod tests {
         let entity = app
             .world_mut()
             .spawn((
-                ChunkPosition(IVec3::ZERO),
+                ChunkPosition::from(IVec3::ZERO),
                 chunk,
                 counts,
                 ChunkNeedsFluidStep,
@@ -414,7 +414,7 @@ mod tests {
         let has_active_fluids = water.is_some();
         let entity = app
             .world_mut()
-            .spawn((ChunkPosition(pos), chunk, counts))
+            .spawn((ChunkPosition::from(pos), chunk, counts))
             .id();
         if has_active_fluids {
             app.world_mut()
@@ -432,7 +432,7 @@ mod tests {
                 world.query::<(Entity, &ChunkPosition, &mut Chunk, &mut ChunkContentCounts)>();
             let (entity, _, mut chunk, mut counts) = query
                 .iter_mut(world)
-                .find(|(_, pos, _, _)| pos.0 == chunk_pos)
+                .find(|(_, pos, _, _)| pos.as_ivec3() == chunk_pos)
                 .expect("chunk should exist");
             chunk.set_cell(cell_pos, cell);
             *counts = chunk.compute_content_counts();
@@ -446,7 +446,9 @@ mod tests {
         let mut query = world.query::<(&ChunkPosition, &Chunk)>();
         query
             .iter(world)
-            .find_map(|(pos, chunk)| (pos.0 == chunk_pos).then(|| chunk.get_cell(cell_pos)))
+            .find_map(|(pos, chunk)| {
+                (pos.as_ivec3() == chunk_pos).then(|| chunk.get_cell(cell_pos))
+            })
             .expect("chunk should exist")
     }
 
@@ -476,11 +478,11 @@ mod tests {
 
     fn dirty_chunk_positions(world: &mut World) -> Vec<IVec3> {
         let mut query = world.query_filtered::<&ChunkPosition, With<ChunkNeedsMeshRebuild>>();
-        query.iter(world).map(|pos| pos.0).collect()
+        query.iter(world).map(|pos| pos.as_ivec3()).collect()
     }
 
     fn active_fluid_chunk_positions(world: &mut World) -> Vec<IVec3> {
         let mut query = world.query_filtered::<&ChunkPosition, With<ChunkNeedsFluidStep>>();
-        query.iter(world).map(|pos| pos.0).collect()
+        query.iter(world).map(|pos| pos.as_ivec3()).collect()
     }
 }

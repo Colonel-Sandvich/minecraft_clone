@@ -120,8 +120,10 @@ fn update_debug_text(
     let (cam_transform, cam_global) = *cam_q;
     let light_world = cam_global.translation().floor().as_ivec3() + IVec3::NEG_Y;
     let light_address = WorldBlockPos::from_ivec3(light_world).split();
-    let light_map: HashMap<IVec3, &ChunkLight> =
-        chunk_lights.iter().map(|(p, l)| (p.0, l)).collect();
+    let light_map: HashMap<IVec3, &ChunkLight> = chunk_lights
+        .iter()
+        .map(|(p, l)| (p.as_ivec3(), l))
+        .collect();
     let current_light = light_map
         .get(&light_address.chunk().as_ivec3())
         .map(|l| l.packed_light(light_address.local().as_uvec3()))
@@ -232,8 +234,10 @@ fn manage_light_labels(
 
     let center = cam_q.translation().floor().as_ivec3() + IVec3::NEG_Y;
 
-    let light_map: HashMap<IVec3, &ChunkLight> =
-        chunk_lights.iter().map(|(p, l)| (p.0, l)).collect();
+    let light_map: HashMap<IVec3, &ChunkLight> = chunk_lights
+        .iter()
+        .map(|(p, l)| (p.as_ivec3(), l))
+        .collect();
 
     let existing: Vec<(Entity, IVec3)> = labels.iter().map(|(e, p)| (e, p.0)).collect();
 
@@ -324,7 +328,7 @@ fn draw_chunk_borders(
     let color = Color::srgba(0.0, 1.0, 0.0, 0.8);
 
     for chunk_pos in &chunks {
-        let pos = chunk_pos.0;
+        let pos = chunk_pos.as_ivec3();
         let dx = (pos.x - player_chunk.x).abs();
         let dz = (pos.z - player_chunk.z).abs();
         if dx > vd || dz > vd {

@@ -67,12 +67,12 @@ pub(crate) fn rebuild_chunk_light(
     let chunk_map: HashMap<IVec3, (Entity, &Chunk, &ChunkLight, &ChunkHeightmap)> = light_context
         .iter()
         .filter_map(|pos| {
-            let entity = *loaded_chunks.get(pos)?;
+            let entity = *loaded_chunks.get(&ChunkPos::from_ivec3(*pos))?;
             let Ok((entity, actual_pos, chunk, light, heightmap)) = all_chunks.get(entity) else {
                 return None;
             };
 
-            (actual_pos.0 == *pos).then_some((*pos, (entity, chunk, light, heightmap)))
+            (actual_pos.as_ivec3() == *pos).then_some((*pos, (entity, chunk, light, heightmap)))
         })
         .collect();
 
@@ -130,7 +130,7 @@ pub(crate) fn rebuild_chunk_light(
 
 fn light_rebuild_targets(
     dirty_positions: &[IVec3],
-    loaded_chunks: &HashMap<IVec3, Entity>,
+    loaded_chunks: &HashMap<ChunkPos, Entity>,
     height_chunks: i32,
 ) -> HashSet<IVec3> {
     let columns = dirty_positions
@@ -142,7 +142,7 @@ fn light_rebuild_targets(
     for column in columns {
         for y in 0..height_chunks {
             let pos = ivec3(column.x, y, column.y);
-            if loaded_chunks.contains_key(&pos) {
+            if loaded_chunks.contains_key(&ChunkPos::from_ivec3(pos)) {
                 targets.insert(pos);
             }
         }
@@ -204,7 +204,7 @@ mod tests {
         let lower_entity = app
             .world_mut()
             .spawn((
-                ChunkPosition(lower_pos),
+                ChunkPosition::from(lower_pos),
                 Chunk::default(),
                 ChunkLight::default(),
                 ChunkHeightmap::default(),
@@ -221,7 +221,7 @@ mod tests {
         let upper_entity = app
             .world_mut()
             .spawn((
-                ChunkPosition(upper_pos),
+                ChunkPosition::from(upper_pos),
                 upper,
                 ChunkLight::default(),
                 ChunkHeightmap::default(),
@@ -256,7 +256,7 @@ mod tests {
         let center_entity = app
             .world_mut()
             .spawn((
-                ChunkPosition(IVec3::ZERO),
+                ChunkPosition::from(IVec3::ZERO),
                 Chunk::default(),
                 ChunkLight::default(),
                 ChunkHeightmap::default(),
@@ -266,7 +266,7 @@ mod tests {
         let neighbor_entity = app
             .world_mut()
             .spawn((
-                ChunkPosition(IVec3::X),
+                ChunkPosition::from(IVec3::X),
                 solid_chunk(BlockType::Stone),
                 ChunkLight::default(),
                 heightmap_with(15),
@@ -311,7 +311,7 @@ mod tests {
         let left_entity = app
             .world_mut()
             .spawn((
-                ChunkPosition(left_pos),
+                ChunkPosition::from(left_pos),
                 Chunk::default(),
                 ChunkLight::default(),
                 ChunkHeightmap::default(),
@@ -324,7 +324,7 @@ mod tests {
         let right_entity = app
             .world_mut()
             .spawn((
-                ChunkPosition(right_pos),
+                ChunkPosition::from(right_pos),
                 right_chunk,
                 ChunkLight::default(),
                 ChunkHeightmap::default(),
@@ -381,7 +381,7 @@ mod tests {
         let foreign_entity = app
             .world_mut()
             .spawn((
-                ChunkPosition(foreign_position),
+                ChunkPosition::from(foreign_position),
                 Chunk::default(),
                 ChunkLight::default(),
                 ChunkHeightmap::default(),
@@ -407,7 +407,7 @@ mod tests {
         for x in -2..=2 {
             for z in -2..=2 {
                 for y in 0..2 {
-                    loaded_chunks.insert(ivec3(x, y, z), Entity::PLACEHOLDER);
+                    loaded_chunks.insert(ChunkPos::new(x, y, z), Entity::PLACEHOLDER);
                 }
             }
         }

@@ -68,33 +68,31 @@ impl ChunkTaskPool {
 
 #[derive(Default, Component)]
 pub struct Dimension {
-    chunks: HashMap<IVec3, Entity>,
+    chunks: HashMap<ChunkPos, Entity>,
 }
 
 impl Dimension {
     pub fn chunk_entity(&self, pos: impl Into<ChunkPos>) -> Option<Entity> {
-        self.chunks.get(&pos.into().as_ivec3()).copied()
+        self.chunks.get(&pos.into()).copied()
     }
 
     pub fn contains_chunk(&self, pos: impl Into<ChunkPos>) -> bool {
-        self.chunks.contains_key(&pos.into().as_ivec3())
+        self.chunks.contains_key(&pos.into())
     }
 
     pub fn register_chunk(&mut self, pos: impl Into<ChunkPos>, entity: Entity) -> Option<Entity> {
-        self.chunks.insert(pos.into().as_ivec3(), entity)
+        self.chunks.insert(pos.into(), entity)
     }
 
     pub fn unregister_chunk(&mut self, pos: impl Into<ChunkPos>) -> Option<Entity> {
-        self.chunks.remove(&pos.into().as_ivec3())
+        self.chunks.remove(&pos.into())
     }
 
     pub fn iter_chunks(&self) -> impl ExactSizeIterator<Item = (ChunkPos, Entity)> + '_ {
-        self.chunks
-            .iter()
-            .map(|(&pos, &entity)| (ChunkPos::from_ivec3(pos), entity))
+        self.chunks.iter().map(|(&pos, &entity)| (pos, entity))
     }
 
-    pub fn chunk_entities(&self) -> &HashMap<IVec3, Entity> {
+    pub fn chunk_entities(&self) -> &HashMap<ChunkPos, Entity> {
         &self.chunks
     }
 
@@ -165,3 +163,29 @@ fn setup(mut commands: Commands) {
 
 #[derive(Component)]
 pub struct Active;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dimension_registry_retains_typed_chunk_positions() {
+        let position = ChunkPos::new(-5, 2, 9);
+        let entity = Entity::PLACEHOLDER;
+        let mut dimension = Dimension::default();
+
+        assert_eq!(dimension.register_chunk(position, entity), None);
+        assert_eq!(dimension.chunk_entity(position), Some(entity));
+        assert_eq!(dimension.chunk_entity(position.as_ivec3()), Some(entity));
+        assert!(dimension.chunk_entities().contains_key(&position));
+        assert_eq!(
+            dimension.iter_chunks().collect::<Vec<_>>(),
+            vec![(position, entity)]
+        );
+        assert_eq!(
+            dimension.unregister_chunk(position.as_ivec3()),
+            Some(entity)
+        );
+        assert!(!dimension.contains_chunk(position));
+    }
+}

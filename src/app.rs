@@ -141,15 +141,15 @@ fn log_frame_perf(
     }
     let dirty_mesh_positions = dirty_mesh_chunks
         .iter()
-        .map(|pos| pos.0)
+        .map(|pos| pos.as_ivec3())
         .collect::<Vec<_>>();
     let dirty_light_upload_positions = dirty_light_upload_chunks
         .iter()
-        .map(|pos| pos.0)
+        .map(|pos| pos.as_ivec3())
         .collect::<Vec<_>>();
     let dirty_light_rebuild_positions = dirty_light_rebuild_chunks
         .iter()
-        .map(|pos| pos.0)
+        .map(|pos| pos.as_ivec3())
         .collect::<Vec<_>>();
     let dirty_mesh_sample = format_position_sample(&dirty_mesh_positions);
     let dirty_light_upload_sample = format_position_sample(&dirty_light_upload_positions);

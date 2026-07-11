@@ -60,7 +60,7 @@ pub(super) fn rebuild_chunk_meshes(
             positions
                 .iter()
                 .zip(chunks.iter())
-                .map(|(pos, chunk)| (pos.0, chunk)),
+                .map(|(pos, chunk)| (pos.as_ivec3(), chunk)),
         );
     }
 
@@ -74,7 +74,7 @@ pub(super) fn rebuild_chunk_meshes(
             positions
                 .iter()
                 .zip(lights.iter())
-                .map(|(pos, light)| (pos.0, light)),
+                .map(|(pos, light)| (pos.as_ivec3(), light)),
         );
     }
 
@@ -82,10 +82,10 @@ pub(super) fn rebuild_chunk_meshes(
     dirty_chunks_q.par_iter().for_each_init(
         || build_queue.borrow_local_mut(),
         |builds, (chunk_pos, chunk_entity)| {
-            let blocks = ChunkMeshBlocks::from_chunks(chunk_pos.0, &chunks_by_pos);
+            let blocks = ChunkMeshBlocks::from_chunks(chunk_pos.as_ivec3(), &chunks_by_pos);
             builds.push(ChunkMeshBuild {
                 entity: chunk_entity,
-                chunk_pos: chunk_pos.0,
+                chunk_pos: chunk_pos.as_ivec3(),
                 layers: mesher::build(&blocks),
             });
         },
@@ -244,13 +244,13 @@ pub(super) fn upload_chunk_lights(
             positions
                 .iter()
                 .zip(lights.iter())
-                .map(|(pos, light)| (pos.0, light)),
+                .map(|(pos, light)| (pos.as_ivec3(), light)),
         );
     }
 
     for (chunk_pos, chunk_entity) in &dirty_chunks_q {
         let light_data: Arc<[u32]> =
-            ChunkLight::build_padded_light_data(chunk_pos.0, &lights_by_pos).into();
+            ChunkLight::build_padded_light_data(chunk_pos.as_ivec3(), &lights_by_pos).into();
         if let Ok(children) = children_q.get(chunk_entity) {
             for child in children {
                 if let Ok(mut light) = mesh_light_q.get_mut(*child) {

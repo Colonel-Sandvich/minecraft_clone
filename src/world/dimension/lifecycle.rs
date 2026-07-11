@@ -39,7 +39,7 @@ pub(crate) fn maintain_chunk_view(
     let chunks_to_unload = dim
         .chunk_entities()
         .iter()
-        .filter(|(pos, _)| !chunks_in_view_set.contains(*pos))
+        .filter(|(pos, _)| !chunks_in_view_set.contains(&pos.as_ivec3()))
         .map(|(pos, entity)| (*pos, *entity))
         .collect::<Vec<_>>();
 
@@ -48,7 +48,7 @@ pub(crate) fn maintain_chunk_view(
             continue;
         }
 
-        invalidations.record_chunk_unloaded(ChunkPos::from_ivec3(pos));
+        invalidations.record_chunk_unloaded(pos);
         dim.unregister_chunk(pos);
         commands.entity(entity).despawn();
     }
@@ -237,7 +237,7 @@ mod tests {
 
     fn spawn_chunk(app: &mut App, pos: IVec3) -> Entity {
         app.world_mut()
-            .spawn((ChunkPosition(pos), Chunk::default()))
+            .spawn((ChunkPosition::from(pos), Chunk::default()))
             .id()
     }
 
@@ -695,7 +695,7 @@ mod tests {
         let chunk_entity = app
             .world_mut()
             .spawn((
-                ChunkPosition(pos),
+                ChunkPosition::from(pos),
                 Chunk::default(),
                 ChunkLight::default(),
                 ChunkNeedsSave,

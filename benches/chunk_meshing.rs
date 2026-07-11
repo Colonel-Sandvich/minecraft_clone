@@ -543,7 +543,11 @@ fn dirty_mesh_chunks(chunk_count: usize) -> Vec<(IVec3, Chunk)> {
 fn dirty_mesh_world(chunks: &[(IVec3, Chunk)]) -> World {
     let mut world = World::new();
     for (pos, chunk) in chunks {
-        world.spawn((ChunkPosition(*pos), chunk.clone(), ChunkNeedsMeshRebuild));
+        world.spawn((
+            ChunkPosition::from(*pos),
+            chunk.clone(),
+            ChunkNeedsMeshRebuild,
+        ));
     }
     world
 }
@@ -559,7 +563,7 @@ fn build_dirty_meshes_serial_contiguous(
         .expect("dirty mesh query should stay dense")
     {
         for pos in positions {
-            let blocks = ChunkMeshBlocks::from_chunks(pos.0, chunks_by_pos);
+            let blocks = ChunkMeshBlocks::from_chunks(pos.as_ivec3(), chunks_by_pos);
             face_count += chunk_mesh_face_count(&build(&blocks));
         }
     }
@@ -575,7 +579,7 @@ fn build_dirty_meshes_parallel(
     query.par_iter(world).for_each_init(
         || totals.borrow_local_mut(),
         |local_total, (pos, _)| {
-            let blocks = ChunkMeshBlocks::from_chunks(pos.0, chunks_by_pos);
+            let blocks = ChunkMeshBlocks::from_chunks(pos.as_ivec3(), chunks_by_pos);
             **local_total += chunk_mesh_face_count(&build(&blocks));
         },
     );

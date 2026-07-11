@@ -199,7 +199,7 @@ pub(crate) fn start_chunk_save_tasks(
 
         let request = ChunkSaveRequest {
             entity,
-            pos: position.0,
+            pos: position.as_ivec3(),
             chunk: chunk.clone(),
             heightmap: *heightmap,
         };
@@ -323,7 +323,7 @@ mod tests {
         let chunk_entity = app
             .world_mut()
             .spawn((
-                ChunkPosition(pos),
+                ChunkPosition::from(pos),
                 chunk.clone(),
                 ChunkLight::default(),
                 ChunkHeightmap::default(),
@@ -351,14 +351,14 @@ mod tests {
         add_chunk_save_systems(&mut app);
 
         app.world_mut().spawn((
-            ChunkPosition(IVec3::ZERO),
+            ChunkPosition::from(IVec3::ZERO),
             Chunk::default(),
             ChunkLight::default(),
             ChunkHeightmap::default(),
             ChunkNeedsSave,
         ));
         app.world_mut().spawn((
-            ChunkPosition(ivec3(1, 0, 0)),
+            ChunkPosition::from(ivec3(1, 0, 0)),
             Chunk::default(),
             ChunkLight::default(),
             ChunkHeightmap::default(),
@@ -388,7 +388,7 @@ mod tests {
         let chunk_entity = app
             .world_mut()
             .spawn((
-                ChunkPosition(pos),
+                ChunkPosition::from(pos),
                 chunk,
                 ChunkLight::default(),
                 ChunkHeightmap::default(),
@@ -428,7 +428,7 @@ mod tests {
         let chunk_entity = app
             .world_mut()
             .spawn((
-                ChunkPosition(IVec3::ZERO),
+                ChunkPosition::from(IVec3::ZERO),
                 Chunk::default(),
                 ChunkLight::default(),
                 ChunkHeightmap::default(),
