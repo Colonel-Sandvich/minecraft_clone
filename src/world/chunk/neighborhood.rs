@@ -216,12 +216,24 @@ mod tests {
             0
         );
         assert_eq!(
-            NeighborOffset::touching(LocalBlockPos::new(0, 2, 3)).count(),
-            1
+            NeighborOffset::touching(LocalBlockPos::new(0, 2, 3))
+                .map(NeighborOffset::as_ivec3)
+                .collect::<Vec<_>>(),
+            vec![IVec3::NEG_X]
         );
         assert_eq!(
-            NeighborOffset::touching(LocalBlockPos::new(0, 0, 3)).count(),
-            3
+            NeighborOffset::touching(LocalBlockPos::new(15, 2, 3))
+                .map(NeighborOffset::as_ivec3)
+                .collect::<Vec<_>>(),
+            vec![IVec3::X]
+        );
+
+        let edge_offsets = NeighborOffset::touching(LocalBlockPos::new(0, 0, 3))
+            .map(NeighborOffset::as_ivec3)
+            .collect::<HashSet<_>>();
+        assert_eq!(
+            edge_offsets,
+            HashSet::from([IVec3::NEG_X, IVec3::NEG_Y, IVec3::new(-1, -1, 0)])
         );
         assert_eq!(NeighborOffset::touching(LocalBlockPos::ZERO).count(), 7);
     }
