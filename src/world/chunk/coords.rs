@@ -84,6 +84,42 @@ impl Sub<ChunkPos> for ChunkPos {
     }
 }
 
+/// The XZ address of a vertical chunk column.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ChunkColumn {
+    x: i32,
+    z: i32,
+}
+
+impl ChunkColumn {
+    pub const fn new(x: i32, z: i32) -> Self {
+        Self { x, z }
+    }
+
+    pub const fn from_chunk(chunk: ChunkPos) -> Self {
+        let position = chunk.as_ivec3();
+        Self::new(position.x, position.z)
+    }
+
+    pub const fn x(self) -> i32 {
+        self.x
+    }
+
+    pub const fn z(self) -> i32 {
+        self.z
+    }
+
+    pub const fn chunk(self, y: i32) -> ChunkPos {
+        ChunkPos::new(self.x, y, self.z)
+    }
+}
+
+impl From<ChunkPos> for ChunkColumn {
+    fn from(chunk: ChunkPos) -> Self {
+        Self::from_chunk(chunk)
+    }
+}
+
 /// An integer block position in world coordinates.
 #[repr(transparent)]
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
@@ -381,5 +417,14 @@ mod tests {
         let address = WorldBlockPos::from_translation(Vec3::new(-0.01, 16.99, -16.01)).split();
         assert_eq!(address.chunk(), ChunkPos::new(-1, 1, -2));
         assert_eq!(address.local(), LocalBlockPos::new(15, 0, 15));
+    }
+
+    #[test]
+    fn chunk_columns_preserve_horizontal_coordinates_across_heights() {
+        let column = ChunkColumn::from(ChunkPos::new(-7, 4, 11));
+
+        assert_eq!(column.x(), -7);
+        assert_eq!(column.z(), 11);
+        assert_eq!(column.chunk(-3), ChunkPos::new(-7, -3, 11));
     }
 }

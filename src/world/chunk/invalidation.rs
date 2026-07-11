@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use super::{
     components::ChunkContentCounts,
-    coords::{ChunkPos, LocalBlockPos},
+    coords::{ChunkColumn, ChunkPos, LocalBlockPos},
     neighborhood::NeighborOffset,
     state::CellDelta,
 };
@@ -100,42 +100,6 @@ pub fn classify_cell_delta(delta: CellDelta) -> ChunkInvalidationEffects {
     }
 
     ChunkInvalidationEffects::from_bits(bits)
-}
-
-/// The XZ address of a vertical chunk column whose lighting may be stale.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ChunkColumn {
-    x: i32,
-    z: i32,
-}
-
-impl ChunkColumn {
-    pub const fn new(x: i32, z: i32) -> Self {
-        Self { x, z }
-    }
-
-    pub const fn from_chunk(chunk: ChunkPos) -> Self {
-        let position = chunk.as_ivec3();
-        Self::new(position.x, position.z)
-    }
-
-    pub const fn x(self) -> i32 {
-        self.x
-    }
-
-    pub const fn z(self) -> i32 {
-        self.z
-    }
-
-    pub const fn chunk(self, y: i32) -> ChunkPos {
-        ChunkPos::new(self.x, y, self.z)
-    }
-}
-
-impl From<ChunkPos> for ChunkColumn {
-    fn from(chunk: ChunkPos) -> Self {
-        Self::from_chunk(chunk)
-    }
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]

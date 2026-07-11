@@ -6,7 +6,7 @@ use bevy::prelude::*;
 use crate::{
     world::chunk::mesh::{ChunkMeshFaces, ChunkMeshLayer, ChunkMeshLight, PackedFace},
     world::{
-        chunk::{Chunk, ChunkContentCounts, ChunkHeightmap, ChunkLight, ChunkPosition},
+        chunk::{Chunk, ChunkContentCounts, ChunkHeightmap, ChunkLight, ChunkPos, ChunkPosition},
         dimension::{
             ChunkLoadTasks, ChunkSaveTasks, Dimension, ViewDistance, chunk_positions_in_view,
         },
@@ -290,7 +290,7 @@ fn update_memory_snapshot(
         chunk_positions_in_view(Vec3::ZERO, metadata.height_chunks, view_distance.chunks()).len();
     let dimension_maps = dimensions_q
         .iter()
-        .map(|dimension| dimension.chunk_map_capacity() * size_of::<(IVec3, Entity)>())
+        .map(|dimension| dimension.chunk_map_capacity() * size_of::<(ChunkPos, Entity)>())
         .sum::<usize>();
 
     let load_stats = load_tasks
