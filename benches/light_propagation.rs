@@ -529,10 +529,52 @@ fn bench_staged_light_patches(c: &mut Criterion) {
     group.finish();
 }
 
+fn snapshot_staged_patch(
+    scenario: &StagedPatchScenario,
+    patch: &StagedPatchShape,
+) -> Vec<(ChunkPos, Chunk, Option<(ChunkLight, ChunkHeightmap)>)> {
+    patch
+        .calculation_columns
+        .iter()
+        .flat_map(|&column| {
+            (0..scenario.height_chunks as i32).map(move |y| {
+                let position = column.chunk(y);
+                let baseline = patch.commit_columns.contains(&column).then(|| {
+                    (
+                        scenario.lights[&position].clone(),
+                        scenario.heightmaps[&position],
+                    )
+                });
+                (position, scenario.chunks[&position].clone(), baseline)
+            })
+        })
+        .collect()
+}
+
+fn bench_staged_light_patch_snapshots(c: &mut Criterion) {
+    let scenarios = staged_patch_scenarios();
+    let mut group = c.benchmark_group("light_staged_patch_snapshot");
+
+    for scenario in scenarios.iter().filter(|scenario| {
+        scenario.name.contains("terrain_4x4") || scenario.name.contains("terrain_6x6")
+    }) {
+        let patch = &scenario.patches[0];
+        group.throughput(Throughput::Elements(
+            patch.calculation_chunk_count(scenario.height_chunks) as u64,
+        ));
+        group.bench_function(BenchmarkId::from_parameter(scenario.name), |b| {
+            b.iter(|| black_box(snapshot_staged_patch(black_box(scenario), patch)));
+        });
+    }
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_single_target_region_rebuild,
     bench_multi_target_region_rebuild,
     bench_staged_light_patches,
+    bench_staged_light_patch_snapshots,
 );
 criterion_main!(benches);
