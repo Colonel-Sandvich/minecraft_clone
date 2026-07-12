@@ -149,7 +149,12 @@ fn ensure_world_resources(app: &mut App) {
         app.insert_resource(config.metadata.clone());
     }
 
-    if app.world().contains_resource::<ChunkRepository>() {
+    if let Some(repository) = app.world().get_resource::<ChunkRepository>() {
+        assert_eq!(
+            repository.metadata(),
+            &config.metadata,
+            "ChunkRepository metadata must match WorldConfig metadata"
+        );
         return;
     }
 
@@ -271,6 +276,18 @@ mod tests {
 
         assert_eq!(config.metadata, metadata);
         assert_eq!(config.storage, WorldStorageConfig::Noop);
+    }
+
+    #[test]
+    #[should_panic(expected = "ChunkRepository metadata must match WorldConfig metadata")]
+    fn preinstalled_repository_must_match_world_config_metadata() {
+        let configured = WorldMetadata::with_seed(42);
+        let stored = WorldMetadata::with_seed(99);
+        let mut app = App::new();
+        app.insert_resource(WorldConfig::in_memory(configured))
+            .insert_resource(ChunkRepository::new(InMemoryChunkStore::new(stored)));
+
+        ensure_world_resources(&mut app);
     }
 
     #[cfg(feature = "turso-store")]
