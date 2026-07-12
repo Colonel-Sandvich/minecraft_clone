@@ -93,6 +93,35 @@ fn default_heightmap() -> ChunkHeightmap {
     ChunkHeightmap::default()
 }
 
+struct MisdirectedColumnStore {
+    metadata: WorldMetadata,
+    returned_column: ChunkColumn,
+    returned_height: WorldHeight,
+}
+
+impl ChunkStore for MisdirectedColumnStore {
+    fn metadata(&self) -> &WorldMetadata {
+        &self.metadata
+    }
+
+    fn load_chunk(&self, _position: ChunkPos) -> ChunkStoreResult<Option<(Chunk, ChunkHeightmap)>> {
+        Ok(None)
+    }
+
+    fn load_stored_column(&self, _column: ChunkColumn) -> ChunkStoreResult<StoredColumn> {
+        StoredColumn::empty(self.returned_column, self.returned_height).map_err(Into::into)
+    }
+
+    fn save_chunk(
+        &self,
+        _position: ChunkPos,
+        _chunk: &Chunk,
+        _heightmap: &ChunkHeightmap,
+    ) -> ChunkStoreResult<()> {
+        Ok(())
+    }
+}
+
 #[test]
 fn sqlite_store_roundtrips_full_chunks() {
     let metadata = WorldMetadata::with_seed(42);
@@ -316,6 +345,63 @@ fn repository_exposes_configured_store_metadata() {
     let repository = ChunkRepository::new(InMemoryChunkStore::new(metadata.clone()));
 
     assert_eq!(repository.metadata(), &metadata);
+}
+
+#[test]
+fn repository_rejects_chunk_positions_outside_world_height() {
+    let metadata = WorldMetadata::with_seed(42).with_height_chunks(2).unwrap();
+    let repository = ChunkRepository::new(InMemoryChunkStore::new(metadata));
+
+    for position in [ChunkPos::new(0, -1, 0), ChunkPos::new(0, 2, 0)] {
+        assert!(matches!(
+            repository.load_chunk(position),
+            Err(ChunkStoreError::ChunkPositionOutOfRange {
+                position: rejected,
+                ..
+            }) if rejected == position
+        ));
+        assert!(matches!(
+            repository.save_chunk(position, &Chunk::default(), &default_heightmap()),
+            Err(ChunkStoreError::ChunkPositionOutOfRange {
+                position: rejected,
+                ..
+            }) if rejected == position
+        ));
+    }
+}
+
+#[test]
+fn repository_rejects_columns_for_the_wrong_request_or_height() {
+    let metadata = WorldMetadata::with_seed(42).with_height_chunks(3).unwrap();
+    let requested = ChunkColumn::new(4, -7);
+    let wrong_column = ChunkColumn::new(5, -7);
+    let repository = ChunkRepository::new(MisdirectedColumnStore {
+        metadata: metadata.clone(),
+        returned_column: wrong_column,
+        returned_height: metadata.height(),
+    });
+    assert!(matches!(
+        repository.load_stored_column(requested),
+        Err(ChunkStoreError::InvalidStoredColumn(
+            StoredColumnError::RequestedColumnMismatch {
+                requested: actual_request,
+                returned,
+            }
+        )) if actual_request == requested && returned == wrong_column
+    ));
+
+    let wrong_height = WorldHeight::new(2).unwrap();
+    let repository = ChunkRepository::new(MisdirectedColumnStore {
+        metadata,
+        returned_column: requested,
+        returned_height: wrong_height,
+    });
+    assert!(matches!(
+        repository.load_stored_column(requested),
+        Err(ChunkStoreError::InvalidStoredColumn(
+            StoredColumnError::HeightMismatch { returned, .. }
+        )) if returned == wrong_height
+    ));
 }
 
 #[test]

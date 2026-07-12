@@ -75,8 +75,7 @@ impl StoredColumn {
                 });
             }
 
-            let y = stored.position.as_ivec3().y;
-            if !(0..height.chunks_i32()).contains(&y) {
+            if !height.contains_chunk(stored.position) {
                 return Err(StoredColumnError::YOutOfRange {
                     position: stored.position,
                     height,
@@ -84,7 +83,7 @@ impl StoredColumn {
             }
         }
 
-        chunks.sort_unstable_by_key(|stored| stored.position.as_ivec3().y);
+        chunks.sort_unstable_by_key(|stored| stored.position.y());
         if let Some(duplicate) = chunks
             .windows(2)
             .find(|pair| pair[0].position == pair[1].position)
@@ -124,6 +123,26 @@ impl StoredColumn {
     pub fn into_parts(self) -> (ChunkHeightmap, Vec<StoredChunk>) {
         (self.heightmap, self.chunks)
     }
+
+    fn validate_request(
+        &self,
+        requested_position: ChunkColumn,
+        expected_height: WorldHeight,
+    ) -> Result<(), StoredColumnError> {
+        if self.position != requested_position {
+            return Err(StoredColumnError::RequestedColumnMismatch {
+                requested: requested_position,
+                returned: self.position,
+            });
+        }
+        if self.height != expected_height {
+            return Err(StoredColumnError::HeightMismatch {
+                expected: expected_height,
+                returned: self.height,
+            });
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -135,6 +154,14 @@ pub enum StoredColumnError {
     YOutOfRange {
         position: ChunkPos,
         height: WorldHeight,
+    },
+    RequestedColumnMismatch {
+        requested: ChunkColumn,
+        returned: ChunkColumn,
+    },
+    HeightMismatch {
+        expected: WorldHeight,
+        returned: WorldHeight,
     },
     DuplicatePosition(ChunkPos),
 }
@@ -150,6 +177,19 @@ impl std::fmt::Display for StoredColumnError {
                 f,
                 "stored chunk {position:?} is outside configured height 0..{}",
                 height.chunks()
+            ),
+            Self::RequestedColumnMismatch {
+                requested,
+                returned,
+            } => write!(
+                f,
+                "store returned column {returned:?} for request {requested:?}"
+            ),
+            Self::HeightMismatch { expected, returned } => write!(
+                f,
+                "store returned height {} for configured height {}",
+                returned.chunks(),
+                expected.chunks()
             ),
             Self::DuplicatePosition(position) => {
                 write!(f, "stored column contains duplicate chunk {position:?}")
@@ -211,11 +251,14 @@ impl ChunkRepository {
         &self,
         position: ChunkPos,
     ) -> ChunkStoreResult<Option<(Chunk, ChunkHeightmap)>> {
+        self.validate_position(position)?;
         self.store.load_chunk(position)
     }
 
     pub fn load_stored_column(&self, column: ChunkColumn) -> ChunkStoreResult<StoredColumn> {
-        self.store.load_stored_column(column)
+        let stored = self.store.load_stored_column(column)?;
+        stored.validate_request(column, self.metadata.height())?;
+        Ok(stored)
     }
 
     pub fn save_chunk(
@@ -224,7 +267,16 @@ impl ChunkRepository {
         chunk: &Chunk,
         heightmap: &ChunkHeightmap,
     ) -> ChunkStoreResult<()> {
+        self.validate_position(position)?;
         self.store.save_chunk(position, chunk, heightmap)
+    }
+
+    fn validate_position(&self, position: ChunkPos) -> ChunkStoreResult<()> {
+        let height = self.metadata.height();
+        if !height.contains_chunk(position) {
+            return Err(ChunkStoreError::ChunkPositionOutOfRange { position, height });
+        }
+        Ok(())
     }
 }
 
@@ -272,6 +324,10 @@ pub enum ChunkStoreError {
     },
     Decode(ChunkDecodeError),
     InvalidStoredColumn(StoredColumnError),
+    ChunkPositionOutOfRange {
+        position: ChunkPos,
+        height: WorldHeight,
+    },
     WorldMetadataMismatch {
         key: String,
         expected: String,
@@ -300,6 +356,11 @@ impl std::fmt::Display for ChunkStoreError {
             Self::Io { kind, message } => write!(f, "io error {kind:?}: {message}"),
             Self::Decode(error) => write!(f, "chunk decode error: {error}"),
             Self::InvalidStoredColumn(error) => write!(f, "invalid stored column: {error}"),
+            Self::ChunkPositionOutOfRange { position, height } => write!(
+                f,
+                "chunk {position:?} is outside configured height 0..{}",
+                height.chunks()
+            ),
             Self::WorldMetadataMismatch {
                 key,
                 expected,

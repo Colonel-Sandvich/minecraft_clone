@@ -61,6 +61,10 @@ impl WorldHeight {
     pub const fn blocks(self) -> i32 {
         self.chunks_i32() * CHUNK_ISIZE
     }
+
+    pub const fn contains_chunk(self, position: ChunkPos) -> bool {
+        position.y() >= 0 && position.y() < self.chunks_i32()
+    }
 }
 
 impl Default for WorldHeight {

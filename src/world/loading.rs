@@ -85,11 +85,17 @@ impl LoadedColumn {
         heightmap: ChunkHeightmap,
         chunks: Vec<LoadedColumnChunk>,
     ) -> Self {
-        debug_assert!(
+        assert_eq!(
+            chunks.len(),
+            height.chunks(),
+            "loaded column must contain every configured Y chunk"
+        );
+        assert!(
             chunks
                 .iter()
                 .enumerate()
-                .all(|(y, loaded)| { loaded.position == position.chunk(y as i32) })
+                .all(|(y, loaded)| loaded.position == position.chunk(y as i32)),
+            "loaded column chunks must be contiguous and ordered by Y"
         );
         Self {
             position,
@@ -121,8 +127,6 @@ pub fn load_or_generate_column(
         .map_err(classify_load_error)?;
     let height = repository.metadata().height();
     let height_chunks = height.chunks();
-    debug_assert_eq!(stored.position(), position);
-    debug_assert_eq!(stored.height(), height);
 
     let (heightmap, stored_chunks) = stored.into_parts();
     let mut stored_chunks = stored_chunks.into_iter().peekable();
@@ -147,7 +151,10 @@ pub fn load_or_generate_column(
             source,
         });
     }
-    debug_assert!(stored_chunks.next().is_none());
+    assert!(
+        stored_chunks.next().is_none(),
+        "validated stored column must be fully consumed"
+    );
 
     Ok(LoadedColumn::new(position, height, heightmap, chunks))
 }

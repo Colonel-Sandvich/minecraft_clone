@@ -115,11 +115,21 @@ impl Dimension {
     }
 
     pub fn register_chunk(&mut self, pos: impl Into<ChunkPos>, entity: Entity) -> Option<Entity> {
-        self.chunks.insert(pos.into(), entity)
+        let pos = pos.into();
+        assert!(
+            self.height.contains_chunk(pos),
+            "registered chunk must be within the dimension height"
+        );
+        self.chunks.insert(pos, entity)
     }
 
     pub fn unregister_chunk(&mut self, pos: impl Into<ChunkPos>) -> Option<Entity> {
-        self.chunks.remove(&pos.into())
+        let pos = pos.into();
+        assert!(
+            self.height.contains_chunk(pos),
+            "unregistered chunk must be within the dimension height"
+        );
+        self.chunks.remove(&pos)
     }
 
     pub fn iter_chunks(&self) -> impl ExactSizeIterator<Item = (ChunkPos, Entity)> + '_ {
@@ -305,5 +315,16 @@ mod tests {
             Some(entity)
         );
         assert!(!dimension.contains_chunk(position));
+    }
+
+    #[test]
+    #[should_panic(expected = "registered chunk must be within the dimension height")]
+    fn dimension_registry_rejects_out_of_range_chunk_positions() {
+        let mut dimension = Dimension::default();
+
+        dimension.register_chunk(
+            ChunkPos::new(0, dimension.height().chunks_i32(), 0),
+            Entity::PLACEHOLDER,
+        );
     }
 }
