@@ -318,6 +318,37 @@ impl std::fmt::Display for ChunkStoreError {
 
 impl std::error::Error for ChunkStoreError {}
 
+impl ChunkStoreError {
+    pub fn is_transient(&self) -> bool {
+        match self {
+            Self::Sqlite { code, .. } => matches!(
+                code,
+                Some(
+                    ErrorCode::DatabaseBusy
+                        | ErrorCode::DatabaseLocked
+                        | ErrorCode::OperationInterrupted
+                )
+            ),
+            Self::Io { kind, .. } => matches!(
+                kind,
+                ErrorKind::Interrupted | ErrorKind::TimedOut | ErrorKind::WouldBlock
+            ),
+            #[cfg(feature = "turso-store")]
+            Self::Turso { kind, .. } => match kind {
+                TursoStoreErrorKind::Busy
+                | TursoStoreErrorKind::BusySnapshot
+                | TursoStoreErrorKind::Interrupt => true,
+                TursoStoreErrorKind::Io(kind) => matches!(
+                    kind,
+                    ErrorKind::Interrupted | ErrorKind::TimedOut | ErrorKind::WouldBlock
+                ),
+                TursoStoreErrorKind::Other => false,
+            },
+            _ => false,
+        }
+    }
+}
+
 impl From<rusqlite::Error> for ChunkStoreError {
     fn from(value: rusqlite::Error) -> Self {
         let code = value.sqlite_error_code();

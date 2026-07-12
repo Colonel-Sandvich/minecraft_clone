@@ -1,16 +1,10 @@
-use std::io::ErrorKind;
-
 use bevy::prelude::*;
-use rusqlite::ErrorCode;
 
 use crate::world::{
     chunk::{Chunk, ChunkColumn, ChunkHeightmap, ChunkPos},
     generation::{WorldHeight, generate_chunk},
     storage::{ChunkRepository, ChunkStoreError},
 };
-
-#[cfg(feature = "turso-store")]
-use crate::world::storage::TursoStoreErrorKind;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChunkLoadError {
@@ -159,54 +153,26 @@ pub fn load_or_generate_column(
 }
 
 pub fn classify_load_error(error: ChunkStoreError) -> ChunkLoadError {
-    match &error {
-        ChunkStoreError::Sqlite { code, .. } if is_transient_sqlite_error(*code) => {
-            ChunkLoadError::transient(error)
-        }
-        #[cfg(feature = "turso-store")]
-        ChunkStoreError::Turso { kind, .. } if is_transient_turso_error(*kind) => {
-            ChunkLoadError::transient(error)
-        }
-        ChunkStoreError::Io { kind, .. } if is_transient_io_error(*kind) => {
-            ChunkLoadError::transient(error)
-        }
-        _ => ChunkLoadError::permanent(error),
-    }
-}
-
-fn is_transient_sqlite_error(code: Option<ErrorCode>) -> bool {
-    matches!(
-        code,
-        Some(ErrorCode::DatabaseBusy | ErrorCode::DatabaseLocked | ErrorCode::OperationInterrupted)
-    )
-}
-
-fn is_transient_io_error(kind: ErrorKind) -> bool {
-    matches!(
-        kind,
-        ErrorKind::Interrupted | ErrorKind::TimedOut | ErrorKind::WouldBlock
-    )
-}
-
-#[cfg(feature = "turso-store")]
-fn is_transient_turso_error(kind: TursoStoreErrorKind) -> bool {
-    match kind {
-        TursoStoreErrorKind::Busy
-        | TursoStoreErrorKind::BusySnapshot
-        | TursoStoreErrorKind::Interrupt => true,
-        TursoStoreErrorKind::Io(kind) => is_transient_io_error(kind),
-        TursoStoreErrorKind::Other => false,
+    if error.is_transient() {
+        ChunkLoadError::transient(error)
+    } else {
+        ChunkLoadError::permanent(error)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
+    use std::{
+        io::ErrorKind,
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
     };
 
     use super::*;
+    #[cfg(feature = "turso-store")]
+    use crate::world::storage::TursoStoreErrorKind;
     use crate::{
         block::BlockType,
         world::{
@@ -216,6 +182,7 @@ mod tests {
             },
         },
     };
+    use rusqlite::ErrorCode;
 
     struct CountingColumnStore {
         metadata: WorldMetadata,
