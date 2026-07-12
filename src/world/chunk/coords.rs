@@ -159,6 +159,13 @@ impl ChunkColumn {
     pub const fn chunk(self, y: i32) -> ChunkPos {
         ChunkPos::new(self.x, y, self.z)
     }
+
+    /// Iterates the inclusive square neighborhood in stable Z/X order.
+    pub fn chebyshev_neighborhood(self, radius: i32) -> impl Iterator<Item = Self> {
+        let radius = radius.max(0);
+        (-radius..=radius)
+            .flat_map(move |z| (-radius..=radius).map(move |x| Self::new(self.x + x, self.z + z)))
+    }
 }
 
 impl From<ChunkPos> for ChunkColumn {

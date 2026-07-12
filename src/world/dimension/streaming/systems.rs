@@ -43,13 +43,13 @@ pub(crate) fn maintain_column_residency(
     dimension.assert_stream_owner(owner);
     dimension.stream_mut().tick_backoffs();
 
-    for &column in desired_view.columns() {
+    for &column in desired_view.resident_columns() {
         dimension.stream_mut().mark_desired(column);
     }
 
     let tracked_columns = dimension.stream().columns().collect::<Vec<_>>();
     for column in tracked_columns {
-        if !desired_view.contains_column(column) {
+        if !desired_view.contains_resident_column(column) {
             dimension.stream_mut().mark_undesired(column);
         }
     }
@@ -92,7 +92,7 @@ pub(crate) fn finish_column_loads(
     let (mut dimension, owner) = dimension.into_inner();
     dimension.assert_stream_owner(owner);
     let mut completed = Vec::new();
-    for &column in desired_view.columns() {
+    for &column in desired_view.resident_columns() {
         if completed.len() >= activation_budget.0 {
             break;
         }
@@ -170,7 +170,7 @@ pub(crate) fn start_column_loads(
     }
 
     let mut started = 0;
-    for &column in desired_view.columns() {
+    for &column in desired_view.resident_columns() {
         if started >= available {
             break;
         }

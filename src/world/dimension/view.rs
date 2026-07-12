@@ -45,13 +45,43 @@ struct DesiredColumnViewKey {
     height: WorldHeight,
 }
 
-/// Cached, nearest-first columns requested by the active view.
+#[derive(Debug, Default)]
+struct OrderedColumnSet {
+    columns: Vec<ChunkColumn>,
+    set: HashSet<ChunkColumn>,
+}
+
+impl OrderedColumnSet {
+    fn from_nearest_first(columns: Vec<ChunkColumn>) -> Self {
+        let set = columns.iter().copied().collect::<HashSet<_>>();
+        assert_eq!(
+            columns.len(),
+            set.len(),
+            "ordered column set cannot contain duplicates"
+        );
+        Self { columns, set }
+    }
+
+    fn columns(&self) -> &[ChunkColumn] {
+        &self.columns
+    }
+
+    fn contains(&self, column: ChunkColumn) -> bool {
+        self.set.contains(&column)
+    }
+
+    fn len(&self) -> usize {
+        self.columns.len()
+    }
+}
+
+/// Cached visible columns and their resident lighting dependency closure.
 #[derive(Resource, Debug, Default)]
 pub struct DesiredColumnView {
     key: Option<DesiredColumnViewKey>,
     revision: u64,
-    columns: Vec<ChunkColumn>,
-    column_set: HashSet<ChunkColumn>,
+    visible: OrderedColumnSet,
+    resident: OrderedColumnSet,
 }
 
 impl DesiredColumnView {
@@ -71,9 +101,10 @@ impl DesiredColumnView {
             return false;
         }
 
-        self.columns = columns_in_radius(center, key.radius);
-        self.column_set.clear();
-        self.column_set.extend(self.columns.iter().copied());
+        let visible = OrderedColumnSet::from_nearest_first(columns_in_radius(center, key.radius));
+        let resident = OrderedColumnSet::from_nearest_first(resident_closure(&visible, center));
+        self.visible = visible;
+        self.resident = resident;
         self.key = Some(key);
         self.revision = self
             .revision
@@ -95,60 +126,121 @@ impl DesiredColumnView {
         self.key.map(|key| key.height)
     }
 
-    pub fn columns(&self) -> &[ChunkColumn] {
-        &self.columns
+    pub fn visible_columns(&self) -> &[ChunkColumn] {
+        self.visible.columns()
     }
 
-    pub fn contains_column(&self, column: ChunkColumn) -> bool {
-        self.column_set.contains(&column)
+    pub fn resident_columns(&self) -> &[ChunkColumn] {
+        self.resident.columns()
     }
 
-    pub fn contains_chunk(&self, position: ChunkPos) -> bool {
+    pub fn support_columns(&self) -> impl Iterator<Item = ChunkColumn> + '_ {
+        self.resident
+            .columns()
+            .iter()
+            .copied()
+            .filter(|&column| !self.visible.contains(column))
+    }
+
+    pub fn contains_visible_column(&self, column: ChunkColumn) -> bool {
+        self.visible.contains(column)
+    }
+
+    pub fn contains_resident_column(&self, column: ChunkColumn) -> bool {
+        self.resident.contains(column)
+    }
+
+    pub fn contains_visible_chunk(&self, position: ChunkPos) -> bool {
+        self.contains_chunk_in(position, &self.visible)
+    }
+
+    pub fn contains_resident_chunk(&self, position: ChunkPos) -> bool {
+        self.contains_chunk_in(position, &self.resident)
+    }
+
+    pub fn visible_chunks(&self) -> impl Iterator<Item = ChunkPos> + '_ {
+        self.chunks_in(&self.visible)
+    }
+
+    pub fn resident_chunks(&self) -> impl Iterator<Item = ChunkPos> + '_ {
+        self.chunks_in(&self.resident)
+    }
+
+    pub fn visible_column_count(&self) -> usize {
+        self.visible.len()
+    }
+
+    pub fn resident_column_count(&self) -> usize {
+        self.resident.len()
+    }
+
+    pub fn visible_chunk_count(&self) -> usize {
+        self.chunk_count_in(&self.visible)
+    }
+
+    pub fn resident_chunk_count(&self) -> usize {
+        self.chunk_count_in(&self.resident)
+    }
+
+    fn contains_chunk_in(&self, position: ChunkPos, columns: &OrderedColumnSet) -> bool {
         let Some(key) = self.key else {
             return false;
         };
-        let y = position.as_ivec3().y;
-        (0..key.height.chunks_i32()).contains(&y)
-            && self.contains_column(ChunkColumn::from(position))
+        (0..key.height.chunks_i32()).contains(&position.y()) && columns.contains(position.column())
     }
 
-    pub fn chunks(&self) -> impl Iterator<Item = ChunkPos> + '_ {
+    fn chunks_in<'a>(
+        &'a self,
+        columns: &'a OrderedColumnSet,
+    ) -> impl Iterator<Item = ChunkPos> + 'a {
         let height = self.key.map_or(0, |key| key.height.chunks_i32());
-        self.columns
+        columns
+            .columns()
             .iter()
             .flat_map(move |column| (0..height).map(|y| column.chunk(y)))
     }
 
-    pub fn column_count(&self) -> usize {
-        self.columns.len()
-    }
-
-    pub fn chunk_count(&self) -> usize {
+    fn chunk_count_in(&self, columns: &OrderedColumnSet) -> usize {
         self.key
-            .map_or(0, |key| self.columns.len() * key.height.chunks())
+            .map_or(0, |key| columns.len() * key.height.chunks())
     }
+}
+
+fn resident_closure(visible: &OrderedColumnSet, center: ChunkColumn) -> Vec<ChunkColumn> {
+    let mut closure = visible
+        .columns()
+        .iter()
+        .flat_map(|column| column.chebyshev_neighborhood(1))
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    sort_nearest_first(&mut closure, center);
+    closure
 }
 
 fn columns_in_radius(center: ChunkColumn, radius: i32) -> Vec<ChunkColumn> {
     let radius = radius.max(0);
     let radius_squared = i64::from(radius) * i64::from(radius);
-    let mut offsets = (-radius..=radius)
+    let offsets = (-radius..=radius)
         .flat_map(|z| (-radius..=radius).map(move |x| (x, z)))
         .filter(|&(x, z)| {
             i64::from(x) * i64::from(x) + i64::from(z) * i64::from(z) <= radius_squared
         })
         .collect::<Vec<_>>();
-    offsets.sort_by_key(|&(x, z)| {
-        (
-            i64::from(x) * i64::from(x) + i64::from(z) * i64::from(z),
-            z,
-            x,
-        )
-    });
-    offsets
+    let mut columns = offsets
         .into_iter()
         .map(|(x, z)| ChunkColumn::new(center.x() + x, center.z() + z))
-        .collect()
+        .collect::<Vec<_>>();
+    sort_nearest_first(&mut columns, center);
+    columns
+}
+
+fn sort_nearest_first(columns: &mut [ChunkColumn], center: ChunkColumn) {
+    columns.sort_unstable_by_key(|column| {
+        let x = i64::from(column.x()) - i64::from(center.x());
+        let z = i64::from(column.z()) - i64::from(center.z());
+        (x * x + z * z, z, x)
+    });
 }
 
 #[cfg(test)]
@@ -173,14 +265,28 @@ mod tests {
 
         assert!(view.refresh(center, ViewDistance::new(TEST_VIEW_DISTANCE), height));
 
-        assert_eq!(view.columns()[0], center);
+        assert_eq!(view.visible_columns()[0], center);
+        assert_eq!(view.resident_columns()[0], center);
         assert_eq!(
-            view.column_count(),
+            view.visible_column_count(),
             expected_column_count(TEST_VIEW_DISTANCE)
         );
-        assert_eq!(view.chunk_count(), view.column_count() * height.chunks());
-        assert!(view.contains_column(ChunkColumn::new(-3 + TEST_VIEW_DISTANCE, 7)));
-        assert!(!view.contains_column(ChunkColumn::new(-3 + TEST_VIEW_DISTANCE + 1, 7)));
+        assert_eq!(
+            view.visible_chunk_count(),
+            view.visible_column_count() * height.chunks()
+        );
+        assert_eq!(
+            view.resident_chunk_count(),
+            view.resident_column_count() * height.chunks()
+        );
+
+        let visible_edge = ChunkColumn::new(-3 + TEST_VIEW_DISTANCE, 7);
+        let support_edge = ChunkColumn::new(-3 + TEST_VIEW_DISTANCE + 1, 7);
+        assert!(view.contains_visible_column(visible_edge));
+        assert!(view.contains_resident_column(visible_edge));
+        assert!(!view.contains_visible_column(support_edge));
+        assert!(view.contains_resident_column(support_edge));
+        assert!(!view.contains_resident_column(ChunkColumn::new(-3 + TEST_VIEW_DISTANCE + 2, 7)));
     }
 
     #[test]
@@ -218,7 +324,7 @@ mod tests {
             ViewDistance::new(TEST_VIEW_DISTANCE),
             height,
         );
-        let chunks = view.chunks().collect::<Vec<_>>();
+        let chunks = view.resident_chunks().collect::<Vec<_>>();
 
         assert_eq!(chunks[0], ChunkPos::new(0, 0, 0));
         assert_eq!(chunks[1], ChunkPos::new(0, 1, 0));
@@ -232,6 +338,60 @@ mod tests {
             ChunkColumn::from(chunks[height.chunks()]),
             ChunkColumn::new(0, 0)
         );
+    }
+
+    #[test]
+    fn resident_view_is_the_exact_one_column_dependency_closure() {
+        let center = ChunkColumn::new(0, 0);
+        let height = WorldHeight::new(2).unwrap();
+        let mut view = DesiredColumnView::default();
+        view.refresh(center, ViewDistance::new(1), height);
+
+        assert_eq!(view.visible_column_count(), 5);
+        assert_eq!(view.resident_column_count(), 21);
+        assert_eq!(view.support_columns().count(), 16);
+
+        for &visible in view.visible_columns() {
+            for dependency in visible.chebyshev_neighborhood(1) {
+                assert!(view.contains_resident_column(dependency));
+            }
+        }
+        for &resident in view.resident_columns() {
+            assert!(
+                view.visible_columns().iter().any(|visible| visible
+                    .chebyshev_neighborhood(1)
+                    .any(|item| item == resident)),
+                "resident closure contains unrelated column {resident:?}"
+            );
+        }
+
+        let row_widths = (-2..=2)
+            .map(|z| {
+                view.resident_columns()
+                    .iter()
+                    .filter(|column| column.z() == z)
+                    .count()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(row_widths, vec![3, 5, 5, 5, 3]);
+    }
+
+    #[test]
+    fn visible_and_resident_chunk_queries_include_height_bounds() {
+        let center = ChunkColumn::new(3, -8);
+        let height = WorldHeight::new(2).unwrap();
+        let mut view = DesiredColumnView::default();
+        view.refresh(center, ViewDistance::new(1), height);
+
+        let support = ChunkColumn::new(5, -8);
+        assert!(view.contains_visible_chunk(center.chunk(0)));
+        assert!(view.contains_resident_chunk(center.chunk(1)));
+        assert!(!view.contains_visible_chunk(support.chunk(0)));
+        assert!(view.contains_resident_chunk(support.chunk(0)));
+        assert!(!view.contains_resident_chunk(center.chunk(-1)));
+        assert!(!view.contains_resident_chunk(center.chunk(2)));
+        assert_eq!(view.visible_chunks().count(), 5 * height.chunks());
+        assert_eq!(view.resident_chunks().count(), 21 * height.chunks());
     }
 
     #[test]

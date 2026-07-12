@@ -281,7 +281,7 @@ pub(crate) fn start_chunk_save_tasks(
                 position: registered_position,
             },
             revision: chunk.content_revision(),
-            eviction_priority: !desired_view.contains_column(registered_position.into()),
+            eviction_priority: !desired_view.contains_resident_column(registered_position.into()),
         });
     }
 
