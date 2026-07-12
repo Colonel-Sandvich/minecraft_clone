@@ -389,11 +389,6 @@ fn mesh_rebuild_reuses_layer_entity_and_uploads_same_count_topology_changes() {
             .all(|face| face.x() == 0)
     );
 
-    // The transient payload survives its insertion frame, then is dropped once extraction had a
-    // chance to observe it.
-    app.update();
-    assert!(app.world().get::<ChunkMeshFaces>(layer_entity).is_none());
-
     {
         let world = app.world_mut();
         let mut entity = world.entity_mut(chunk_entity);
@@ -426,6 +421,70 @@ fn mesh_rebuild_reuses_layer_entity_and_uploads_same_count_topology_changes() {
             .all(|face| face.x() == 1),
         "same-count topology changes must still replace the face payload"
     );
+
+    app.update();
+    assert!(app.world().get::<ChunkMeshFaces>(layer_entity).is_none());
+}
+
+#[test]
+fn consecutive_mesh_rebuild_preserves_changed_count_face_payload() {
+    let mut app = mesh_rebuild_app();
+
+    let mut chunk = Chunk::default();
+    chunk.set_cell_xyz(0, 0, 0, block_cell(BlockType::Stone));
+    let chunk_entity = app
+        .world_mut()
+        .spawn((
+            ChunkPosition::from(IVec3::ZERO),
+            chunk,
+            ChunkNeedsMeshRebuild,
+        ))
+        .id();
+    register_active_chunk(&mut app, ChunkPos::ZERO, chunk_entity);
+
+    app.update();
+
+    let layer_entity = app.world().get::<Children>(chunk_entity).unwrap()[0];
+    assert_eq!(
+        app.world()
+            .get::<ChunkMeshLayer>(layer_entity)
+            .unwrap()
+            .face_count(),
+        6
+    );
+
+    {
+        let world = app.world_mut();
+        let mut entity = world.entity_mut(chunk_entity);
+        entity
+            .get_mut::<Chunk>()
+            .unwrap()
+            .set_cell_xyz(1, 0, 0, block_cell(BlockType::Stone));
+        entity.insert(ChunkNeedsMeshRebuild);
+    }
+
+    app.update();
+
+    let children = app.world().get::<Children>(chunk_entity).unwrap();
+    assert_eq!(children.len(), 1);
+    assert_eq!(children[0], layer_entity);
+    assert_eq!(
+        app.world()
+            .get::<ChunkMeshLayer>(layer_entity)
+            .unwrap()
+            .face_count(),
+        10
+    );
+    assert_eq!(
+        app.world()
+            .get::<ChunkMeshFaces>(layer_entity)
+            .expect("changed face payload must survive its extraction frame")
+            .len(),
+        10
+    );
+
+    app.update();
+    assert!(app.world().get::<ChunkMeshFaces>(layer_entity).is_none());
 }
 
 #[test]

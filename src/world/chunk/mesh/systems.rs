@@ -30,7 +30,7 @@ pub(super) fn drop_uploaded_faces(
     faces: Query<(Entity, Ref<ChunkMeshFaces>)>,
 ) {
     for (entity, faces_ref) in &faces {
-        if !faces_ref.is_added() {
+        if !faces_ref.is_changed() {
             commands.entity(entity).remove::<ChunkMeshFaces>();
         }
     }
