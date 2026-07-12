@@ -5,15 +5,20 @@ Visible columns are published only after dependency-complete lighting, while a
 resident support halo remains available to derived systems. The items below are
 the next architecture targets rather than requirements for that foundation.
 
-## Lighting execution
+## Lighting follow-ups
 
-Initial lighting now batches connected commit columns and calculates their
-shared support halo once, but the solver still runs synchronously. Profile the
-`light_patch_*` counters and patch wall time before moving it off-thread. If it
-remains a frame-time hotspot, make patch jobs capture the dimension owner,
-column incarnation entities, chunk content revisions, column light revisions,
-and a unique attempt version; reject the entire result if any input is stale.
-Keep calculation and commit sets separate across the async boundary.
+Initial lighting now runs world-aligned compact patches off-thread with separate
+calculation and commit sets. Jobs validate dimension ownership, column
+incarnations, chunk content revisions, light revisions, and exact ticket
+authority before committing. Cancelled work retains its worker slot until the
+result is collected, so one dimension cannot accidentally overlap patches.
+
+A slow column can still hold the other ready members of its initial-light tile.
+Add a delayed and jittered loading profile, then introduce a per-tile age escape
+if real storage shows head-of-line blocking. Capture a full-client trace with
+meshing, colliders, and rendering enabled before changing the conservative
+column budgets or adding lighting worker concurrency. Runtime block edits can
+later use changed light boundaries instead of conservative connected relights.
 
 ## Fluid simulation
 
@@ -65,12 +70,13 @@ markers.
 Production currently assumes one active dimension. If runtime switching is
 introduced, treat activation as an exposure transition: hide published roots
 and disable colliders for the old dimension, refresh the new owner's desired
-view, and reveal only its already-published columns. Add lifecycle tests before
-allowing more than one resident dimension to switch at runtime.
+view, and reveal only its already-published columns. Inactive dimensions now
+cancel lighting authority and drain their worker, but the complete activation
+lifecycle still needs tests before runtime switching is supported.
 
 ## Intended order
 
-1. Profile staged lighting and make patch execution asynchronous only if needed.
+1. Profile moving-view and delayed-load lighting in the full client.
 2. Replace derived-work markers with dimension-owned queues.
 3. Rebuild fluids around typed borrowed regions and fair scheduling.
 4. Consolidate chunk render ownership and multi-view preparation.
