@@ -6,10 +6,12 @@ use bevy::{
     tasks::{Task, futures::check_ready},
 };
 
-use super::ChunkTaskPool;
+use super::{Active, ChunkTaskPool, DesiredColumnView, Dimension};
 
 use crate::world::{
-    chunk::{Chunk, ChunkHeightmap, ChunkNeedsSave, ChunkPos, ChunkPosition},
+    chunk::{
+        Chunk, ChunkColumn, ChunkHeightmap, ChunkNeedsSave, ChunkPos, ChunkPosition, ChunkRevision,
+    },
     storage::{ChunkRepository, ChunkStoreError, ChunkStoreResult},
 };
 
@@ -18,8 +20,9 @@ const MAX_SAVE_RETRY_DELAY_UPDATES: u32 = 600;
 
 #[derive(Resource, Default)]
 pub(crate) struct ChunkSaveTasks {
-    tasks: HashMap<Entity, Task<ChunkSaveOutput>>,
-    failures: HashMap<Entity, ChunkSaveFailure>,
+    tasks: HashMap<ChunkSaveHandle, InFlightChunkSave>,
+    failures: HashMap<ChunkSaveHandle, ChunkSaveFailure>,
+    cursor: Option<ChunkSaveHandle>,
 }
 
 impl ChunkSaveTasks {
@@ -31,51 +34,97 @@ impl ChunkSaveTasks {
             failures,
             estimated_payload_bytes: tasks
                 .saturating_mul(
-                    size_of::<Entity>()
-                        + size_of::<Task<ChunkSaveOutput>>()
-                        + size_of::<ChunkSaveRequest>()
-                        + size_of::<ChunkSaveOutput>(),
+                    size_of::<ChunkSaveHandle>()
+                        + size_of::<InFlightChunkSave>()
+                        + size_of::<ChunkSaveRequest>(),
                 )
                 .saturating_add(
-                    failures.saturating_mul(size_of::<Entity>() + size_of::<ChunkSaveFailure>()),
+                    failures.saturating_mul(
+                        size_of::<ChunkSaveHandle>() + size_of::<ChunkSaveFailure>(),
+                    ),
                 ),
         }
     }
 
     fn tick_retry_backoffs(&mut self) {
         for failure in self.failures.values_mut() {
-            failure.retry_after_updates = failure.retry_after_updates.saturating_sub(1);
+            let Some(delay) = &mut failure.retry_after_updates else {
+                continue;
+            };
+            *delay = delay.saturating_sub(1);
         }
     }
 
-    fn can_start(&self, entity: Entity) -> bool {
-        !self.tasks.contains_key(&entity)
+    fn can_start(&self, handle: ChunkSaveHandle) -> bool {
+        !self.tasks.contains_key(&handle)
+            // Storage owns one shared heightmap per XZ column.
+            && !self
+                .tasks
+                .keys()
+                .any(|in_flight| in_flight.column() == handle.column())
             && self
                 .failures
-                .get(&entity)
+                .get(&handle)
                 .is_none_or(|failure| failure.can_retry())
     }
 
-    fn record_success(&mut self, entity: Entity) {
-        self.failures.remove(&entity);
+    fn record_success(&mut self, handle: ChunkSaveHandle) {
+        self.failures.remove(&handle);
     }
 
-    fn record_failure(&mut self, entity: Entity, error: ChunkStoreError) {
+    fn record_failure(&mut self, handle: ChunkSaveHandle, error: ChunkStoreError) {
         let attempts = self
             .failures
-            .get(&entity)
+            .get(&handle)
             .map_or(0, |failure| failure.attempts)
             .saturating_add(1);
+        let retry_after_updates = error
+            .is_transient()
+            .then(|| retry_delay_for_attempt(attempts));
 
         self.failures.insert(
-            entity,
+            handle,
             ChunkSaveFailure {
                 error,
                 attempts,
-                retry_after_updates: retry_delay_for_attempt(attempts),
+                retry_after_updates,
             },
         );
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct ChunkSaveHandle {
+    owner: Entity,
+    entity: Entity,
+    position: ChunkPos,
+}
+
+impl ChunkSaveHandle {
+    const fn column(self) -> ChunkColumn {
+        ChunkColumn::from_chunk(self.position)
+    }
+
+    const fn order_key(self) -> (i32, i32, i32, Entity) {
+        (
+            self.position.x(),
+            self.position.z(),
+            self.position.y(),
+            self.entity,
+        )
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ChunkSaveTicket {
+    handle: ChunkSaveHandle,
+    revision: ChunkRevision,
+    heightmap: ChunkHeightmap,
+}
+
+struct InFlightChunkSave {
+    ticket: ChunkSaveTicket,
+    task: Task<ChunkStoreResult<()>>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -89,12 +138,12 @@ pub(crate) struct ChunkSaveTaskStats {
 struct ChunkSaveFailure {
     error: ChunkStoreError,
     attempts: u32,
-    retry_after_updates: u32,
+    retry_after_updates: Option<u32>,
 }
 
 impl ChunkSaveFailure {
     fn can_retry(&self) -> bool {
-        self.retry_after_updates == 0
+        self.retry_after_updates == Some(0)
     }
 }
 
@@ -115,343 +164,221 @@ impl Default for ChunkSaveBudget {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ChunkSaveRequest {
-    entity: Entity,
-    pos: ChunkPos,
+    position: ChunkPos,
     chunk: Chunk,
     heightmap: ChunkHeightmap,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct ChunkSaveOutput {
-    entity: Entity,
-    pos: ChunkPos,
-    saved_chunk: Chunk,
-    saved_heightmap: ChunkHeightmap,
-    result: ChunkStoreResult<()>,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ChunkSaveCandidate {
+    handle: ChunkSaveHandle,
+    revision: ChunkRevision,
+    eviction_priority: bool,
 }
 
 pub(crate) fn finish_chunk_save_tasks(
     mut commands: Commands,
     mut save_tasks: ResMut<ChunkSaveTasks>,
-    chunks: Query<(&Chunk, &ChunkHeightmap, Option<&ChunkNeedsSave>)>,
+    dimensions: Query<&Dimension>,
+    chunks: Query<(
+        &ChunkPosition,
+        &Chunk,
+        &ChunkHeightmap,
+        Option<&ChunkNeedsSave>,
+    )>,
 ) {
     let mut completed = Vec::new();
-    for (entity, task) in save_tasks.tasks.iter_mut() {
-        if let Some(output) = check_ready(task) {
-            completed.push((*entity, output));
+    for (&handle, in_flight) in save_tasks.tasks.iter_mut() {
+        if let Some(result) = check_ready(&mut in_flight.task) {
+            completed.push((handle, in_flight.ticket, result));
         }
     }
 
-    for (entity, output) in completed {
-        save_tasks.tasks.remove(&entity);
+    for (handle, ticket, result) in completed {
+        let removed = save_tasks
+            .tasks
+            .remove(&handle)
+            .expect("completed chunk save task must remain registered");
+        assert_eq!(
+            removed.ticket, ticket,
+            "completed chunk save ticket must match its registered task"
+        );
 
-        if output.entity != entity {
-            warn!(expected = ?entity, actual = ?output.entity, "Chunk save task returned unexpected entity");
-            continue;
-        }
-
-        match output.result {
+        match result {
             Ok(()) => {
-                let Ok((chunk, heightmap, Some(_))) = chunks.get(entity) else {
-                    save_tasks.record_success(entity);
+                save_tasks.record_success(handle);
+                let Ok(dimension) = dimensions.get(handle.owner) else {
                     continue;
                 };
+                if dimension.chunk_entity(handle.position) != Some(handle.entity) {
+                    continue;
+                }
+                let Ok((position, chunk, heightmap, Some(_))) = chunks.get(handle.entity) else {
+                    continue;
+                };
+                if position.chunk_pos() != handle.position {
+                    continue;
+                }
 
-                if *chunk == output.saved_chunk && *heightmap == output.saved_heightmap {
-                    commands.entity(entity).remove::<ChunkNeedsSave>();
-                    save_tasks.record_success(entity);
+                if chunk.content_revision() == ticket.revision && *heightmap == ticket.heightmap {
+                    commands.entity(handle.entity).remove::<ChunkNeedsSave>();
                 }
             }
             Err(error) => {
-                warn!(%error, pos = ?output.pos, "Failed to persist dirty chunk");
-                save_tasks.record_failure(entity, error);
+                warn!(%error, pos = ?handle.position, owner = ?handle.owner, "Failed to persist dirty chunk");
+                if save_handle_is_current(handle, &dimensions, &chunks) {
+                    save_tasks.record_failure(handle, error);
+                }
             }
         }
     }
+
+    save_tasks
+        .failures
+        .retain(|&handle, _| save_handle_is_current(handle, &dimensions, &chunks));
 }
 
 pub(crate) fn start_chunk_save_tasks(
-    dirty_chunks: Query<(Entity, &Chunk, &ChunkHeightmap, &ChunkPosition), With<ChunkNeedsSave>>,
+    active_dimension: Option<Single<(&Dimension, Entity), With<Active>>>,
+    chunks: Query<(
+        &ChunkPosition,
+        &Chunk,
+        &ChunkHeightmap,
+        Option<&ChunkNeedsSave>,
+    )>,
+    desired_view: Res<DesiredColumnView>,
     repository: Res<ChunkRepository>,
     save_budget: Res<ChunkSaveBudget>,
     mut save_tasks: ResMut<ChunkSaveTasks>,
     task_pool: Res<ChunkTaskPool>,
 ) {
-    if save_budget.0 == 0 {
-        return;
-    }
-
     save_tasks.tick_retry_backoffs();
 
     let available_slots = save_budget.0.saturating_sub(save_tasks.tasks.len());
     if available_slots == 0 {
         return;
     }
+    let Some(active_dimension) = active_dimension else {
+        return;
+    };
+    let (dimension, owner) = active_dimension.into_inner();
+    dimension.assert_stream_owner(owner);
 
+    let mut candidates = Vec::new();
+    for (registered_position, entity) in dimension.iter_chunks() {
+        let Ok((position, chunk, _, Some(_))) = chunks.get(entity) else {
+            continue;
+        };
+        assert_eq!(
+            position.chunk_pos(),
+            registered_position,
+            "dimension registry and ChunkPosition must agree before saving"
+        );
+        candidates.push(ChunkSaveCandidate {
+            handle: ChunkSaveHandle {
+                owner,
+                entity,
+                position: registered_position,
+            },
+            revision: chunk.content_revision(),
+            eviction_priority: !desired_view.contains_column(registered_position.into()),
+        });
+    }
+
+    let candidates = ordered_candidates(candidates, save_tasks.cursor);
     let mut started = 0;
-    for (entity, chunk, heightmap, position) in dirty_chunks.iter() {
-        if started >= available_slots {
+    for candidate in candidates {
+        if started == available_slots {
             break;
         }
-        if !save_tasks.can_start(entity) {
+        if !save_tasks.can_start(candidate.handle) {
             continue;
         }
 
+        let (position, chunk, heightmap, Some(_)) = chunks
+            .get(candidate.handle.entity)
+            .expect("selected dirty chunk must remain available while starting its save")
+        else {
+            continue;
+        };
+        assert_eq!(position.chunk_pos(), candidate.handle.position);
+        if chunk.content_revision() != candidate.revision {
+            continue;
+        }
+
+        let ticket = ChunkSaveTicket {
+            handle: candidate.handle,
+            revision: candidate.revision,
+            heightmap: *heightmap,
+        };
         let request = ChunkSaveRequest {
-            entity,
-            pos: position.chunk_pos(),
+            position: candidate.handle.position,
             chunk: chunk.clone(),
             heightmap: *heightmap,
         };
         let repository = repository.clone();
         let task = task_pool.spawn(async move { save_chunk_snapshot(request, repository) });
-        save_tasks.tasks.insert(entity, task);
+        save_tasks
+            .tasks
+            .insert(candidate.handle, InFlightChunkSave { ticket, task });
+        save_tasks.cursor = Some(candidate.handle);
         started += 1;
     }
 }
 
-fn save_chunk_snapshot(request: ChunkSaveRequest, repository: ChunkRepository) -> ChunkSaveOutput {
-    let result = repository.save_chunk(request.pos, &request.chunk, &request.heightmap);
-
-    ChunkSaveOutput {
-        entity: request.entity,
-        pos: request.pos,
-        saved_chunk: request.chunk,
-        saved_heightmap: request.heightmap,
-        result,
+fn save_handle_is_current(
+    handle: ChunkSaveHandle,
+    dimensions: &Query<&Dimension>,
+    chunks: &Query<(
+        &ChunkPosition,
+        &Chunk,
+        &ChunkHeightmap,
+        Option<&ChunkNeedsSave>,
+    )>,
+) -> bool {
+    let Ok(dimension) = dimensions.get(handle.owner) else {
+        return false;
+    };
+    if dimension.chunk_entity(handle.position) != Some(handle.entity) {
+        return false;
     }
+    matches!(
+        chunks.get(handle.entity),
+        Ok((position, _, _, Some(_))) if position.chunk_pos() == handle.position
+    )
+}
+
+fn ordered_candidates(
+    candidates: Vec<ChunkSaveCandidate>,
+    cursor: Option<ChunkSaveHandle>,
+) -> Vec<ChunkSaveCandidate> {
+    let (mut eviction, mut resident): (Vec<_>, Vec<_>) = candidates
+        .into_iter()
+        .partition(|candidate| candidate.eviction_priority);
+    rotate_after_cursor(&mut eviction, cursor);
+    rotate_after_cursor(&mut resident, cursor);
+    eviction.extend(resident);
+    eviction
+}
+
+fn rotate_after_cursor(candidates: &mut [ChunkSaveCandidate], cursor: Option<ChunkSaveHandle>) {
+    candidates.sort_unstable_by_key(|candidate| candidate.handle.order_key());
+    let Some(cursor) = cursor else {
+        return;
+    };
+    let start =
+        candidates.partition_point(|candidate| candidate.handle.order_key() <= cursor.order_key());
+    if !candidates.is_empty() {
+        candidates.rotate_left(start % candidates.len());
+    }
+}
+
+fn save_chunk_snapshot(
+    request: ChunkSaveRequest,
+    repository: ChunkRepository,
+) -> ChunkStoreResult<()> {
+    repository.save_chunk(request.position, &request.chunk, &request.heightmap)
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::{
-        block::BlockType,
-        world::{
-            chunk::{ChunkHeightmap, ChunkLight},
-            generation::WorldMetadata,
-            storage::{ChunkRepository, ChunkStore, ChunkStoreError, InMemoryChunkStore},
-        },
-    };
-
-    fn update_until(app: &mut App, mut predicate: impl FnMut(&World) -> bool) {
-        for _ in 0..100 {
-            app.update();
-            if predicate(app.world()) {
-                return;
-            }
-            std::thread::yield_now();
-        }
-
-        panic!("condition was not met after 100 updates");
-    }
-
-    fn add_chunk_save_systems(app: &mut App) {
-        app.insert_resource(ChunkTaskPool::new_for_test())
-            .insert_resource(ChunkSaveTasks::default())
-            .add_systems(
-                Update,
-                (finish_chunk_save_tasks, start_chunk_save_tasks).chain(),
-            );
-    }
-
-    fn test_save_error() -> ChunkStoreError {
-        ChunkStoreError::Io {
-            kind: std::io::ErrorKind::Other,
-            message: "intentional save failure".to_owned(),
-        }
-    }
-
-    struct FailingSaveStore {
-        metadata: WorldMetadata,
-    }
-
-    impl ChunkStore for FailingSaveStore {
-        fn metadata(&self) -> &WorldMetadata {
-            &self.metadata
-        }
-
-        fn load_chunk(
-            &self,
-            _position: ChunkPos,
-        ) -> ChunkStoreResult<Option<(Chunk, ChunkHeightmap)>> {
-            Ok(None)
-        }
-
-        fn save_chunk(
-            &self,
-            _position: ChunkPos,
-            _chunk: &Chunk,
-            _heightmap: &ChunkHeightmap,
-        ) -> ChunkStoreResult<()> {
-            Err(test_save_error())
-        }
-    }
-
-    #[test]
-    fn save_failure_record_preserves_attempts_across_retries() {
-        let entity = Entity::PLACEHOLDER;
-        let mut save_tasks = ChunkSaveTasks::default();
-
-        save_tasks.record_failure(entity, test_save_error());
-        assert_eq!(save_tasks.failures[&entity].attempts, 1);
-        assert_eq!(
-            save_tasks.failures[&entity].retry_after_updates,
-            retry_delay_for_attempt(1)
-        );
-
-        save_tasks.record_failure(entity, test_save_error());
-        assert_eq!(save_tasks.failures[&entity].attempts, 2);
-        assert_eq!(
-            save_tasks.failures[&entity].retry_after_updates,
-            retry_delay_for_attempt(2)
-        );
-    }
-
-    #[test]
-    fn dirty_chunks_are_persisted_and_marked_clean() {
-        let metadata = WorldMetadata::with_seed(9);
-        let repository = ChunkRepository::new(InMemoryChunkStore::new(metadata.clone()));
-        let pos = ChunkPos::new(2, 0, -1);
-        let mut chunk = Chunk::default();
-        chunk.set_cell_xyz(0, 0, 0, BlockType::OakLog.into());
-
-        let mut app = App::new();
-        app.add_plugins(MinimalPlugins)
-            .insert_resource(metadata.clone())
-            .insert_resource(repository.clone())
-            .insert_resource(ChunkSaveBudget(usize::MAX));
-        add_chunk_save_systems(&mut app);
-
-        let chunk_entity = app
-            .world_mut()
-            .spawn((
-                ChunkPosition::from(pos),
-                chunk.clone(),
-                ChunkLight::default(),
-                ChunkHeightmap::default(),
-                ChunkNeedsSave,
-            ))
-            .id();
-
-        update_until(&mut app, |world| {
-            world.get::<ChunkNeedsSave>(chunk_entity).is_none()
-        });
-
-        let (loaded, _heightmap) = repository.load_chunk(pos).unwrap().unwrap();
-        assert_eq!(loaded, chunk);
-    }
-
-    #[test]
-    fn save_budget_limits_in_flight_chunks() {
-        let metadata = WorldMetadata::with_seed(9);
-        let repository = ChunkRepository::new(InMemoryChunkStore::new(metadata.clone()));
-        let mut app = App::new();
-        app.add_plugins(MinimalPlugins)
-            .insert_resource(metadata)
-            .insert_resource(repository)
-            .insert_resource(ChunkSaveBudget(1));
-        add_chunk_save_systems(&mut app);
-
-        app.world_mut().spawn((
-            ChunkPosition::from(IVec3::ZERO),
-            Chunk::default(),
-            ChunkLight::default(),
-            ChunkHeightmap::default(),
-            ChunkNeedsSave,
-        ));
-        app.world_mut().spawn((
-            ChunkPosition::from(ivec3(1, 0, 0)),
-            Chunk::default(),
-            ChunkLight::default(),
-            ChunkHeightmap::default(),
-            ChunkNeedsSave,
-        ));
-
-        app.update();
-
-        assert_eq!(app.world().resource::<ChunkSaveTasks>().tasks.len(), 1);
-    }
-
-    #[test]
-    fn changed_chunks_stay_dirty_until_latest_snapshot_is_saved() {
-        let metadata = WorldMetadata::with_seed(9);
-        let repository = ChunkRepository::new(InMemoryChunkStore::new(metadata.clone()));
-        let pos = ChunkPos::new(2, 0, -1);
-        let mut chunk = Chunk::default();
-        chunk.set_cell_xyz(0, 0, 0, BlockType::OakLog.into());
-
-        let mut app = App::new();
-        app.add_plugins(MinimalPlugins)
-            .insert_resource(metadata.clone())
-            .insert_resource(repository.clone())
-            .insert_resource(ChunkSaveBudget(usize::MAX));
-        add_chunk_save_systems(&mut app);
-
-        let chunk_entity = app
-            .world_mut()
-            .spawn((
-                ChunkPosition::from(pos),
-                chunk,
-                ChunkLight::default(),
-                ChunkHeightmap::default(),
-                ChunkNeedsSave,
-            ))
-            .id();
-
-        app.update();
-        app.world_mut()
-            .get_mut::<Chunk>(chunk_entity)
-            .unwrap()
-            .set_cell_xyz(0, 0, 0, BlockType::Stone.into());
-
-        update_until(&mut app, |world| {
-            world.get::<ChunkNeedsSave>(chunk_entity).is_none()
-        });
-
-        let mut expected = Chunk::default();
-        expected.set_cell_xyz(0, 0, 0, BlockType::Stone.into());
-        let (loaded, _heightmap) = repository.load_chunk(pos).unwrap().unwrap();
-        assert_eq!(loaded, expected);
-    }
-
-    #[test]
-    fn failed_saves_back_off_before_retrying() {
-        let metadata = WorldMetadata::with_seed(9);
-        let repository = ChunkRepository::new(FailingSaveStore {
-            metadata: metadata.clone(),
-        });
-        let mut app = App::new();
-        app.add_plugins(MinimalPlugins)
-            .insert_resource(metadata)
-            .insert_resource(repository)
-            .insert_resource(ChunkSaveBudget(usize::MAX));
-        add_chunk_save_systems(&mut app);
-
-        let chunk_entity = app
-            .world_mut()
-            .spawn((
-                ChunkPosition::from(IVec3::ZERO),
-                Chunk::default(),
-                ChunkLight::default(),
-                ChunkHeightmap::default(),
-                ChunkNeedsSave,
-            ))
-            .id();
-
-        update_until(&mut app, |world| {
-            world
-                .resource::<ChunkSaveTasks>()
-                .failures
-                .contains_key(&chunk_entity)
-        });
-
-        app.update();
-
-        let save_tasks = app.world().resource::<ChunkSaveTasks>();
-        assert!(!save_tasks.tasks.contains_key(&chunk_entity));
-        let failure = &save_tasks.failures[&chunk_entity];
-        assert_eq!(failure.attempts, 1);
-        assert!(failure.retry_after_updates < INITIAL_SAVE_RETRY_DELAY_UPDATES);
-    }
-}
+mod tests;
