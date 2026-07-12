@@ -40,9 +40,19 @@ separate terrain, noise, and features after column streaming is established.
 Column generation should compute shared surface and feature inputs once while
 preserving generator-version output exactly.
 
+## Persistence
+
+Save tickets are bound to runtime dimension entities, but stored chunk keys do
+not yet include a stable dimension identifier. Per-subchunk writes also share
+one column heightmap, and backend column reads are not one transaction. Add a
+stable `DimensionId`, then replace per-subchunk persistence with atomic column
+load/save operations. Track the last durable content revision per column so
+eviction can verify persisted state directly instead of trusting only dirty
+markers.
+
 ## Intended order
 
-1. Finish column residency, owner-bound loading, and revision-aware eviction.
+1. Finish column residency, owner-bound loading, and revision-aware persistence.
 2. Replace derived-work markers with dimension-owned queues.
 3. Rebuild fluids around typed borrowed regions and fair scheduling.
 4. Consolidate chunk render ownership and multi-view preparation.
