@@ -42,11 +42,8 @@ pub struct StoredChunk {
 }
 
 impl StoredChunk {
-    pub fn new(position: impl Into<ChunkPos>, chunk: Chunk) -> Self {
-        Self {
-            position: position.into(),
-            chunk,
-        }
+    pub fn new(position: ChunkPos, chunk: Chunk) -> Self {
+        Self { position, chunk }
     }
 }
 
@@ -166,7 +163,7 @@ impl std::error::Error for StoredColumnError {}
 pub trait ChunkStore: Send + Sync + 'static {
     fn metadata(&self) -> &WorldMetadata;
 
-    fn load_chunk(&self, pos: IVec3) -> ChunkStoreResult<Option<(Chunk, ChunkHeightmap)>>;
+    fn load_chunk(&self, position: ChunkPos) -> ChunkStoreResult<Option<(Chunk, ChunkHeightmap)>>;
 
     fn load_stored_column(&self, column: ChunkColumn) -> ChunkStoreResult<StoredColumn> {
         let mut chunks = Vec::new();
@@ -174,7 +171,7 @@ pub trait ChunkStore: Send + Sync + 'static {
         let height = self.metadata().height();
         for y in 0..height.chunks_i32() {
             let position = column.chunk(y);
-            if let Some((chunk, loaded_heightmap)) = self.load_chunk(position.as_ivec3())? {
+            if let Some((chunk, loaded_heightmap)) = self.load_chunk(position)? {
                 heightmap = loaded_heightmap;
                 chunks.push(StoredChunk::new(position, chunk));
             }
@@ -185,7 +182,7 @@ pub trait ChunkStore: Send + Sync + 'static {
 
     fn save_chunk(
         &self,
-        pos: IVec3,
+        position: ChunkPos,
         chunk: &Chunk,
         heightmap: &ChunkHeightmap,
     ) -> ChunkStoreResult<()>;
@@ -212,9 +209,9 @@ impl ChunkRepository {
 
     pub fn load_chunk(
         &self,
-        position: impl Into<ChunkPos>,
+        position: ChunkPos,
     ) -> ChunkStoreResult<Option<(Chunk, ChunkHeightmap)>> {
-        self.store.load_chunk(position.into().as_ivec3())
+        self.store.load_chunk(position)
     }
 
     pub fn load_stored_column(&self, column: ChunkColumn) -> ChunkStoreResult<StoredColumn> {
@@ -223,12 +220,11 @@ impl ChunkRepository {
 
     pub fn save_chunk(
         &self,
-        position: impl Into<ChunkPos>,
+        position: ChunkPos,
         chunk: &Chunk,
         heightmap: &ChunkHeightmap,
     ) -> ChunkStoreResult<()> {
-        self.store
-            .save_chunk(position.into().as_ivec3(), chunk, heightmap)
+        self.store.save_chunk(position, chunk, heightmap)
     }
 }
 

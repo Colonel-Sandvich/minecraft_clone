@@ -3,7 +3,6 @@ use std::{
     time::Duration,
 };
 
-use bevy::prelude::*;
 use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::world::{
@@ -95,12 +94,14 @@ impl ChunkStore for SqliteChunkStore {
         &self.metadata
     }
 
-    fn load_chunk(&self, pos: IVec3) -> ChunkStoreResult<Option<(Chunk, ChunkHeightmap)>> {
+    fn load_chunk(&self, position: ChunkPos) -> ChunkStoreResult<Option<(Chunk, ChunkHeightmap)>> {
         let connection = self.open_connection()?;
         let bytes = connection
-            .query_row(SQL_SELECT_CHUNK, params![pos.x, pos.z, pos.y], |row| {
-                row.get::<_, Vec<u8>>(0)
-            })
+            .query_row(
+                SQL_SELECT_CHUNK,
+                params![position.x(), position.z(), position.y()],
+                |row| row.get::<_, Vec<u8>>(0),
+            )
             .optional()?;
 
         let Some(bytes) = bytes else {
@@ -108,7 +109,7 @@ impl ChunkStore for SqliteChunkStore {
         };
 
         let chunk = Chunk::try_from_storage_bytes(&bytes)?;
-        let heightmap = load_column_heightmap(&connection, pos.x, pos.z)?;
+        let heightmap = load_column_heightmap(&connection, position.x(), position.z())?;
 
         Ok(Some((chunk, heightmap)))
     }
@@ -137,15 +138,18 @@ impl ChunkStore for SqliteChunkStore {
 
     fn save_chunk(
         &self,
-        pos: IVec3,
+        position: ChunkPos,
         chunk: &Chunk,
         heightmap: &ChunkHeightmap,
     ) -> ChunkStoreResult<()> {
         let mut connection = self.open_connection()?;
         let blocks = chunk.to_storage_bytes();
         let tx = connection.transaction()?;
-        tx.execute(SQL_UPSERT_CHUNK, params![pos.x, pos.z, pos.y, &blocks])?;
-        save_column_heightmap(&tx, pos.x, pos.z, heightmap)?;
+        tx.execute(
+            SQL_UPSERT_CHUNK,
+            params![position.x(), position.z(), position.y(), &blocks],
+        )?;
+        save_column_heightmap(&tx, position.x(), position.z(), heightmap)?;
         tx.commit()?;
 
         Ok(())

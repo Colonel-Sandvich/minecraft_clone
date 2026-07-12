@@ -1,7 +1,5 @@
 use std::{collections::HashMap, sync::Mutex};
 
-use bevy::prelude::*;
-
 use crate::world::{
     chunk::{Chunk, ChunkColumn, ChunkHeightmap, ChunkPos},
     generation::WorldMetadata,
@@ -40,8 +38,7 @@ impl ChunkStore for InMemoryChunkStore {
         &self.metadata
     }
 
-    fn load_chunk(&self, pos: IVec3) -> ChunkStoreResult<Option<(Chunk, ChunkHeightmap)>> {
-        let position = ChunkPos::from(pos);
+    fn load_chunk(&self, position: ChunkPos) -> ChunkStoreResult<Option<(Chunk, ChunkHeightmap)>> {
         let inner = self
             .inner
             .lock()
@@ -91,11 +88,10 @@ impl ChunkStore for InMemoryChunkStore {
 
     fn save_chunk(
         &self,
-        pos: IVec3,
+        position: ChunkPos,
         chunk: &Chunk,
         heightmap: &ChunkHeightmap,
     ) -> ChunkStoreResult<()> {
-        let position = ChunkPos::from(pos);
         let mut inner = self
             .inner
             .lock()
@@ -132,7 +128,7 @@ impl ChunkStore for NoopChunkStore {
         &self.metadata
     }
 
-    fn load_chunk(&self, _pos: IVec3) -> ChunkStoreResult<Option<(Chunk, ChunkHeightmap)>> {
+    fn load_chunk(&self, _position: ChunkPos) -> ChunkStoreResult<Option<(Chunk, ChunkHeightmap)>> {
         Ok(None)
     }
 
@@ -142,7 +138,7 @@ impl ChunkStore for NoopChunkStore {
 
     fn save_chunk(
         &self,
-        _pos: IVec3,
+        _position: ChunkPos,
         _chunk: &Chunk,
         _heightmap: &ChunkHeightmap,
     ) -> ChunkStoreResult<()> {

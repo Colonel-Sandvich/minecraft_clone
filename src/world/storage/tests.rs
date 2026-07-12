@@ -4,8 +4,6 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use bevy::prelude::*;
-
 use super::*;
 use crate::block::BlockType;
 use crate::world::chunk::{ChunkColumn, ChunkHeightmap, ChunkPos};
@@ -104,10 +102,10 @@ fn sqlite_store_roundtrips_full_chunks() {
     chunk.set_cell_xyz(15, 15, 15, BlockType::OakLeaves.into());
 
     store
-        .save_chunk(position.as_ivec3(), &chunk, &default_heightmap())
+        .save_chunk(position, &chunk, &default_heightmap())
         .unwrap();
 
-    let (loaded, _h) = store.load_chunk(position.as_ivec3()).unwrap().unwrap();
+    let (loaded, _h) = store.load_chunk(position).unwrap().unwrap();
     assert_eq!(loaded, chunk);
 }
 
@@ -121,14 +119,14 @@ fn sqlite_store_loads_columns_by_xz() {
     let other_column = chunk_with_block(BlockType::Dirt);
 
     store
-        .save_chunk(column.chunk(3).as_ivec3(), &upper, &default_heightmap())
+        .save_chunk(column.chunk(3), &upper, &default_heightmap())
         .unwrap();
     store
-        .save_chunk(column.chunk(0).as_ivec3(), &lower, &default_heightmap())
+        .save_chunk(column.chunk(0), &lower, &default_heightmap())
         .unwrap();
     store
         .save_chunk(
-            ChunkPos::new(column.x() + 1, 0, column.z()).as_ivec3(),
+            ChunkPos::new(column.x() + 1, 0, column.z()),
             &other_column,
             &default_heightmap(),
         )
@@ -152,10 +150,10 @@ fn in_memory_store_loads_columns_by_xz() {
     let upper = chunk_with_block(BlockType::OakLeaves);
 
     store
-        .save_chunk(column.chunk(2).as_ivec3(), &upper, &default_heightmap())
+        .save_chunk(column.chunk(2), &upper, &default_heightmap())
         .unwrap();
     store
-        .save_chunk(column.chunk(0).as_ivec3(), &lower, &default_heightmap())
+        .save_chunk(column.chunk(0), &lower, &default_heightmap())
         .unwrap();
 
     let column_data = store.load_stored_column(column).unwrap();
@@ -174,13 +172,13 @@ fn noop_store_discards_chunks() {
 
     store
         .save_chunk(
-            position.as_ivec3(),
+            position,
             &chunk_with_block(BlockType::Grass),
             &default_heightmap(),
         )
         .unwrap();
 
-    assert_eq!(store.load_chunk(position.as_ivec3()).unwrap(), None);
+    assert_eq!(store.load_chunk(position).unwrap(), None);
     assert!(
         store
             .load_stored_column(ChunkColumn::from(position))
@@ -200,10 +198,10 @@ fn turso_store_roundtrips_full_chunks() {
     chunk.set_cell_xyz(15, 15, 15, BlockType::OakLeaves.into());
 
     store
-        .save_chunk(position.as_ivec3(), &chunk, &default_heightmap())
+        .save_chunk(position, &chunk, &default_heightmap())
         .unwrap();
 
-    let (loaded, _h) = store.load_chunk(position.as_ivec3()).unwrap().unwrap();
+    let (loaded, _h) = store.load_chunk(position).unwrap().unwrap();
     assert_eq!(loaded, chunk);
 }
 
@@ -217,10 +215,10 @@ fn turso_store_loads_columns_by_xz() {
     let upper = chunk_with_block(BlockType::Stone);
 
     store
-        .save_chunk(column.chunk(3).as_ivec3(), &upper, &default_heightmap())
+        .save_chunk(column.chunk(3), &upper, &default_heightmap())
         .unwrap();
     store
-        .save_chunk(column.chunk(0).as_ivec3(), &lower, &default_heightmap())
+        .save_chunk(column.chunk(0), &lower, &default_heightmap())
         .unwrap();
 
     let column_data = store.load_stored_column(column).unwrap();
@@ -242,7 +240,7 @@ fn sqlite_store_rejects_world_metadata_mismatch() {
 
     assert!(
         store
-            .save_chunk(IVec3::ZERO, &Chunk::default(), &default_heightmap())
+            .save_chunk(ChunkPos::ZERO, &Chunk::default(), &default_heightmap())
             .is_ok()
     );
     assert!(SqliteChunkStore::open(&store.path, &incompatible).is_err());

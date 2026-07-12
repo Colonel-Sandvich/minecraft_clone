@@ -28,6 +28,18 @@ impl ChunkPos {
         self.0
     }
 
+    pub const fn x(self) -> i32 {
+        self.0.x
+    }
+
+    pub const fn y(self) -> i32 {
+        self.0.y
+    }
+
+    pub const fn z(self) -> i32 {
+        self.0.z
+    }
+
     pub fn containing_translation(translation: Vec3) -> Self {
         WorldBlockPos::from_translation(translation).split().chunk
     }

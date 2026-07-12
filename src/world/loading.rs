@@ -228,7 +228,10 @@ mod tests {
             &self.metadata
         }
 
-        fn load_chunk(&self, _pos: IVec3) -> ChunkStoreResult<Option<(Chunk, ChunkHeightmap)>> {
+        fn load_chunk(
+            &self,
+            _position: ChunkPos,
+        ) -> ChunkStoreResult<Option<(Chunk, ChunkHeightmap)>> {
             panic!("column loading must not fall back to one store call per subchunk")
         }
 
@@ -240,7 +243,7 @@ mod tests {
 
         fn save_chunk(
             &self,
-            _pos: IVec3,
+            _position: ChunkPos,
             _chunk: &Chunk,
             _heightmap: &ChunkHeightmap,
         ) -> ChunkStoreResult<()> {

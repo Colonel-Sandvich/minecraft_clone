@@ -3,8 +3,6 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use bevy::prelude::*;
-
 use crate::world::{
     chunk::{Chunk, ChunkColumn, ChunkHeightmap, ChunkPos},
     generation::WorldMetadata,
@@ -100,12 +98,12 @@ impl ChunkStore for TursoChunkStore {
         &self.metadata
     }
 
-    fn load_chunk(&self, pos: IVec3) -> ChunkStoreResult<Option<(Chunk, ChunkHeightmap)>> {
+    fn load_chunk(&self, position: ChunkPos) -> ChunkStoreResult<Option<(Chunk, ChunkHeightmap)>> {
         self.runtime.block_on(async {
             let connection = self.database.connect()?;
             let bytes = {
                 let mut rows = connection
-                    .query(SQL_SELECT_CHUNK, (pos.x, pos.z, pos.y))
+                    .query(SQL_SELECT_CHUNK, (position.x(), position.z(), position.y()))
                     .await?;
                 let Some(row) = rows.next().await? else {
                     return Ok(None);
@@ -113,7 +111,7 @@ impl ChunkStore for TursoChunkStore {
                 row.get::<Vec<u8>>(0)?
             };
             let chunk = Chunk::try_from_storage_bytes(&bytes)?;
-            let heightmap = load_column_heightmap(&connection, pos.x, pos.z).await?;
+            let heightmap = load_column_heightmap(&connection, position.x(), position.z()).await?;
 
             Ok(Some((chunk, heightmap)))
         })
@@ -147,7 +145,7 @@ impl ChunkStore for TursoChunkStore {
 
     fn save_chunk(
         &self,
-        pos: IVec3,
+        position: ChunkPos,
         chunk: &Chunk,
         heightmap: &ChunkHeightmap,
     ) -> ChunkStoreResult<()> {
@@ -158,14 +156,21 @@ impl ChunkStore for TursoChunkStore {
             let mut connection = self.database.connect()?;
             let transaction = connection.transaction().await?;
             let changed = transaction
-                .execute(SQL_UPDATE_CHUNK, (pos.x, pos.z, pos.y, blocks.clone()))
+                .execute(
+                    SQL_UPDATE_CHUNK,
+                    (position.x(), position.z(), position.y(), blocks.clone()),
+                )
                 .await?;
             if changed == 0 {
                 transaction
-                    .execute(SQL_INSERT_CHUNK, (pos.x, pos.z, pos.y, blocks))
+                    .execute(
+                        SQL_INSERT_CHUNK,
+                        (position.x(), position.z(), position.y(), blocks),
+                    )
                     .await?;
             }
-            save_column_heightmap(&transaction, pos.x, pos.z, &heightmap_bytes).await?;
+            save_column_heightmap(&transaction, position.x(), position.z(), &heightmap_bytes)
+                .await?;
             transaction.commit().await?;
 
             Ok(())

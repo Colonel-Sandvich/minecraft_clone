@@ -9,7 +9,7 @@ use bevy::{
 use super::ChunkTaskPool;
 
 use crate::world::{
-    chunk::{Chunk, ChunkHeightmap, ChunkNeedsSave, ChunkPosition},
+    chunk::{Chunk, ChunkHeightmap, ChunkNeedsSave, ChunkPos, ChunkPosition},
     storage::{ChunkRepository, ChunkStoreError, ChunkStoreResult},
 };
 
@@ -116,7 +116,7 @@ impl Default for ChunkSaveBudget {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ChunkSaveRequest {
     entity: Entity,
-    pos: IVec3,
+    pos: ChunkPos,
     chunk: Chunk,
     heightmap: ChunkHeightmap,
 }
@@ -124,7 +124,7 @@ struct ChunkSaveRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ChunkSaveOutput {
     entity: Entity,
-    pos: IVec3,
+    pos: ChunkPos,
     saved_chunk: Chunk,
     saved_heightmap: ChunkHeightmap,
     result: ChunkStoreResult<()>,
@@ -199,7 +199,7 @@ pub(crate) fn start_chunk_save_tasks(
 
         let request = ChunkSaveRequest {
             entity,
-            pos: position.as_ivec3(),
+            pos: position.chunk_pos(),
             chunk: chunk.clone(),
             heightmap: *heightmap,
         };
@@ -271,13 +271,16 @@ mod tests {
             &self.metadata
         }
 
-        fn load_chunk(&self, _pos: IVec3) -> ChunkStoreResult<Option<(Chunk, ChunkHeightmap)>> {
+        fn load_chunk(
+            &self,
+            _position: ChunkPos,
+        ) -> ChunkStoreResult<Option<(Chunk, ChunkHeightmap)>> {
             Ok(None)
         }
 
         fn save_chunk(
             &self,
-            _pos: IVec3,
+            _position: ChunkPos,
             _chunk: &Chunk,
             _heightmap: &ChunkHeightmap,
         ) -> ChunkStoreResult<()> {
@@ -309,7 +312,7 @@ mod tests {
     fn dirty_chunks_are_persisted_and_marked_clean() {
         let metadata = WorldMetadata::with_seed(9);
         let repository = ChunkRepository::new(InMemoryChunkStore::new(metadata.clone()));
-        let pos = ivec3(2, 0, -1);
+        let pos = ChunkPos::new(2, 0, -1);
         let mut chunk = Chunk::default();
         chunk.set_cell_xyz(0, 0, 0, BlockType::OakLog.into());
 
@@ -374,7 +377,7 @@ mod tests {
     fn changed_chunks_stay_dirty_until_latest_snapshot_is_saved() {
         let metadata = WorldMetadata::with_seed(9);
         let repository = ChunkRepository::new(InMemoryChunkStore::new(metadata.clone()));
-        let pos = ivec3(2, 0, -1);
+        let pos = ChunkPos::new(2, 0, -1);
         let mut chunk = Chunk::default();
         chunk.set_cell_xyz(0, 0, 0, BlockType::OakLog.into());
 
