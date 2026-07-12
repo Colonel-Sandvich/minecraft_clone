@@ -4,34 +4,13 @@ use bevy::prelude::*;
 use rusqlite::ErrorCode;
 
 use crate::world::{
-    chunk::{Chunk, ChunkColumn, ChunkHeightmap, ChunkLight, ChunkPos},
+    chunk::{Chunk, ChunkColumn, ChunkHeightmap, ChunkPos},
     generation::{WorldHeight, generate_chunk},
     storage::{ChunkRepository, ChunkStoreError},
 };
 
 #[cfg(feature = "turso-store")]
 use crate::world::storage::TursoStoreErrorKind;
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ChunkLoadRequest {
-    pub pos: ChunkPos,
-}
-
-impl ChunkLoadRequest {
-    pub fn new(position: impl Into<ChunkPos>) -> Self {
-        Self {
-            pos: position.into(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ChunkLoadOutput {
-    pub pos: IVec3,
-    pub result: ChunkLoadResult,
-}
-
-pub type ChunkLoadResult = Result<LoadedChunk, ChunkLoadError>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChunkLoadError {
@@ -80,14 +59,6 @@ impl std::fmt::Display for ChunkLoadErrorKind {
             Self::Permanent => write!(f, "permanent"),
         }
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LoadedChunk {
-    pub chunk: Chunk,
-    pub light: ChunkLight,
-    pub heightmap: ChunkHeightmap,
-    pub source: ChunkLoadSource,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -187,41 +158,6 @@ pub fn load_or_generate_column(
     Ok(LoadedColumn::new(position, height, heightmap, chunks))
 }
 
-pub fn load_or_generate_chunk(
-    request: ChunkLoadRequest,
-    repository: ChunkRepository,
-) -> ChunkLoadOutput {
-    match repository.load_chunk(request.pos) {
-        Ok(Some((chunk, heightmap))) => ChunkLoadOutput {
-            pos: request.pos.as_ivec3(),
-            result: Ok(LoadedChunk {
-                chunk,
-                light: ChunkLight::default(),
-                heightmap,
-                source: ChunkLoadSource::Stored,
-            }),
-        },
-        Ok(None) => {
-            let chunk = generate_chunk(repository.metadata(), request.pos.as_ivec3());
-            let light = ChunkLight::default();
-
-            ChunkLoadOutput {
-                pos: request.pos.as_ivec3(),
-                result: Ok(LoadedChunk {
-                    chunk,
-                    light,
-                    heightmap: ChunkHeightmap::default(),
-                    source: ChunkLoadSource::Generated,
-                }),
-            }
-        }
-        Err(error) => ChunkLoadOutput {
-            pos: request.pos.as_ivec3(),
-            result: Err(classify_load_error(error)),
-        },
-    }
-}
-
 pub fn classify_load_error(error: ChunkStoreError) -> ChunkLoadError {
     match &error {
         ChunkStoreError::Sqlite { code, .. } if is_transient_sqlite_error(*code) => {
@@ -280,45 +216,6 @@ mod tests {
             },
         },
     };
-
-    #[test]
-    fn generated_chunks_are_not_saved_by_loading() {
-        let metadata = WorldMetadata::with_seed(77);
-        let repository = ChunkRepository::new(InMemoryChunkStore::new(metadata.clone()));
-        let pos = ivec3(3, 0, -1);
-        let request = ChunkLoadRequest::new(pos);
-
-        let generated = load_or_generate_chunk(request.clone(), repository.clone());
-        let stored = load_or_generate_chunk(request, repository.clone());
-
-        let generated = generated.result.unwrap();
-        let stored = stored.result.unwrap();
-
-        assert_eq!(generated.source, ChunkLoadSource::Generated);
-        assert_eq!(stored.source, ChunkLoadSource::Generated);
-        assert_eq!(generated.chunk, stored.chunk);
-        assert_eq!(repository.load_chunk(pos).unwrap(), None);
-    }
-
-    #[test]
-    fn stored_chunks_are_not_regenerated_over() {
-        let metadata = WorldMetadata::with_seed(77);
-        let repository = ChunkRepository::new(InMemoryChunkStore::new(metadata.clone()));
-        let pos = ivec3(3, 0, -1);
-
-        repository
-            .save_chunk(pos, &Chunk::default(), &ChunkHeightmap::default())
-            .unwrap();
-
-        let loaded = load_or_generate_chunk(ChunkLoadRequest::new(pos), repository.clone());
-
-        assert_eq!(repository.metadata(), &metadata);
-        assert_eq!(loaded.result.unwrap().source, ChunkLoadSource::Stored);
-        assert_eq!(
-            repository.load_chunk(pos).unwrap().map(|(c, _h)| c),
-            Some(Chunk::default()),
-        );
-    }
 
     struct CountingColumnStore {
         metadata: WorldMetadata,

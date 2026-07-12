@@ -7,10 +7,7 @@ use crate::{
     world::chunk::mesh::{ChunkMeshFaces, ChunkMeshLayer, ChunkMeshLight, PackedFace},
     world::{
         chunk::{Chunk, ChunkContentCounts, ChunkHeightmap, ChunkLight, ChunkPos, ChunkPosition},
-        dimension::{
-            ChunkLoadTasks, ChunkSaveTasks, Dimension, ViewDistance, chunk_positions_in_view,
-        },
-        generation::WorldMetadata,
+        dimension::{ChunkSaveTasks, ColumnLoadTaskStats, DesiredColumnView, Dimension},
     },
 };
 
@@ -205,9 +202,7 @@ fn update_memory_snapshot(
     mesh_faces_q: Query<&ChunkMeshFaces>,
     mesh_light_q: Query<&ChunkMeshLight>,
     dimensions_q: Query<&Dimension>,
-    metadata: Res<WorldMetadata>,
-    view_distance: Res<ViewDistance>,
-    load_tasks: Option<Res<ChunkLoadTasks>>,
+    desired_view: Res<DesiredColumnView>,
     save_tasks: Option<Res<ChunkSaveTasks>>,
 ) {
     if timer.initialized && !timer.timer.tick(time.delta()).just_finished() {
@@ -286,17 +281,23 @@ fn update_memory_snapshot(
         }
     }
 
-    let target_chunks =
-        chunk_positions_in_view(Vec3::ZERO, metadata.height_chunks(), view_distance.chunks()).len();
+    let target_chunks = desired_view.chunk_count();
     let dimension_maps = dimensions_q
         .iter()
         .map(|dimension| dimension.chunk_map_capacity() * size_of::<(ChunkPos, Entity)>())
         .sum::<usize>();
 
-    let load_stats = load_tasks
-        .as_deref()
-        .map(ChunkLoadTasks::stats)
-        .unwrap_or_default();
+    let load_stats = dimensions_q.iter().map(Dimension::load_task_stats).fold(
+        ColumnLoadTaskStats::default(),
+        |mut total, stats| {
+            total.tasks = total.tasks.saturating_add(stats.tasks);
+            total.failures = total.failures.saturating_add(stats.failures);
+            total.estimated_payload_bytes = total
+                .estimated_payload_bytes
+                .saturating_add(stats.estimated_payload_bytes);
+            total
+        },
+    );
     let save_stats = save_tasks
         .as_deref()
         .map(ChunkSaveTasks::stats)

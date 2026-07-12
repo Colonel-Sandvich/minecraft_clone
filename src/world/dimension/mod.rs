@@ -1,9 +1,8 @@
 mod fluid;
 mod invalidation;
-mod lifecycle;
 mod light;
 mod persistence;
-mod tasks;
+mod streaming;
 mod view;
 
 use bevy::{
@@ -20,21 +19,26 @@ use core::future::Future;
 
 use self::{
     fluid::DimensionFluidPlugin,
-    lifecycle::{
-        finish_chunk_load_tasks, maintain_chunk_view, refresh_desired_column_view,
-        start_chunk_load_tasks,
-    },
     light::rebuild_chunk_light,
     persistence::{ChunkSaveBudget, finish_chunk_save_tasks, start_chunk_save_tasks},
+    streaming::{
+        DimensionStreamState, finish_column_loads, maintain_column_residency,
+        refresh_desired_column_view, start_column_loads,
+    },
 };
-use super::{chunk::ChunkPos, generation::WorldMetadata, storage::ChunkRepository};
+use super::{
+    chunk::{ChunkColumn, ChunkPos},
+    generation::{WorldHeight, WorldMetadata},
+    storage::ChunkRepository,
+};
 
-pub(crate) use self::{persistence::ChunkSaveTasks, tasks::ChunkLoadTasks};
+pub(crate) use self::persistence::ChunkSaveTasks;
 pub use self::{
-    tasks::{ChunkLoadBudget, ChunkSpawnBudget},
-    view::{DesiredColumnView, ViewDistance, chunk_positions_in_view},
+    streaming::{ColumnActivationBudget, ColumnLoadBudget},
+    view::{DesiredColumnView, ViewDistance},
 };
 pub(crate) use invalidation::apply_chunk_invalidations;
+pub(crate) use streaming::{ColumnEvictionTicket, ColumnLoadTaskStats, ColumnLoadTicket};
 
 #[derive(Resource)]
 pub(crate) struct ChunkTaskPool(ChunkTaskPoolInner);
@@ -69,12 +73,32 @@ impl ChunkTaskPool {
     }
 }
 
-#[derive(Default, Component)]
+#[derive(Component)]
 pub struct Dimension {
     chunks: HashMap<ChunkPos, Entity>,
+    height: WorldHeight,
+    stream: DimensionStreamState,
+}
+
+impl Default for Dimension {
+    fn default() -> Self {
+        Self::new(Entity::PLACEHOLDER, WorldHeight::default())
+    }
 }
 
 impl Dimension {
+    pub(crate) fn new(owner: Entity, height: WorldHeight) -> Self {
+        Self {
+            chunks: HashMap::default(),
+            height,
+            stream: DimensionStreamState::new(owner),
+        }
+    }
+
+    pub const fn height(&self) -> WorldHeight {
+        self.height
+    }
+
     pub fn chunk_entity(&self, pos: impl Into<ChunkPos>) -> Option<Entity> {
         self.chunks.get(&pos.into()).copied()
     }
@@ -106,6 +130,75 @@ impl Dimension {
     pub fn chunk_map_capacity(&self) -> usize {
         self.chunks.capacity()
     }
+
+    pub(crate) const fn stream(&self) -> &DimensionStreamState {
+        &self.stream
+    }
+
+    pub(crate) fn load_task_stats(&self) -> ColumnLoadTaskStats {
+        self.stream.stats()
+    }
+
+    pub(crate) fn stream_mut(&mut self) -> &mut DimensionStreamState {
+        &mut self.stream
+    }
+
+    pub(crate) fn assert_stream_owner(&self, owner: Entity) {
+        assert_eq!(
+            self.stream.owner(),
+            owner,
+            "dimension streaming state must remain bound to its entity"
+        );
+    }
+
+    pub(crate) fn has_any_chunk_in_column(&self, column: ChunkColumn) -> bool {
+        (0..self.height.chunks_i32()).any(|y| self.contains_chunk(column.chunk(y)))
+    }
+
+    pub(crate) fn complete_column(&self, column: ChunkColumn) -> Option<Vec<(ChunkPos, Entity)>> {
+        (0..self.height.chunks_i32())
+            .map(|y| {
+                let position = column.chunk(y);
+                self.chunk_entity(position).map(|entity| (position, entity))
+            })
+            .collect()
+    }
+
+    pub(crate) fn publish_accepted_column(
+        &mut self,
+        ticket: ColumnLoadTicket,
+        entities: Vec<Entity>,
+    ) {
+        assert_eq!(entities.len(), self.height.chunks());
+        assert_eq!(ticket.owner(), self.stream.owner());
+        assert!(
+            (0..self.height.chunks_i32()).all(|y| !self.contains_chunk(ticket.column().chunk(y))),
+            "loaded column must not overlap registered chunks"
+        );
+
+        for (y, entity) in entities.into_iter().enumerate() {
+            self.chunks.insert(ticket.column().chunk(y as i32), entity);
+        }
+        assert!(
+            self.stream.activate_load(ticket),
+            "accepted column load must still be current when published"
+        );
+    }
+
+    pub(crate) fn evict_column(
+        &mut self,
+        ticket: ColumnEvictionTicket,
+    ) -> Option<Vec<(ChunkPos, Entity)>> {
+        assert_eq!(ticket.owner(), self.stream.owner());
+        let entities = self.complete_column(ticket.column())?;
+        if !self.stream.commit_eviction(ticket) {
+            return None;
+        }
+        for (position, _) in &entities {
+            self.chunks.remove(position);
+        }
+        Some(entities)
+    }
 }
 
 pub struct DimensionPlugin;
@@ -115,11 +208,10 @@ impl Plugin for DimensionPlugin {
         app.insert_resource(ChunkTaskPool::global())
             .init_resource::<WorldMetadata>()
             .init_resource::<ChunkRepository>()
-            .init_resource::<ChunkLoadBudget>()
-            .init_resource::<ChunkSpawnBudget>()
+            .init_resource::<ColumnLoadBudget>()
+            .init_resource::<ColumnActivationBudget>()
             .init_resource::<ChunkSaveBudget>()
             .init_resource::<ChunkSaveTasks>()
-            .init_resource::<ChunkLoadTasks>()
             .init_resource::<ViewDistance>()
             .init_resource::<DesiredColumnView>()
             .add_plugins(DimensionFluidPlugin);
@@ -129,9 +221,9 @@ impl Plugin for DimensionPlugin {
             (
                 setup,
                 refresh_desired_column_view,
-                maintain_chunk_view,
-                start_chunk_load_tasks,
-                finish_chunk_load_tasks,
+                maintain_column_residency,
+                finish_column_loads,
+                start_column_loads,
                 |mut game_state: ResMut<NextState<GameState>>| game_state.set(GameState::Playing),
             )
                 .chain(),
@@ -141,9 +233,9 @@ impl Plugin for DimensionPlugin {
             Update,
             (
                 refresh_desired_column_view,
-                maintain_chunk_view,
-                start_chunk_load_tasks,
-                finish_chunk_load_tasks,
+                maintain_column_residency,
+                finish_column_loads,
+                start_column_loads,
                 rebuild_chunk_light,
             )
                 .chain()
@@ -158,9 +250,10 @@ impl Plugin for DimensionPlugin {
     }
 }
 
-fn setup(mut commands: Commands) {
-    commands.spawn((
-        Dimension::default(),
+fn setup(mut commands: Commands, metadata: Res<WorldMetadata>) {
+    let entity = commands.spawn_empty().id();
+    commands.entity(entity).insert((
+        Dimension::new(entity, metadata.height()),
         Transform::default(),
         Visibility::default(),
         Active,

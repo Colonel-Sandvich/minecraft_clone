@@ -151,20 +151,6 @@ fn columns_in_radius(center: ChunkColumn, radius: i32) -> Vec<ChunkColumn> {
         .collect()
 }
 
-/// Compatibility helper for callers that need an owned vector.
-pub fn chunk_positions_in_view(
-    centre_translation: Vec3,
-    height_chunks: usize,
-    view_distance: i32,
-) -> Vec<IVec3> {
-    let center = ChunkColumn::from(ChunkPos::containing_translation(centre_translation));
-    let height = WorldHeight::new(height_chunks)
-        .unwrap_or_else(|error| panic!("invalid desired chunk view: {error}"));
-    let mut view = DesiredColumnView::default();
-    view.refresh(center, ViewDistance::new(view_distance), height);
-    view.chunks().map(ChunkPos::as_ivec3).collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
