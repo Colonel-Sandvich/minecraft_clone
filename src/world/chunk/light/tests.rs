@@ -358,6 +358,97 @@ fn boundary_light_is_read_only_and_only_targets_are_rebuilt() {
 }
 
 #[test]
+fn calculation_dependencies_influence_commits_without_being_committed() {
+    let center_position = ChunkPos::new(-5, 0, -8);
+    let right_position = center_position.offset(IVec3::X);
+    let back_position = center_position.offset(IVec3::Z);
+    let diagonal_position = center_position.offset(IVec3::X + IVec3::Z);
+    let center = Chunk::default();
+    let right = Chunk::default();
+    let back = Chunk::default();
+    let mut diagonal = Chunk::default();
+    diagonal.set_cell_xyz(0, 8, 0, block_cell(BlockType::Glowstone));
+    let center_light = ChunkLight::default();
+    let center_heightmap = ChunkHeightmap::default();
+
+    let mut region = ChunkLightRegion::new(1);
+    region.insert_target(center_position, &center, &center_light, &center_heightmap);
+    region.insert_calculation_chunk(right_position, &right);
+    region.insert_calculation_chunk(back_position, &back);
+    region.insert_calculation_chunk(diagonal_position, &diagonal);
+
+    let solved = region.solve();
+    assert_eq!(solved.lights().len(), 4);
+    assert!(solved.heightmap(diagonal_position).is_some());
+    assert_eq!(
+        solved
+            .light(diagonal_position)
+            .unwrap()
+            .block_light(local(0, 8, 0)),
+        15
+    );
+    assert_eq!(
+        solved
+            .light(center_position)
+            .unwrap()
+            .block_light(local(15, 8, 15)),
+        13
+    );
+
+    let rebuilt = solved.into_committed();
+    assert_eq!(rebuilt.len(), 1);
+    assert_eq!(rebuilt[0].position, center_position);
+    assert_eq!(rebuilt[0].light.block_light(local(15, 8, 15)), 13);
+}
+
+#[test]
+fn calculation_only_region_is_solved_without_commits() {
+    let position = ChunkPos::new(3, 0, -2);
+    let mut chunk = Chunk::default();
+    chunk.set_cell_xyz(8, 8, 8, block_cell(BlockType::Glowstone));
+
+    let mut region = ChunkLightRegion::new(1);
+    region.insert_calculation_chunk(position, &chunk);
+    let solved = region.solve();
+
+    assert_eq!(
+        solved.light(position).unwrap().block_light(local(8, 8, 8)),
+        15
+    );
+    assert!(solved.into_committed().is_empty());
+}
+
+#[test]
+fn calculation_dependencies_define_the_external_boundary() {
+    let center_position = ChunkPos::new(-2, 0, 6);
+    let right_position = center_position.offset(IVec3::X);
+    let center = Chunk::default();
+    let right = Chunk::default();
+    let center_light = ChunkLight::default();
+    let center_heightmap = ChunkHeightmap::default();
+
+    let mut region = ChunkLightRegion::new(1);
+    region.insert_target(center_position, &center, &center_light, &center_heightmap);
+    region.insert_calculation_chunk(right_position, &right);
+    let boundaries = region.required_boundary_positions();
+
+    assert_eq!(boundaries.len(), 10);
+    assert!(!boundaries.contains(&center_position));
+    assert!(!boundaries.contains(&right_position));
+    assert!(boundaries.contains(&center_position.offset(IVec3::NEG_X)));
+    assert!(boundaries.contains(&right_position.offset(IVec3::X)));
+}
+
+#[test]
+#[should_panic(expected = "commit target must first be inserted for calculation")]
+fn commit_target_must_belong_to_the_calculation_region() {
+    let light = ChunkLight::default();
+    let heightmap = ChunkHeightmap::default();
+    let mut region = ChunkLightRegion::new(1);
+    region.mark_commit_target(ChunkPos::ZERO, &light, &heightmap);
+}
+
+#[test]
 fn target_insertion_order_does_not_change_region_output() {
     let left_position = ChunkPos::new(-14, 0, -9);
     let right_position = left_position.offset(IVec3::X);

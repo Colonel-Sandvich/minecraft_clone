@@ -4,5 +4,5 @@ mod storage;
 #[cfg(test)]
 mod tests;
 
-pub use region::{ChunkLightRegion, RebuiltChunkLight};
+pub use region::{ChunkLightRegion, RebuiltChunkLight, SolvedChunkLightRegion};
 pub use storage::{ChunkHeightmap, ChunkLight};

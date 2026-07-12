@@ -9,13 +9,18 @@ use super::region::ChunkLightRegion;
 use super::storage::SKY_LIGHT_MAX;
 
 pub(super) fn rebuild(region: &mut ChunkLightRegion<'_>) {
-    let targets = region.target_positions();
+    let calculation_positions = region.calculation_positions();
     let mut sky_queue = VecDeque::new();
-    seed_sky_sources(region, &targets, &mut sky_queue);
+    seed_sky_sources(region, &calculation_positions, &mut sky_queue);
 
     let mut block_queue = VecDeque::new();
-    seed_block_sources(region, &targets, &mut block_queue);
-    seed_boundary_light(region, &targets, &mut sky_queue, &mut block_queue);
+    seed_block_sources(region, &calculation_positions, &mut block_queue);
+    seed_boundary_light(
+        region,
+        &calculation_positions,
+        &mut sky_queue,
+        &mut block_queue,
+    );
 
     propagate_sky_increase(region, &mut sky_queue);
     propagate_block_increase(region, &mut block_queue);
@@ -23,10 +28,10 @@ pub(super) fn rebuild(region: &mut ChunkLightRegion<'_>) {
 
 fn seed_sky_sources(
     region: &mut ChunkLightRegion<'_>,
-    targets: &[ChunkPos],
+    calculation_positions: &[ChunkPos],
     queue: &mut VecDeque<PropagationEntry>,
 ) {
-    let columns = targets
+    let columns = calculation_positions
         .iter()
         .copied()
         .map(ChunkColumn::from)
@@ -34,7 +39,7 @@ fn seed_sky_sources(
     let height_chunks = region.height_chunks() as i32;
 
     for column in columns {
-        let top_chunk_loaded = region.contains_target(column.chunk(height_chunks - 1));
+        let top_chunk_loaded = region.contains_calculation(column.chunk(height_chunks - 1));
         for x in 0..CHUNK_SIZE {
             for z in 0..CHUNK_SIZE {
                 let mut current_sky = if top_chunk_loaded { SKY_LIGHT_MAX } else { 0 };
@@ -43,7 +48,7 @@ fn seed_sky_sources(
 
                 for chunk_y in (0..height_chunks).rev() {
                     let position = column.chunk(chunk_y);
-                    let Some(chunk) = region.target_chunk(position) else {
+                    let Some(chunk) = region.calculation_chunk(position) else {
                         current_sky = 0;
                         continue;
                     };
@@ -77,8 +82,8 @@ fn seed_sky_sources(
         }
     }
 
-    for &position in targets {
-        let Some(chunk) = region.target_chunk(position) else {
+    for &position in calculation_positions {
+        let Some(chunk) = region.calculation_chunk(position) else {
             continue;
         };
 
@@ -100,7 +105,7 @@ fn seed_sky_sources(
                     let mut best = current;
                     for direction in Direction::ALL {
                         let neighbor = address.neighbor(direction);
-                        if !region.contains_target(neighbor.chunk()) {
+                        if !region.contains_calculation(neighbor.chunk()) {
                             continue;
                         }
                         best = best.max(region.sky_light(neighbor).saturating_sub(attenuation));
@@ -117,11 +122,11 @@ fn seed_sky_sources(
 
 fn seed_block_sources(
     region: &mut ChunkLightRegion<'_>,
-    targets: &[ChunkPos],
+    calculation_positions: &[ChunkPos],
     queue: &mut VecDeque<PropagationEntry>,
 ) {
-    for &position in targets {
-        let Some(chunk) = region.target_chunk(position) else {
+    for &position in calculation_positions {
+        let Some(chunk) = region.calculation_chunk(position) else {
             continue;
         };
 
@@ -145,14 +150,14 @@ fn seed_block_sources(
 
 fn seed_boundary_light(
     region: &mut ChunkLightRegion<'_>,
-    targets: &[ChunkPos],
+    calculation_positions: &[ChunkPos],
     sky_queue: &mut VecDeque<PropagationEntry>,
     block_queue: &mut VecDeque<PropagationEntry>,
 ) {
-    for &position in targets {
+    for &position in calculation_positions {
         for direction in Direction::ALL {
             let neighbor_position = position.offset(direction.offset());
-            if region.contains_target(neighbor_position) {
+            if region.contains_calculation(neighbor_position) {
                 continue;
             }
 
@@ -214,7 +219,7 @@ fn propagate_sky_increase(
             }
 
             let neighbor = entry.address.neighbor(direction);
-            if !region.contains_target(neighbor.chunk()) {
+            if !region.contains_calculation(neighbor.chunk()) {
                 continue;
             }
 
@@ -256,7 +261,7 @@ fn propagate_block_increase(
             }
 
             let neighbor = entry.address.neighbor(direction);
-            if !region.contains_target(neighbor.chunk()) {
+            if !region.contains_calculation(neighbor.chunk()) {
                 continue;
             }
 
