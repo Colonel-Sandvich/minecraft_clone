@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use bevy::prelude::*;
 
 use crate::block::{BLOCK_FLAG_FULL_CUBE, BLOCK_FLAG_RENDERED, BLOCK_FLAG_TRANSLUCENT};
@@ -16,6 +18,10 @@ pub struct ChunkPerfCounters {
     pub light_patch_max_calculation_chunks: usize,
     pub light_patch_scratch_chunks: usize,
     pub light_patch_committed_columns: usize,
+    pub light_patch_elapsed: Duration,
+    pub light_patch_max_elapsed: Duration,
+    pub light_patch_solve_elapsed: Duration,
+    pub light_patch_prepare_elapsed: Duration,
     pub light_uploads: usize,
 }
 

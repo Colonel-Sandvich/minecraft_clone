@@ -1,20 +1,25 @@
-use std::hint::black_box;
+use std::{hint::black_box, sync::Arc};
 
-use bevy::{platform::collections::HashMap, prelude::IVec3};
+use bevy::{
+    platform::collections::{HashMap, HashSet},
+    prelude::IVec3,
+};
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use minecraft_clone::{
     block::BlockType,
     world::{
         WorldMetadata,
         chunk::{
-            CHUNK_SIZE, Chunk, ChunkCell, ChunkPos, LocalBlockPos,
-            light::{ChunkHeightmap, ChunkLight, ChunkLightRegion},
+            CHUNK_SIZE, Chunk, ChunkCell, ChunkColumn, ChunkPos, LocalBlockPos,
+            light::{ChunkHeightmap, ChunkLight, ChunkLightRegion, RebuiltChunkLight},
+            mesh::ChunkMeshLight,
         },
         generation::generate_chunk,
     },
 };
 
 const SINGLE_TARGET_POSITION: ChunkPos = ChunkPos::new(-3, 0, 5);
+const STAGED_PATCH_CENTER: ChunkColumn = ChunkColumn::new(-4, 7);
 
 fn local(x: u32, y: u32, z: u32) -> LocalBlockPos {
     LocalBlockPos::new(x, y, z)
@@ -319,9 +324,201 @@ fn bench_multi_target_region_rebuild(c: &mut Criterion) {
     group.finish();
 }
 
+#[derive(Debug)]
+struct StagedPatchShape {
+    calculation_columns: Vec<ChunkColumn>,
+    commit_columns: Vec<ChunkColumn>,
+}
+
+impl StagedPatchShape {
+    fn rectangular_core(min_x: i32, max_x: i32, min_z: i32, max_z: i32) -> Self {
+        Self {
+            calculation_columns: columns_in_rectangle(min_x - 1, max_x + 1, min_z - 1, max_z + 1),
+            commit_columns: columns_in_rectangle(min_x, max_x, min_z, max_z),
+        }
+    }
+
+    fn calculation_chunk_count(&self, height_chunks: usize) -> usize {
+        self.calculation_columns.len() * height_chunks
+    }
+
+    fn committed_chunk_count(&self, height_chunks: usize) -> usize {
+        self.commit_columns.len() * height_chunks
+    }
+}
+
+struct StagedPatchScenario {
+    name: &'static str,
+    height_chunks: usize,
+    chunks: HashMap<ChunkPos, Chunk>,
+    lights: HashMap<ChunkPos, ChunkLight>,
+    heightmaps: HashMap<ChunkPos, ChunkHeightmap>,
+    patches: Vec<StagedPatchShape>,
+}
+
+impl StagedPatchScenario {
+    fn generated_terrain(name: &'static str, patches: Vec<StagedPatchShape>) -> Self {
+        let metadata = WorldMetadata::default();
+        let height_chunks = metadata.height_chunks();
+        let mut calculation_columns = patches
+            .iter()
+            .flat_map(|patch| patch.calculation_columns.iter().copied())
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        calculation_columns.sort_unstable_by_key(|column| (column.z(), column.x()));
+
+        let positions = calculation_columns
+            .into_iter()
+            .flat_map(|column| (0..height_chunks as i32).map(move |y| column.chunk(y)))
+            .collect::<Vec<_>>();
+        let chunks = positions
+            .iter()
+            .copied()
+            .map(|position| (position, generate_chunk(&metadata, position.as_ivec3())))
+            .collect();
+        let lights = positions
+            .iter()
+            .copied()
+            .map(|position| (position, ChunkLight::default()))
+            .collect();
+        let heightmaps = positions
+            .into_iter()
+            .map(|position| (position, ChunkHeightmap::default()))
+            .collect();
+
+        Self {
+            name,
+            height_chunks,
+            chunks,
+            lights,
+            heightmaps,
+            patches,
+        }
+    }
+
+    fn calculation_chunk_count(&self) -> usize {
+        self.patches
+            .iter()
+            .map(|patch| patch.calculation_chunk_count(self.height_chunks))
+            .sum()
+    }
+
+    fn committed_chunk_count(&self) -> usize {
+        self.patches
+            .iter()
+            .map(|patch| patch.committed_chunk_count(self.height_chunks))
+            .sum()
+    }
+}
+
+fn columns_in_rectangle(min_x: i32, max_x: i32, min_z: i32, max_z: i32) -> Vec<ChunkColumn> {
+    (min_z..=max_z)
+        .flat_map(|z| {
+            (min_x..=max_x).map(move |x| {
+                ChunkColumn::new(STAGED_PATCH_CENTER.x() + x, STAGED_PATCH_CENTER.z() + z)
+            })
+        })
+        .collect()
+}
+
+fn staged_patch_scenarios() -> Vec<StagedPatchScenario> {
+    let one_core = StagedPatchScenario::generated_terrain(
+        "terrain_1_core_3x3_calculation",
+        vec![StagedPatchShape::rectangular_core(0, 0, 0, 0)],
+    );
+    let four_cores = StagedPatchScenario::generated_terrain(
+        "terrain_2x2_cores_4x4_calculation",
+        vec![StagedPatchShape::rectangular_core(0, 1, 0, 1)],
+    );
+    let nine_cores_batched = StagedPatchScenario::generated_terrain(
+        "terrain_3x3_cores_5x5_calculation",
+        vec![StagedPatchShape::rectangular_core(-1, 1, -1, 1)],
+    );
+    let nine_cores_independent = StagedPatchScenario::generated_terrain(
+        "terrain_9_independent_3x3_calculations",
+        (-1..=1)
+            .flat_map(|z| (-1..=1).map(move |x| StagedPatchShape::rectangular_core(x, x, z, z)))
+            .collect(),
+    );
+
+    assert_eq!(one_core.calculation_chunk_count(), 45);
+    assert_eq!(one_core.committed_chunk_count(), 5);
+    assert_eq!(four_cores.calculation_chunk_count(), 80);
+    assert_eq!(four_cores.committed_chunk_count(), 20);
+    assert_eq!(nine_cores_batched.calculation_chunk_count(), 125);
+    assert_eq!(nine_cores_batched.committed_chunk_count(), 45);
+    assert_eq!(nine_cores_independent.calculation_chunk_count(), 405);
+    assert_eq!(nine_cores_independent.committed_chunk_count(), 45);
+
+    vec![
+        one_core,
+        four_cores,
+        nine_cores_batched,
+        nine_cores_independent,
+    ]
+}
+
+fn solve_staged_patch(
+    scenario: &StagedPatchScenario,
+    patch: &StagedPatchShape,
+) -> (Vec<(ChunkPos, Arc<[u32]>)>, Vec<RebuiltChunkLight>) {
+    let mut region = ChunkLightRegion::new(scenario.height_chunks);
+    for &column in &patch.calculation_columns {
+        for y in 0..scenario.height_chunks as i32 {
+            let position = column.chunk(y);
+            region.insert_calculation_chunk(position, black_box(&scenario.chunks[&position]));
+            if patch.commit_columns.contains(&column) {
+                region.mark_commit_target(
+                    position,
+                    black_box(&scenario.lights[&position]),
+                    black_box(&scenario.heightmaps[&position]),
+                );
+            }
+        }
+    }
+
+    let solved = region.solve();
+    let prepared_lights = {
+        let solved_lights = solved.lights().collect::<HashMap<_, _>>();
+        patch
+            .commit_columns
+            .iter()
+            .flat_map(|column| (0..scenario.height_chunks as i32).map(move |y| column.chunk(y)))
+            .map(|position| {
+                let data = Arc::from(ChunkMeshLight::build_padded_data(position, &solved_lights));
+                (position, data)
+            })
+            .collect()
+    };
+    (prepared_lights, solved.into_committed())
+}
+
+fn bench_staged_light_patches(c: &mut Criterion) {
+    let scenarios = staged_patch_scenarios();
+    let mut group = c.benchmark_group("light_staged_patch");
+
+    for scenario in &scenarios {
+        group.throughput(Throughput::Elements(scenario.committed_chunk_count() as u64));
+        group.bench_function(BenchmarkId::from_parameter(scenario.name), |b| {
+            b.iter(|| {
+                let results = scenario
+                    .patches
+                    .iter()
+                    .map(|patch| solve_staged_patch(black_box(scenario), patch))
+                    .collect::<Vec<_>>();
+                black_box(results)
+            });
+        });
+    }
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_single_target_region_rebuild,
-    bench_multi_target_region_rebuild
+    bench_multi_target_region_rebuild,
+    bench_staged_light_patches,
 );
 criterion_main!(benches);

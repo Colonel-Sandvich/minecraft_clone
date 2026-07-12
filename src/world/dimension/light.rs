@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{sync::Arc, time::Instant};
 
 use bevy::{
     platform::collections::{HashMap, HashSet},
@@ -147,6 +147,7 @@ fn rebuild_pending_column_light(
     desired_view: &DesiredColumnView,
     target_budget: usize,
 ) {
+    let patch_started = Instant::now();
     let height_chunks = dimension.height().chunks();
     let plan = LightPatchPlan::build(
         desired_view.visible_columns(),
@@ -183,7 +184,10 @@ fn rebuild_pending_column_light(
         }
     }
 
+    let solve_started = Instant::now();
     let solved = region.solve();
+    let solve_elapsed = solve_started.elapsed();
+    let prepare_started = Instant::now();
     let prepared_lights = {
         let solved_lights = solved.lights().collect::<HashMap<_, _>>();
         plan.commit_columns()
@@ -195,6 +199,7 @@ fn rebuild_pending_column_light(
             })
             .collect::<Vec<_>>()
     };
+    let prepare_elapsed = prepare_started.elapsed();
     for (position, prepared) in prepared_lights {
         let entity = dimension
             .loaded_chunk_entity(position)
@@ -228,6 +233,7 @@ fn rebuild_pending_column_light(
     }
 
     if let Some(perf) = perf {
+        let elapsed = patch_started.elapsed();
         let calculation_chunks = plan.calculation_chunk_count(height_chunks);
         perf.light_patch_runs += 1;
         perf.light_patch_calculation_chunks += calculation_chunks;
@@ -236,6 +242,10 @@ fn rebuild_pending_column_light(
             .max(calculation_chunks);
         perf.light_patch_scratch_chunks += plan.scratch_chunk_count(height_chunks);
         perf.light_patch_committed_columns += plan.commit_columns().len();
+        perf.light_patch_elapsed += elapsed;
+        perf.light_patch_max_elapsed = perf.light_patch_max_elapsed.max(elapsed);
+        perf.light_patch_solve_elapsed += solve_elapsed;
+        perf.light_patch_prepare_elapsed += prepare_elapsed;
     }
 }
 

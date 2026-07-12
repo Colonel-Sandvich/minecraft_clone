@@ -1,0 +1,194 @@
+//! Renderer-free profile of initial column generation, lighting, and publication.
+//!
+//! The arguments are view radius, world height in chunks, lighting subchunk
+//! budget, timeout in seconds, load budget, staging budget, and activation
+//! budget. Defaults match production except for the smaller radius, which keeps
+//! quick runs short.
+//!
+//! ```text
+//! cargo run --release --example perf_chunk_streaming -- 8 5 80 120
+//! perf stat -d target/release/examples/perf_chunk_streaming 24 5 80 120 4 8 8
+//! ```
+
+use std::time::{Duration, Instant};
+
+use bevy::{prelude::*, state::app::StatesPlugin};
+use minecraft_clone::{
+    game_state::GameStatePlugin,
+    world::{
+        WorldMetadata,
+        chunk::ChunkPerfCounters,
+        dimension::{
+            Active, ColumnActivationBudget, ColumnLightBudget, ColumnLoadBudget,
+            ColumnStagingBudget, DesiredColumnView, Dimension, DimensionPlugin, ViewDistance,
+        },
+        storage::{ChunkRepository, NoopChunkStore},
+    },
+};
+
+const DEFAULT_RADIUS: i32 = 8;
+const DEFAULT_HEIGHT_CHUNKS: usize = 5;
+const DEFAULT_LIGHT_BUDGET: usize = 80;
+const DEFAULT_TIMEOUT_SECONDS: u64 = 120;
+const DEFAULT_LOAD_BUDGET: usize = 4;
+const DEFAULT_STAGING_BUDGET: usize = 8;
+const DEFAULT_ACTIVATION_BUDGET: usize = 8;
+
+fn main() {
+    let radius = argument(1, DEFAULT_RADIUS);
+    let height_chunks = argument(2, DEFAULT_HEIGHT_CHUNKS);
+    let light_budget = argument(3, DEFAULT_LIGHT_BUDGET);
+    let timeout_seconds = argument(4, DEFAULT_TIMEOUT_SECONDS);
+    let load_budget = argument(5, DEFAULT_LOAD_BUDGET);
+    let staging_budget = argument(6, DEFAULT_STAGING_BUDGET);
+    let activation_budget = argument(7, DEFAULT_ACTIVATION_BUDGET);
+    let metadata = WorldMetadata::default()
+        .with_height_chunks(height_chunks)
+        .expect("profile world height must be valid");
+    let repository = ChunkRepository::new(NoopChunkStore::new(metadata.clone()));
+
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins)
+        .add_plugins(StatesPlugin)
+        .add_plugins(GameStatePlugin)
+        .insert_resource(metadata)
+        .insert_resource(repository)
+        .insert_resource(ViewDistance::new(radius))
+        .insert_resource(ColumnLoadBudget(load_budget))
+        .insert_resource(ColumnStagingBudget(staging_budget))
+        .insert_resource(ColumnActivationBudget(activation_budget))
+        .insert_resource(ColumnLightBudget(light_budget))
+        .init_resource::<ChunkPerfCounters>()
+        .add_plugins(DimensionPlugin);
+
+    let timeout = Duration::from_secs(timeout_seconds);
+    let started = Instant::now();
+    let mut update_times = Vec::new();
+    let (visible_chunks, resident_chunks, loaded_chunks, published_chunks) = loop {
+        let update_started = Instant::now();
+        app.update();
+        update_times.push(update_started.elapsed());
+
+        let desired = app.world().resource::<DesiredColumnView>();
+        let visible_chunks = desired.visible_chunk_count();
+        let resident_chunks = desired.resident_chunk_count();
+        let (loaded_chunks, published_chunks) = active_dimension_counts(app.world_mut());
+        if visible_chunks > 0 && published_chunks == visible_chunks {
+            break (
+                visible_chunks,
+                resident_chunks,
+                loaded_chunks,
+                published_chunks,
+            );
+        }
+        assert!(
+            started.elapsed() < timeout,
+            "streaming profile timed out after {timeout_seconds}s: \
+             {published_chunks}/{visible_chunks} visible chunks published, \
+             {loaded_chunks}/{resident_chunks} resident chunks loaded"
+        );
+        std::thread::yield_now();
+    };
+    update_times.sort_unstable();
+    let perf = app.world().resource::<ChunkPerfCounters>();
+    let committed_chunks = perf.light_patch_committed_columns * height_chunks;
+    let amplification = ratio(perf.light_patch_calculation_chunks, committed_chunks);
+    let scratch_percent = percent(
+        perf.light_patch_scratch_chunks,
+        perf.light_patch_calculation_chunks,
+    );
+    let solve_percent = duration_percent(perf.light_patch_solve_elapsed, perf.light_patch_elapsed);
+    let prepare_percent =
+        duration_percent(perf.light_patch_prepare_elapsed, perf.light_patch_elapsed);
+
+    println!("streaming profile complete");
+    println!(
+        "view radius={radius}, height={height_chunks}, light={light_budget} subchunks, \
+         load={load_budget}, staging={staging_budget}, activation={activation_budget} columns"
+    );
+    println!(
+        "world visible={visible_chunks}, resident={resident_chunks}, loaded={loaded_chunks}, \
+         published={published_chunks} chunks"
+    );
+    println!(
+        "updates={} elapsed={:.3}s p50={:.3}ms p95={:.3}ms p99={:.3}ms max={:.3}ms",
+        update_times.len(),
+        started.elapsed().as_secs_f64(),
+        millis(percentile(&update_times, 50)),
+        millis(percentile(&update_times, 95)),
+        millis(percentile(&update_times, 99)),
+        millis(*update_times.last().unwrap_or(&Duration::ZERO)),
+    );
+    println!(
+        "lighting patches={} committed_columns={} calculated_chunks={} scratch_chunks={} \
+         amplification={amplification:.3}x scratch={scratch_percent:.1}%",
+        perf.light_patch_runs,
+        perf.light_patch_committed_columns,
+        perf.light_patch_calculation_chunks,
+        perf.light_patch_scratch_chunks,
+    );
+    println!(
+        "lighting elapsed={:.3}ms max_patch={:.3}ms solve={:.3}ms ({solve_percent:.1}%) \
+         prepare={:.3}ms ({prepare_percent:.1}%)",
+        millis(perf.light_patch_elapsed),
+        millis(perf.light_patch_max_elapsed),
+        millis(perf.light_patch_solve_elapsed),
+        millis(perf.light_patch_prepare_elapsed),
+    );
+}
+
+fn active_dimension_counts(world: &mut World) -> (usize, usize) {
+    let mut query = world.query_filtered::<&Dimension, With<Active>>();
+    let dimension = query
+        .iter(world)
+        .next()
+        .expect("dimension setup must create one active dimension");
+    (
+        dimension.loaded_chunk_count(),
+        dimension.published_chunk_count(),
+    )
+}
+
+fn argument<T>(index: usize, default: T) -> T
+where
+    T: std::str::FromStr,
+    T::Err: std::fmt::Display,
+{
+    std::env::args()
+        .nth(index)
+        .map(|value| {
+            value
+                .parse::<T>()
+                .unwrap_or_else(|error| panic!("invalid argument {index}: {error}"))
+        })
+        .unwrap_or(default)
+}
+
+fn percentile(sorted: &[Duration], percentile: usize) -> Duration {
+    let index = sorted.len().saturating_sub(1).saturating_mul(percentile) / 100;
+    sorted.get(index).copied().unwrap_or_default()
+}
+
+fn millis(duration: Duration) -> f64 {
+    duration.as_secs_f64() * 1_000.0
+}
+
+fn ratio(numerator: usize, denominator: usize) -> f64 {
+    if denominator == 0 {
+        0.0
+    } else {
+        numerator as f64 / denominator as f64
+    }
+}
+
+fn percent(numerator: usize, denominator: usize) -> f64 {
+    ratio(numerator, denominator) * 100.0
+}
+
+fn duration_percent(part: Duration, total: Duration) -> f64 {
+    if total.is_zero() {
+        0.0
+    } else {
+        part.as_secs_f64() / total.as_secs_f64() * 100.0
+    }
+}

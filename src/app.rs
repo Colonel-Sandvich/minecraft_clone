@@ -177,6 +177,22 @@ fn log_frame_perf(
         light_patch_max_calculation_chunks_5s = chunk_perf.light_patch_max_calculation_chunks,
         light_patch_scratch_chunks_5s = chunk_perf.light_patch_scratch_chunks,
         light_patch_committed_columns_5s = chunk_perf.light_patch_committed_columns,
+        light_patch_elapsed_ms_5s = format_args!(
+            "{:.3}",
+            chunk_perf.light_patch_elapsed.as_secs_f64() * 1_000.0
+        ),
+        light_patch_max_elapsed_ms_5s = format_args!(
+            "{:.3}",
+            chunk_perf.light_patch_max_elapsed.as_secs_f64() * 1_000.0
+        ),
+        light_patch_solve_ms_5s = format_args!(
+            "{:.3}",
+            chunk_perf.light_patch_solve_elapsed.as_secs_f64() * 1_000.0
+        ),
+        light_patch_prepare_ms_5s = format_args!(
+            "{:.3}",
+            chunk_perf.light_patch_prepare_elapsed.as_secs_f64() * 1_000.0
+        ),
         light_uploads_5s = chunk_perf.light_uploads,
         mesh_layers,
         mesh_faces,
