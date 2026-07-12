@@ -7,6 +7,8 @@ use super::solver;
 use super::storage::{ChunkHeightmap, ChunkLight};
 
 const MAX_HEIGHT_CHUNKS: usize = (u8::MAX as usize + 1) / super::super::CHUNK_SIZE;
+const MAX_DENSE_LOOKUP_AMPLIFICATION: usize = 8;
+const VACANT_CALCULATION_INDEX: usize = usize::MAX;
 
 /// The computed lighting state for one writable chunk in a rebuilt region.
 #[derive(Debug)]
@@ -41,6 +43,132 @@ impl<'a> CalculationChunk<'a> {
             light: ChunkLight::default(),
             heightmap: ChunkHeightmap::default(),
         }
+    }
+}
+
+struct PreparedCalculationChunks<'a> {
+    entries: Vec<(ChunkPos, CalculationChunk<'a>)>,
+    lookup: CalculationLookup,
+}
+
+impl<'a> PreparedCalculationChunks<'a> {
+    fn new(chunks: HashMap<ChunkPos, CalculationChunk<'a>>, height_chunks: usize) -> Self {
+        let entries = chunks.into_iter().collect::<Vec<_>>();
+        let lookup = CalculationLookup::new(&entries, height_chunks);
+        Self { entries, lookup }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    fn positions(&self) -> impl ExactSizeIterator<Item = ChunkPos> + '_ {
+        self.entries.iter().map(|(position, _)| *position)
+    }
+
+    fn get(&self, position: ChunkPos) -> Option<&CalculationChunk<'a>> {
+        let index = self.lookup.index(position)?;
+        Some(&self.entries[index].1)
+    }
+
+    fn get_mut(&mut self, position: ChunkPos) -> Option<&mut CalculationChunk<'a>> {
+        let index = self.lookup.index(position)?;
+        Some(&mut self.entries[index].1)
+    }
+
+    fn into_entries(self) -> impl Iterator<Item = (ChunkPos, CalculationChunk<'a>)> {
+        self.entries.into_iter()
+    }
+}
+
+enum CalculationLookup {
+    Dense(DenseCalculationLookup),
+    Sparse(HashMap<ChunkPos, usize>),
+}
+
+impl CalculationLookup {
+    fn new<'a>(entries: &[(ChunkPos, CalculationChunk<'a>)], height_chunks: usize) -> Self {
+        let Some((&(first, _), remaining)) = entries.split_first() else {
+            return Self::Sparse(HashMap::new());
+        };
+
+        let (mut min_x, mut max_x) = (first.x(), first.x());
+        let (mut min_z, mut max_z) = (first.z(), first.z());
+        for (position, _) in remaining {
+            min_x = min_x.min(position.x());
+            max_x = max_x.max(position.x());
+            min_z = min_z.min(position.z());
+            max_z = max_z.max(position.z());
+        }
+
+        let width = usize::try_from(i64::from(max_x) - i64::from(min_x) + 1).ok();
+        let depth = usize::try_from(i64::from(max_z) - i64::from(min_z) + 1).ok();
+        let slot_count = width
+            .zip(depth)
+            .and_then(|(width, depth)| width.checked_mul(depth))
+            .and_then(|columns| columns.checked_mul(height_chunks));
+        let dense_limit = entries.len().saturating_mul(MAX_DENSE_LOOKUP_AMPLIFICATION);
+
+        if let (Some(width), Some(depth), Some(slot_count)) = (width, depth, slot_count)
+            && slot_count <= dense_limit
+        {
+            let mut dense = DenseCalculationLookup {
+                min_x,
+                min_z,
+                width,
+                depth,
+                height: height_chunks,
+                indices: vec![VACANT_CALCULATION_INDEX; slot_count],
+            };
+            for (index, (position, _)) in entries.iter().enumerate() {
+                let slot = dense
+                    .slot(*position)
+                    .expect("calculation bounds must contain every input chunk");
+                dense.indices[slot] = index;
+            }
+            return Self::Dense(dense);
+        }
+
+        Self::Sparse(
+            entries
+                .iter()
+                .enumerate()
+                .map(|(index, (position, _))| (*position, index))
+                .collect(),
+        )
+    }
+
+    fn index(&self, position: ChunkPos) -> Option<usize> {
+        match self {
+            Self::Dense(dense) => dense.index(position),
+            Self::Sparse(indices) => indices.get(&position).copied(),
+        }
+    }
+}
+
+struct DenseCalculationLookup {
+    min_x: i32,
+    min_z: i32,
+    width: usize,
+    depth: usize,
+    height: usize,
+    indices: Vec<usize>,
+}
+
+impl DenseCalculationLookup {
+    fn slot(&self, position: ChunkPos) -> Option<usize> {
+        let x = usize::try_from(i64::from(position.x()) - i64::from(self.min_x)).ok()?;
+        let y = usize::try_from(position.y()).ok()?;
+        let z = usize::try_from(i64::from(position.z()) - i64::from(self.min_z)).ok()?;
+        if x >= self.width || y >= self.height || z >= self.depth {
+            return None;
+        }
+        Some((z * self.width + x) * self.height + y)
+    }
+
+    fn index(&self, position: ChunkPos) -> Option<usize> {
+        let index = self.indices[self.slot(position)?];
+        (index != VACANT_CALCULATION_INDEX).then_some(index)
     }
 }
 
@@ -120,6 +248,12 @@ pub struct ChunkLightRegion<'a> {
     height_chunks: usize,
     calculation_chunks: HashMap<ChunkPos, CalculationChunk<'a>>,
     commit_baselines: HashMap<ChunkPos, CommitBaseline<'a>>,
+    boundary_lights: HashMap<ChunkPos, &'a ChunkLight>,
+}
+
+pub(super) struct PreparedChunkLightRegion<'a> {
+    height_chunks: usize,
+    calculation_chunks: PreparedCalculationChunks<'a>,
     boundary_lights: HashMap<ChunkPos, &'a ChunkLight>,
 }
 
@@ -204,18 +338,28 @@ impl<'a> ChunkLightRegion<'a> {
         positions
     }
 
-    pub fn solve(mut self) -> SolvedChunkLightRegion {
-        if !self.calculation_chunks.is_empty() {
-            solver::rebuild(&mut self);
+    pub fn solve(self) -> SolvedChunkLightRegion {
+        let Self {
+            height_chunks,
+            calculation_chunks,
+            commit_baselines,
+            boundary_lights,
+        } = self;
+        let mut prepared = PreparedChunkLightRegion {
+            height_chunks,
+            calculation_chunks: PreparedCalculationChunks::new(calculation_chunks, height_chunks),
+            boundary_lights,
+        };
+        if !prepared.calculation_chunks.is_empty() {
+            solver::rebuild(&mut prepared);
         }
 
-        let commit_changes = self
-            .commit_baselines
+        let commit_changes = commit_baselines
             .iter()
             .map(|(&position, baseline)| {
-                let calculated = self
+                let calculated = prepared
                     .calculation_chunks
-                    .get(&position)
+                    .get(position)
                     .expect("commit target must remain in the calculation region");
                 (
                     position,
@@ -226,9 +370,9 @@ impl<'a> ChunkLightRegion<'a> {
                 )
             })
             .collect();
-        let chunks = self
+        let chunks = prepared
             .calculation_chunks
-            .into_iter()
+            .into_entries()
             .map(|(position, calculated)| {
                 (
                     position,
@@ -249,27 +393,29 @@ impl<'a> ChunkLightRegion<'a> {
     pub fn rebuild(self) -> Vec<RebuiltChunkLight> {
         self.solve().into_committed()
     }
+}
 
+impl<'a> PreparedChunkLightRegion<'a> {
     pub(super) const fn height_chunks(&self) -> usize {
         self.height_chunks
     }
 
     pub(super) fn calculation_positions(&self) -> Vec<ChunkPos> {
-        self.calculation_chunks.keys().copied().collect()
+        self.calculation_chunks.positions().collect()
     }
 
     pub(super) fn contains_calculation(&self, position: ChunkPos) -> bool {
-        self.calculation_chunks.contains_key(&position)
+        self.calculation_chunks.get(position).is_some()
     }
 
     pub(super) fn calculation_chunk(&self, position: ChunkPos) -> Option<&'a Chunk> {
         self.calculation_chunks
-            .get(&position)
+            .get(position)
             .map(|calculation| calculation.chunk)
     }
 
     pub(super) fn set_height(&mut self, position: ChunkPos, x: usize, z: usize, height: u8) {
-        if let Some(calculation) = self.calculation_chunks.get_mut(&position) {
+        if let Some(calculation) = self.calculation_chunks.get_mut(position) {
             calculation.heightmap.heights[x][z] = height;
         }
     }
@@ -281,7 +427,7 @@ impl<'a> ChunkLightRegion<'a> {
     }
 
     pub(super) fn sky_light(&self, address: ChunkBlockPos) -> u8 {
-        if let Some(calculation) = self.calculation_chunks.get(&address.chunk()) {
+        if let Some(calculation) = self.calculation_chunks.get(address.chunk()) {
             calculation.light.sky_light(address.local())
         } else {
             self.boundary_lights
@@ -292,7 +438,7 @@ impl<'a> ChunkLightRegion<'a> {
     }
 
     pub(super) fn block_light(&self, address: ChunkBlockPos) -> u8 {
-        if let Some(calculation) = self.calculation_chunks.get(&address.chunk()) {
+        if let Some(calculation) = self.calculation_chunks.get(address.chunk()) {
             calculation.light.block_light(address.local())
         } else {
             self.boundary_lights
@@ -303,7 +449,7 @@ impl<'a> ChunkLightRegion<'a> {
     }
 
     pub(super) fn write_sky_light(&mut self, address: ChunkBlockPos, value: u8) -> bool {
-        let Some(calculation) = self.calculation_chunks.get_mut(&address.chunk()) else {
+        let Some(calculation) = self.calculation_chunks.get_mut(address.chunk()) else {
             return false;
         };
         calculation.light.set_sky_light(address.local(), value);
@@ -311,10 +457,55 @@ impl<'a> ChunkLightRegion<'a> {
     }
 
     pub(super) fn write_block_light(&mut self, address: ChunkBlockPos, value: u8) -> bool {
-        let Some(calculation) = self.calculation_chunks.get_mut(&address.chunk()) else {
+        let Some(calculation) = self.calculation_chunks.get_mut(address.chunk()) else {
             return false;
         };
         calculation.light.set_block_light(address.local(), value);
         true
+    }
+}
+
+#[cfg(test)]
+mod lookup_tests {
+    use super::*;
+
+    #[test]
+    fn dense_lookup_distinguishes_holes_and_out_of_bounds_positions() {
+        let first_chunk = Chunk::default();
+        let second_chunk = Chunk::default();
+        let first = ChunkPos::new(-2, 0, -3);
+        let second = ChunkPos::new(0, 1, -2);
+        let entries = vec![
+            (first, CalculationChunk::new(&first_chunk)),
+            (second, CalculationChunk::new(&second_chunk)),
+        ];
+
+        let lookup = CalculationLookup::new(&entries, 2);
+        assert!(matches!(&lookup, CalculationLookup::Dense(_)));
+        assert_eq!(lookup.index(first), Some(0));
+        assert_eq!(lookup.index(second), Some(1));
+        assert_eq!(lookup.index(ChunkPos::new(-1, 0, -3)), None);
+        assert_eq!(lookup.index(ChunkPos::new(-3, 0, -3)), None);
+        assert_eq!(lookup.index(ChunkPos::new(-2, -1, -3)), None);
+        assert_eq!(lookup.index(ChunkPos::new(-2, 2, -3)), None);
+        assert_eq!(lookup.index(ChunkPos::new(-2, 0, -4)), None);
+    }
+
+    #[test]
+    fn sparse_lookup_avoids_allocating_a_disconnected_coordinate_span() {
+        let first_chunk = Chunk::default();
+        let second_chunk = Chunk::default();
+        let first = ChunkPos::new(-10_000, 0, -10_000);
+        let second = ChunkPos::new(10_000, 0, 10_000);
+        let entries = vec![
+            (first, CalculationChunk::new(&first_chunk)),
+            (second, CalculationChunk::new(&second_chunk)),
+        ];
+
+        let lookup = CalculationLookup::new(&entries, 1);
+        assert!(matches!(&lookup, CalculationLookup::Sparse(_)));
+        assert_eq!(lookup.index(first), Some(0));
+        assert_eq!(lookup.index(second), Some(1));
+        assert_eq!(lookup.index(ChunkPos::ZERO), None);
     }
 }

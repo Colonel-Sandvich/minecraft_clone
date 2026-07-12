@@ -5,12 +5,12 @@ use bevy::platform::collections::HashSet;
 use crate::quad::Direction;
 
 use super::super::{CHUNK_ISIZE, CHUNK_SIZE, ChunkBlockPos, ChunkColumn, ChunkPos, LocalBlockPos};
-use super::region::ChunkLightRegion;
+use super::region::PreparedChunkLightRegion;
 use super::storage::SKY_LIGHT_MAX;
 
 const _: () = assert!(CHUNK_SIZE > SKY_LIGHT_MAX as usize);
 
-pub(super) fn rebuild(region: &mut ChunkLightRegion<'_>) {
+pub(super) fn rebuild(region: &mut PreparedChunkLightRegion<'_>) {
     let calculation_positions = region.calculation_positions();
     let mut sky_queue = VecDeque::new();
     seed_sky_sources(region, &calculation_positions, &mut sky_queue);
@@ -29,7 +29,7 @@ pub(super) fn rebuild(region: &mut ChunkLightRegion<'_>) {
 }
 
 fn seed_sky_sources(
-    region: &mut ChunkLightRegion<'_>,
+    region: &mut PreparedChunkLightRegion<'_>,
     calculation_positions: &[ChunkPos],
     queue: &mut VecDeque<PropagationEntry>,
 ) {
@@ -123,7 +123,7 @@ fn seed_sky_sources(
 }
 
 fn seed_block_sources(
-    region: &mut ChunkLightRegion<'_>,
+    region: &mut PreparedChunkLightRegion<'_>,
     calculation_positions: &[ChunkPos],
     queue: &mut VecDeque<PropagationEntry>,
 ) {
@@ -151,7 +151,7 @@ fn seed_block_sources(
 }
 
 fn seed_boundary_light(
-    region: &mut ChunkLightRegion<'_>,
+    region: &mut PreparedChunkLightRegion<'_>,
     calculation_positions: &[ChunkPos],
     sky_queue: &mut VecDeque<PropagationEntry>,
     block_queue: &mut VecDeque<PropagationEntry>,
@@ -207,7 +207,7 @@ fn seed_boundary_light(
 }
 
 fn propagate_sky_increase(
-    region: &mut ChunkLightRegion<'_>,
+    region: &mut PreparedChunkLightRegion<'_>,
     queue: &mut VecDeque<PropagationEntry>,
 ) {
     while let Some(entry) = queue.pop_front() {
@@ -249,7 +249,7 @@ fn propagate_sky_increase(
 }
 
 fn propagate_block_increase(
-    region: &mut ChunkLightRegion<'_>,
+    region: &mut PreparedChunkLightRegion<'_>,
     queue: &mut VecDeque<PropagationEntry>,
 ) {
     while let Some(entry) = queue.pop_front() {
