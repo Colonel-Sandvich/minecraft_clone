@@ -1,4 +1,4 @@
-use std::ops::{Add, Sub};
+use std::ops::{Add, AddAssign, Sub, SubAssign};
 
 use bevy::math::{IVec3, UVec3, Vec3};
 
@@ -7,6 +7,46 @@ use crate::quad::Direction;
 pub const CHUNK_SIZE: usize = 16;
 pub const CHUNK_ISIZE: i32 = CHUNK_SIZE as i32;
 pub const CHUNK_VOLUME: usize = CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE;
+
+macro_rules! impl_ivec3_point_ops {
+    ($point:ty) => {
+        impl Add<IVec3> for $point {
+            type Output = Self;
+
+            fn add(self, rhs: IVec3) -> Self::Output {
+                self.offset(rhs)
+            }
+        }
+
+        impl AddAssign<IVec3> for $point {
+            fn add_assign(&mut self, rhs: IVec3) {
+                *self = self.offset(rhs);
+            }
+        }
+
+        impl Sub<IVec3> for $point {
+            type Output = Self;
+
+            fn sub(self, rhs: IVec3) -> Self::Output {
+                self.offset(-rhs)
+            }
+        }
+
+        impl SubAssign<IVec3> for $point {
+            fn sub_assign(&mut self, rhs: IVec3) {
+                *self = self.offset(-rhs);
+            }
+        }
+
+        impl Sub<$point> for $point {
+            type Output = IVec3;
+
+            fn sub(self, rhs: $point) -> Self::Output {
+                self.as_ivec3() - rhs.as_ivec3()
+            }
+        }
+    };
+}
 
 /// A position on the chunk grid.
 #[repr(transparent)]
@@ -38,6 +78,14 @@ impl ChunkPos {
 
     pub const fn z(self) -> i32 {
         self.0.z
+    }
+
+    pub const fn with_y(self, y: i32) -> Self {
+        Self::new(self.x(), y, self.z())
+    }
+
+    pub const fn column(self) -> ChunkColumn {
+        ChunkColumn::new(self.x(), self.z())
     }
 
     pub fn containing_translation(translation: Vec3) -> Self {
@@ -82,21 +130,7 @@ impl From<ChunkPos> for IVec3 {
     }
 }
 
-impl Add<IVec3> for ChunkPos {
-    type Output = Self;
-
-    fn add(self, rhs: IVec3) -> Self::Output {
-        self.offset(rhs)
-    }
-}
-
-impl Sub<ChunkPos> for ChunkPos {
-    type Output = IVec3;
-
-    fn sub(self, rhs: ChunkPos) -> Self::Output {
-        self.0 - rhs.0
-    }
-}
+impl_ivec3_point_ops!(ChunkPos);
 
 /// The XZ address of a vertical chunk column.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -111,8 +145,7 @@ impl ChunkColumn {
     }
 
     pub const fn from_chunk(chunk: ChunkPos) -> Self {
-        let position = chunk.as_ivec3();
-        Self::new(position.x, position.z)
+        chunk.column()
     }
 
     pub const fn x(self) -> i32 {
@@ -197,21 +230,7 @@ impl From<WorldBlockPos> for IVec3 {
     }
 }
 
-impl Add<IVec3> for WorldBlockPos {
-    type Output = Self;
-
-    fn add(self, rhs: IVec3) -> Self::Output {
-        self.offset(rhs)
-    }
-}
-
-impl Sub<WorldBlockPos> for WorldBlockPos {
-    type Output = IVec3;
-
-    fn sub(self, rhs: WorldBlockPos) -> Self::Output {
-        self.0 - rhs.0
-    }
-}
+impl_ivec3_point_ops!(WorldBlockPos);
 
 /// A validated block position within one chunk.
 #[repr(transparent)]
@@ -510,5 +529,39 @@ mod tests {
         assert_eq!(column.x(), -7);
         assert_eq!(column.z(), 11);
         assert_eq!(column.chunk(-3), ChunkPos::new(-7, -3, 11));
+    }
+
+    #[test]
+    fn chunk_grid_arithmetic_preserves_coordinate_types() {
+        let mut position = ChunkPos::new(-7, 4, 11);
+        position += IVec3::new(2, -3, 5);
+        assert_eq!(position, ChunkPos::new(-5, 1, 16));
+        assert_eq!(position - IVec3::new(1, 2, 3), ChunkPos::new(-6, -1, 13));
+        position -= IVec3::ONE;
+        assert_eq!(position, ChunkPos::new(-6, 0, 15));
+        assert_eq!(position - ChunkPos::new(-8, -2, 12), IVec3::new(2, 2, 3));
+
+        let original = WorldBlockPos::new(-9, 3, 14);
+        let displacement = IVec3::new(5, -7, 2);
+        let mut world = original + displacement;
+        assert_eq!(world, WorldBlockPos::new(-4, -4, 16));
+        assert_eq!(world - original, displacement);
+        world -= displacement;
+        assert_eq!(world, original);
+        world += IVec3::ONE;
+        assert_eq!(world - IVec3::ONE, original);
+    }
+
+    #[test]
+    fn semantic_chunk_coordinate_helpers_are_unambiguous() {
+        let position = ChunkPos::new(-5, 9, 13);
+
+        assert_eq!(position.with_y(-2), ChunkPos::new(-5, -2, 13));
+        assert_eq!(position.column(), ChunkColumn::new(-5, 13));
+        assert_eq!(
+            position.with_y(-2),
+            position.column().chunk(-2),
+            "changing vertical position must preserve column identity"
+        );
     }
 }
