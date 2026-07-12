@@ -287,7 +287,7 @@ fn update_memory_snapshot(
     }
 
     let target_chunks =
-        chunk_positions_in_view(Vec3::ZERO, metadata.height_chunks, view_distance.chunks()).len();
+        chunk_positions_in_view(Vec3::ZERO, metadata.height_chunks(), view_distance.chunks()).len();
     let dimension_maps = dimensions_q
         .iter()
         .map(|dimension| dimension.chunk_map_capacity() * size_of::<(ChunkPos, Entity)>())

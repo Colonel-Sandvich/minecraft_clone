@@ -235,7 +235,7 @@ struct MultiTargetScenario {
 
 fn multi_target_scenarios() -> Vec<MultiTargetScenario> {
     let metadata = WorldMetadata::default();
-    let height_chunks = metadata.height_chunks;
+    let height_chunks = metadata.height_chunks();
     let center = ChunkPos::new(-4, 0, 7);
 
     let mut empty_column = HashMap::new();

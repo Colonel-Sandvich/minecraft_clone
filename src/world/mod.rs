@@ -18,7 +18,7 @@ use storage::{
 #[cfg(feature = "turso-store")]
 use storage::{TursoChunkStore, development_turso_path};
 
-pub use generation::WorldMetadata;
+pub use generation::{InvalidWorldHeight, WorldHeight, WorldMetadata};
 
 pub struct WorldPlugin;
 

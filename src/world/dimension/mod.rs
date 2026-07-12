@@ -20,7 +20,10 @@ use core::future::Future;
 
 use self::{
     fluid::DimensionFluidPlugin,
-    lifecycle::{finish_chunk_load_tasks, maintain_chunk_view, start_chunk_load_tasks},
+    lifecycle::{
+        finish_chunk_load_tasks, maintain_chunk_view, refresh_desired_column_view,
+        start_chunk_load_tasks,
+    },
     light::rebuild_chunk_light,
     persistence::{ChunkSaveBudget, finish_chunk_save_tasks, start_chunk_save_tasks},
 };
@@ -29,7 +32,7 @@ use super::{chunk::ChunkPos, generation::WorldMetadata, storage::ChunkRepository
 pub(crate) use self::{persistence::ChunkSaveTasks, tasks::ChunkLoadTasks};
 pub use self::{
     tasks::{ChunkLoadBudget, ChunkSpawnBudget},
-    view::{ViewDistance, chunk_positions_in_view},
+    view::{DesiredColumnView, ViewDistance, chunk_positions_in_view},
 };
 pub(crate) use invalidation::apply_chunk_invalidations;
 
@@ -118,12 +121,14 @@ impl Plugin for DimensionPlugin {
             .init_resource::<ChunkSaveTasks>()
             .init_resource::<ChunkLoadTasks>()
             .init_resource::<ViewDistance>()
+            .init_resource::<DesiredColumnView>()
             .add_plugins(DimensionFluidPlugin);
 
         app.add_systems(
             OnEnter(GameState::GenWorld),
             (
                 setup,
+                refresh_desired_column_view,
                 maintain_chunk_view,
                 start_chunk_load_tasks,
                 finish_chunk_load_tasks,
@@ -135,6 +140,7 @@ impl Plugin for DimensionPlugin {
         app.add_systems(
             Update,
             (
+                refresh_desired_column_view,
                 maintain_chunk_view,
                 start_chunk_load_tasks,
                 finish_chunk_load_tasks,

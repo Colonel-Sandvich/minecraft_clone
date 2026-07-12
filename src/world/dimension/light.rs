@@ -37,8 +37,9 @@ pub(crate) fn rebuild_chunk_light(
         .map(|(_, position)| *position)
         .collect::<Vec<_>>();
 
-    let mut region = ChunkLightRegion::new(metadata.height_chunks);
-    let targets = light_rebuild_targets(&dirty_positions, dimension, metadata.height_chunks);
+    let height_chunks = metadata.height_chunks();
+    let mut region = ChunkLightRegion::new(height_chunks);
+    let targets = light_rebuild_targets(&dirty_positions, dimension, height_chunks);
     if let Some(perf) = perf.as_deref_mut() {
         perf.light_rebuild_targets += targets.len();
     }
@@ -140,8 +141,9 @@ mod tests {
     struct TestDimension(Entity);
 
     fn app_with_light_system(height_chunks: usize) -> App {
-        let mut metadata = WorldMetadata::with_seed(1);
-        metadata.height_chunks = height_chunks;
+        let metadata = WorldMetadata::with_seed(1)
+            .with_height_chunks(height_chunks)
+            .unwrap();
         let mut app = App::new();
         app.add_plugins(MinimalPlugins)
             .insert_resource(metadata)

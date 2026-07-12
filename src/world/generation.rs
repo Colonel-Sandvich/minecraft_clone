@@ -10,6 +10,8 @@ pub const CHUNK_FORMAT_VERSION: u32 = 1;
 pub const WORLD_GENERATOR_VERSION: u32 = 1;
 pub const DEFAULT_DIMENSION_HEIGHT_IN_SUB_CHUNKS: usize = 5;
 pub const DEFAULT_DEV_WORLD_SEED: u64 = 0x11c7_7473_eead_0b0f;
+pub const MIN_WORLD_HEIGHT_CHUNKS: usize = 1;
+pub const MAX_WORLD_HEIGHT_CHUNKS: usize = (u8::MAX as usize + 1) / CHUNK_SIZE;
 
 const TERRAIN_BASE_HEIGHT: i32 = 18;
 const TERRAIN_MIN_HEIGHT: i32 = 4;
@@ -24,8 +26,79 @@ pub struct WorldMetadata {
     pub seed: u64,
     pub generator_version: u32,
     pub chunk_format_version: u32,
-    pub height_chunks: usize,
+    height: WorldHeight,
 }
+
+/// A validated vertical world extent in chunk units.
+///
+/// The upper bound keeps absolute block heights representable by the persisted
+/// `u8` chunk heightmap.
+#[repr(transparent)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct WorldHeight(u8);
+
+impl WorldHeight {
+    pub const DEFAULT: Self = match Self::new(DEFAULT_DIMENSION_HEIGHT_IN_SUB_CHUNKS) {
+        Ok(height) => height,
+        Err(_) => panic!("default world height must be valid"),
+    };
+
+    pub const fn new(chunks: usize) -> Result<Self, InvalidWorldHeight> {
+        if chunks < MIN_WORLD_HEIGHT_CHUNKS || chunks > MAX_WORLD_HEIGHT_CHUNKS {
+            return Err(InvalidWorldHeight { chunks });
+        }
+        Ok(Self(chunks as u8))
+    }
+
+    pub const fn chunks(self) -> usize {
+        self.0 as usize
+    }
+
+    pub const fn chunks_i32(self) -> i32 {
+        self.0 as i32
+    }
+
+    pub const fn blocks(self) -> i32 {
+        self.chunks_i32() * CHUNK_ISIZE
+    }
+}
+
+impl Default for WorldHeight {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
+}
+
+impl TryFrom<usize> for WorldHeight {
+    type Error = InvalidWorldHeight;
+
+    fn try_from(chunks: usize) -> Result<Self, Self::Error> {
+        Self::new(chunks)
+    }
+}
+
+impl From<WorldHeight> for usize {
+    fn from(height: WorldHeight) -> Self {
+        height.chunks()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InvalidWorldHeight {
+    pub chunks: usize,
+}
+
+impl std::fmt::Display for InvalidWorldHeight {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "world height must be {MIN_WORLD_HEIGHT_CHUNKS}..={MAX_WORLD_HEIGHT_CHUNKS} chunks, got {}",
+            self.chunks
+        )
+    }
+}
+
+impl std::error::Error for InvalidWorldHeight {}
 
 impl WorldMetadata {
     pub const fn with_seed(seed: u64) -> Self {
@@ -33,12 +106,25 @@ impl WorldMetadata {
             seed,
             generator_version: WORLD_GENERATOR_VERSION,
             chunk_format_version: CHUNK_FORMAT_VERSION,
-            height_chunks: DEFAULT_DIMENSION_HEIGHT_IN_SUB_CHUNKS,
+            height: WorldHeight::DEFAULT,
         }
     }
 
+    pub fn with_height_chunks(mut self, chunks: usize) -> Result<Self, InvalidWorldHeight> {
+        self.height = WorldHeight::new(chunks)?;
+        Ok(self)
+    }
+
+    pub const fn height(&self) -> WorldHeight {
+        self.height
+    }
+
+    pub const fn height_chunks(&self) -> usize {
+        self.height.chunks()
+    }
+
     pub fn world_height_blocks(&self) -> i32 {
-        (self.height_chunks * CHUNK_SIZE) as i32
+        self.height.blocks()
     }
 }
 
@@ -298,6 +384,51 @@ fn lerp(a: f32, b: f32, t: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn world_height_accepts_persistable_bounds() {
+        let minimum = WorldHeight::new(MIN_WORLD_HEIGHT_CHUNKS).unwrap();
+        let maximum = WorldHeight::new(MAX_WORLD_HEIGHT_CHUNKS).unwrap();
+
+        assert_eq!(minimum.chunks(), MIN_WORLD_HEIGHT_CHUNKS);
+        assert_eq!(maximum.chunks(), MAX_WORLD_HEIGHT_CHUNKS);
+        assert_eq!(maximum.blocks(), i32::from(u8::MAX) + 1);
+    }
+
+    #[test]
+    fn world_height_rejects_values_outside_persistable_bounds() {
+        assert_eq!(
+            WorldHeight::new(MIN_WORLD_HEIGHT_CHUNKS - 1),
+            Err(InvalidWorldHeight {
+                chunks: MIN_WORLD_HEIGHT_CHUNKS - 1
+            })
+        );
+        assert_eq!(
+            WorldHeight::new(MAX_WORLD_HEIGHT_CHUNKS + 1),
+            Err(InvalidWorldHeight {
+                chunks: MAX_WORLD_HEIGHT_CHUNKS + 1
+            })
+        );
+    }
+
+    #[test]
+    fn world_metadata_exposes_only_validated_height() {
+        let metadata = WorldMetadata::with_seed(1)
+            .with_height_chunks(MAX_WORLD_HEIGHT_CHUNKS)
+            .unwrap();
+
+        assert_eq!(
+            metadata.height(),
+            WorldHeight::new(MAX_WORLD_HEIGHT_CHUNKS).unwrap()
+        );
+        assert_eq!(metadata.height_chunks(), MAX_WORLD_HEIGHT_CHUNKS);
+        assert_eq!(metadata.world_height_blocks(), metadata.height().blocks());
+        assert!(
+            WorldMetadata::with_seed(1)
+                .with_height_chunks(MAX_WORLD_HEIGHT_CHUNKS + 1)
+                .is_err()
+        );
+    }
 
     #[test]
     fn chunk_generation_is_deterministic_for_seed_and_position() {

@@ -3,7 +3,7 @@ use bevy::{platform::collections::HashSet, prelude::*, tasks::futures::check_rea
 use crate::{
     player::Player,
     world::{
-        chunk::{ChunkInvalidationPlan, ChunkNeedsSave, ChunkPos, ChunkPosition},
+        chunk::{ChunkColumn, ChunkInvalidationPlan, ChunkNeedsSave, ChunkPos, ChunkPosition},
         generation::WorldMetadata,
         loading::{ChunkLoadRequest, load_or_generate_chunk},
         storage::ChunkRepository,
@@ -13,25 +13,36 @@ use crate::{
 use super::{
     Active, ChunkTaskPool, Dimension, apply_chunk_invalidations,
     tasks::{ChunkLoadBudget, ChunkLoadTasks, ChunkSpawnBudget},
-    view::{ViewDistance, chunk_positions_in_view},
+    view::{DesiredColumnView, ViewDistance},
 };
+
+pub(crate) fn refresh_desired_column_view(
+    maybe_player_q: Option<Single<&Transform, With<Player>>>,
+    metadata: Res<WorldMetadata>,
+    view_distance: Res<ViewDistance>,
+    mut desired_view: ResMut<DesiredColumnView>,
+) {
+    let translation = maybe_player_q.map_or(Vec3::ZERO, |player| player.translation);
+    let center = ChunkColumn::from(ChunkPos::containing_translation(translation));
+    if desired_view
+        .bypass_change_detection()
+        .refresh(center, *view_distance, metadata.height())
+    {
+        desired_view.set_changed();
+    }
+}
 
 pub(crate) fn maintain_chunk_view(
     mut commands: Commands,
     dimension: Single<(&mut Dimension, Entity), With<Active>>,
-    maybe_player_q: Option<Single<&Transform, With<Player>>>,
     dirty_chunks: Query<Option<&ChunkNeedsSave>>,
-    metadata: Res<WorldMetadata>,
-    view_distance: Res<ViewDistance>,
+    desired_view: Res<DesiredColumnView>,
     mut load_tasks: ResMut<ChunkLoadTasks>,
 ) {
-    let centre = maybe_player_q.map_or(Transform::default(), |q| **q);
-    let chunks_in_view = chunk_positions_in_view(
-        centre.translation,
-        metadata.height_chunks,
-        view_distance.chunks(),
-    );
-    let chunks_in_view_set = chunks_in_view.iter().copied().collect::<HashSet<_>>();
+    let chunks_in_view_set = desired_view
+        .chunks()
+        .map(|position| position.as_ivec3())
+        .collect::<HashSet<_>>();
 
     let (mut dim, _) = dimension.into_inner();
     let mut invalidations = ChunkInvalidationPlan::new();
@@ -39,7 +50,7 @@ pub(crate) fn maintain_chunk_view(
     let chunks_to_unload = dim
         .chunk_entities()
         .iter()
-        .filter(|(pos, _)| !chunks_in_view_set.contains(&pos.as_ivec3()))
+        .filter(|(pos, _)| !desired_view.contains_chunk(**pos))
         .map(|(pos, entity)| (*pos, *entity))
         .collect::<Vec<_>>();
 
@@ -60,10 +71,8 @@ pub(crate) fn maintain_chunk_view(
 
 pub(crate) fn start_chunk_load_tasks(
     dimension: Single<&Dimension, With<Active>>,
-    maybe_player_q: Option<Single<&Transform, With<Player>>>,
     repository: Res<ChunkRepository>,
-    metadata: Res<WorldMetadata>,
-    view_distance: Res<ViewDistance>,
+    desired_view: Res<DesiredColumnView>,
     load_budget: Res<ChunkLoadBudget>,
     mut load_tasks: ResMut<ChunkLoadTasks>,
     task_pool: Res<ChunkTaskPool>,
@@ -79,20 +88,16 @@ pub(crate) fn start_chunk_load_tasks(
         return;
     }
 
-    let centre = maybe_player_q.map_or(Transform::default(), |q| **q);
     let dim = dimension.into_inner();
     let mut started = 0;
 
-    for pos in chunk_positions_in_view(
-        centre.translation,
-        metadata.height_chunks,
-        view_distance.chunks(),
-    ) {
+    for position in desired_view.chunks() {
         if started >= available_slots {
             break;
         }
 
-        if dim.contains_chunk(pos) || load_tasks.blocks_starting_task(pos) {
+        let pos = position.as_ivec3();
+        if dim.contains_chunk(position) || load_tasks.blocks_starting_task(pos) {
             continue;
         }
 
@@ -107,40 +112,35 @@ pub(crate) fn start_chunk_load_tasks(
 pub(crate) fn finish_chunk_load_tasks(
     mut commands: Commands,
     dimension: Single<(&mut Dimension, Entity), With<Active>>,
-    maybe_player_q: Option<Single<&Transform, With<Player>>>,
     spawn_budget: Res<ChunkSpawnBudget>,
     mut load_tasks: ResMut<ChunkLoadTasks>,
-    metadata: Res<WorldMetadata>,
-    view_distance: Res<ViewDistance>,
+    desired_view: Res<DesiredColumnView>,
 ) {
     if spawn_budget.0 == 0 {
         return;
     }
 
-    let centre = maybe_player_q.map_or(Transform::default(), |q| **q);
     let mut completed = Vec::new();
-    for pos in chunk_positions_in_view(
-        centre.translation,
-        metadata.height_chunks,
-        view_distance.chunks(),
-    ) {
+    for position in desired_view.chunks() {
         if completed.len() >= spawn_budget.0 {
             break;
         }
+        let pos = position.as_ivec3();
         let Some(task) = load_tasks.tasks.get_mut(&pos) else {
             continue;
         };
         if let Some(loaded) = check_ready(task) {
-            completed.push((pos, loaded));
+            completed.push((position, loaded));
         }
     }
 
     let (mut dim, dimension_entity) = dimension.into_inner();
     let mut invalidations = ChunkInvalidationPlan::new();
-    for (pos, loaded) in completed {
+    for (chunk_pos, loaded) in completed {
+        let pos = chunk_pos.as_ivec3();
         load_tasks.tasks.remove(&pos);
 
-        if dim.contains_chunk(pos) {
+        if dim.contains_chunk(chunk_pos) {
             load_tasks.record_success(pos);
             continue;
         }
@@ -163,7 +163,6 @@ pub(crate) fn finish_chunk_load_tasks(
         let chunk_light = loaded.light;
         let heightmap = loaded.heightmap;
 
-        let chunk_pos = ChunkPos::from_ivec3(pos);
         let chunk_entity = commands
             .spawn((
                 ChildOf(dimension_entity),
@@ -205,16 +204,24 @@ mod tests {
     }
 
     fn expected_chunk_count(metadata: &WorldMetadata) -> usize {
-        chunk_positions_in_view(Vec3::ZERO, metadata.height_chunks, TEST_VIEW_DISTANCE).len()
+        let mut view = DesiredColumnView::default();
+        view.refresh(
+            ChunkColumn::new(0, 0),
+            ViewDistance::new(TEST_VIEW_DISTANCE),
+            metadata.height(),
+        );
+        view.chunk_count()
     }
 
     fn add_chunk_lifecycle_systems(app: &mut App) {
         app.insert_resource(ChunkTaskPool::new_for_test())
             .insert_resource(ChunkLoadTasks::default())
             .insert_resource(ViewDistance::new(TEST_VIEW_DISTANCE))
+            .init_resource::<DesiredColumnView>()
             .add_systems(
                 Update,
                 (
+                    refresh_desired_column_view,
                     maintain_chunk_view,
                     start_chunk_load_tasks,
                     finish_chunk_load_tasks,
@@ -298,7 +305,11 @@ mod tests {
             .insert_resource(ViewDistance::new(TEST_VIEW_DISTANCE))
             .insert_resource(ChunkSpawnBudget(usize::MAX))
             .insert_resource(ChunkLoadTasks::default())
-            .add_systems(Update, finish_chunk_load_tasks);
+            .init_resource::<DesiredColumnView>()
+            .add_systems(
+                Update,
+                (refresh_desired_column_view, finish_chunk_load_tasks).chain(),
+            );
 
         let (dimension_entity, chunks) =
             spawn_dimension_with_chunks(&mut app, [face_neighbor, diagonal_neighbor, non_neighbor]);
@@ -362,8 +373,7 @@ mod tests {
 
     #[test]
     fn chunk_load_marks_neighboring_columns_for_light_rebuild() {
-        let mut metadata = test_metadata();
-        metadata.height_chunks = 2;
+        let metadata = test_metadata().with_height_chunks(2).unwrap();
         let loaded_pos = IVec3::ZERO;
         let same_column = ivec3(0, 1, 0);
         let horizontal_neighbor = IVec3::X;
@@ -374,7 +384,11 @@ mod tests {
             .insert_resource(ViewDistance::new(TEST_VIEW_DISTANCE))
             .insert_resource(ChunkSpawnBudget(usize::MAX))
             .insert_resource(ChunkLoadTasks::default())
-            .add_systems(Update, finish_chunk_load_tasks);
+            .init_resource::<DesiredColumnView>()
+            .add_systems(
+                Update,
+                (refresh_desired_column_view, finish_chunk_load_tasks).chain(),
+            );
 
         let (dimension_entity, chunks) =
             spawn_dimension_with_chunks(&mut app, [same_column, horizontal_neighbor]);
@@ -409,8 +423,7 @@ mod tests {
 
     #[test]
     fn chunk_unload_marks_loaded_face_and_diagonal_neighbors_for_mesh_rebuild() {
-        let mut metadata = test_metadata();
-        metadata.height_chunks = 2;
+        let metadata = test_metadata().with_height_chunks(2).unwrap();
         let unloaded_pos = ivec3(1, 0, 1);
         let face_neighbor = ivec3(1, 0, 0);
         let diagonal_neighbor = ivec3(0, 1, 0);
@@ -420,7 +433,11 @@ mod tests {
             .insert_resource(metadata)
             .insert_resource(ChunkLoadTasks::default())
             .insert_resource(ViewDistance::new(1))
-            .add_systems(Update, maintain_chunk_view);
+            .init_resource::<DesiredColumnView>()
+            .add_systems(
+                Update,
+                (refresh_desired_column_view, maintain_chunk_view).chain(),
+            );
 
         let (dimension_entity, chunks) = spawn_dimension_with_chunks(
             &mut app,
@@ -612,8 +629,7 @@ mod tests {
 
     #[test]
     fn permanent_load_failures_are_not_retried_every_update() {
-        let mut metadata = test_metadata();
-        metadata.height_chunks = 1;
+        let metadata = test_metadata().with_height_chunks(1).unwrap();
         let mut app = App::new();
         app.add_plugins(MinimalPlugins)
             .insert_resource(metadata.clone())
@@ -690,7 +706,11 @@ mod tests {
             .insert_resource(repository)
             .insert_resource(ChunkLoadTasks::default())
             .insert_resource(ViewDistance::new(TEST_VIEW_DISTANCE))
-            .add_systems(Update, maintain_chunk_view);
+            .init_resource::<DesiredColumnView>()
+            .add_systems(
+                Update,
+                (refresh_desired_column_view, maintain_chunk_view).chain(),
+            );
 
         let chunk_entity = app
             .world_mut()

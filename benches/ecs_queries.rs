@@ -85,8 +85,9 @@ fn build_mesh_rebuild_world(dirty_chunks: usize) -> World {
     let mut world = World::new();
     world.insert_resource(MeshRebuildBenchStats::default());
 
-    let mut metadata = WorldMetadata::with_seed(1);
-    metadata.height_chunks = MESH_REBUILD_HEIGHT as usize;
+    let metadata = WorldMetadata::with_seed(1)
+        .with_height_chunks(MESH_REBUILD_HEIGHT as usize)
+        .unwrap();
 
     let mut index = 0usize;
     for x in 0..MESH_REBUILD_SIDE {
@@ -379,8 +380,9 @@ fn light_upload_dirty_contiguous_system(
 
 fn build_light_rebuild_world(dirty_columns: usize, with_active_dimension: bool) -> World {
     let mut world = World::new();
-    let mut metadata = WorldMetadata::with_seed(1);
-    metadata.height_chunks = LIGHT_REBUILD_HEIGHT as usize;
+    let metadata = WorldMetadata::with_seed(1)
+        .with_height_chunks(LIGHT_REBUILD_HEIGHT as usize)
+        .unwrap();
     world.insert_resource(metadata);
     world.insert_resource(LightRebuildBenchStats::default());
 
@@ -748,7 +750,7 @@ fn rebuild_chunk_light_iter_system(
         &all_chunks,
         loaded_chunks,
         &dirty_positions,
-        metadata.height_chunks,
+        metadata.height_chunks(),
         &mut stats,
     );
 }
@@ -787,7 +789,7 @@ fn rebuild_chunk_light_contiguous_system(
         &all_chunks,
         loaded_chunks,
         &dirty_positions,
-        metadata.height_chunks,
+        metadata.height_chunks(),
         &mut stats,
     );
 }
