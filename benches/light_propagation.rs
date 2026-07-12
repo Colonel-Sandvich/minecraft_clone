@@ -435,6 +435,14 @@ fn staged_patch_scenarios() -> Vec<StagedPatchScenario> {
         "terrain_3x3_cores_5x5_calculation",
         vec![StagedPatchShape::rectangular_core(-1, 1, -1, 1)],
     );
+    let sixteen_cores_batched = StagedPatchScenario::generated_terrain(
+        "terrain_4x4_cores_6x6_calculation",
+        vec![StagedPatchShape::rectangular_core(-1, 2, -1, 2)],
+    );
+    let thirty_six_cores_batched = StagedPatchScenario::generated_terrain(
+        "terrain_6x6_cores_8x8_calculation",
+        vec![StagedPatchShape::rectangular_core(-2, 3, -2, 3)],
+    );
     let nine_cores_independent = StagedPatchScenario::generated_terrain(
         "terrain_9_independent_3x3_calculations",
         (-1..=1)
@@ -448,6 +456,10 @@ fn staged_patch_scenarios() -> Vec<StagedPatchScenario> {
     assert_eq!(four_cores.committed_chunk_count(), 20);
     assert_eq!(nine_cores_batched.calculation_chunk_count(), 125);
     assert_eq!(nine_cores_batched.committed_chunk_count(), 45);
+    assert_eq!(sixteen_cores_batched.calculation_chunk_count(), 180);
+    assert_eq!(sixteen_cores_batched.committed_chunk_count(), 80);
+    assert_eq!(thirty_six_cores_batched.calculation_chunk_count(), 320);
+    assert_eq!(thirty_six_cores_batched.committed_chunk_count(), 180);
     assert_eq!(nine_cores_independent.calculation_chunk_count(), 405);
     assert_eq!(nine_cores_independent.committed_chunk_count(), 45);
 
@@ -455,6 +467,8 @@ fn staged_patch_scenarios() -> Vec<StagedPatchScenario> {
         one_core,
         four_cores,
         nine_cores_batched,
+        sixteen_cores_batched,
+        thirty_six_cores_batched,
         nine_cores_independent,
     ]
 }
