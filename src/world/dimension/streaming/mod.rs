@@ -15,10 +15,12 @@ use bevy::{
 use crate::world::{chunk::ChunkColumn, loading::ColumnLoadResult};
 
 pub(crate) use state::{
-    ColumnEvictionTicket, ColumnLoadTicket, ColumnResidency, ColumnResidencyLedger,
+    ColumnEvictionTicket, ColumnExposure, ColumnLightRevision, ColumnLighting, ColumnLoadTicket,
+    ColumnResidency, ColumnResidencyLedger, ResidentColumnState,
 };
 pub(crate) use systems::{
-    finish_column_loads, maintain_column_residency, refresh_desired_column_view, start_column_loads,
+    finish_column_loads, maintain_column_residency, publish_lit_columns,
+    refresh_desired_column_view, start_column_loads,
 };
 
 #[derive(Resource, Debug, Clone, Copy)]
@@ -27,6 +29,15 @@ pub struct ColumnLoadBudget(pub usize);
 impl Default for ColumnLoadBudget {
     fn default() -> Self {
         Self(4)
+    }
+}
+
+#[derive(Resource, Debug, Clone, Copy)]
+pub struct ColumnStagingBudget(pub usize);
+
+impl Default for ColumnStagingBudget {
+    fn default() -> Self {
+        Self(8)
     }
 }
 
@@ -105,6 +116,36 @@ impl DimensionStreamState {
         self.ledger.activate_load(ticket)
     }
 
+    pub(crate) fn mark_light_pending(&mut self, column: ChunkColumn) -> bool {
+        self.ledger.mark_light_pending(column)
+    }
+
+    pub(crate) fn finish_lighting(&mut self, column: ChunkColumn) -> Option<ColumnLightRevision> {
+        self.ledger.finish_lighting(column)
+    }
+
+    pub(crate) fn publish(&mut self, column: ChunkColumn) -> bool {
+        self.ledger.publish(column)
+    }
+
+    pub(crate) fn unpublish(&mut self, column: ChunkColumn) -> bool {
+        self.ledger.unpublish(column)
+    }
+
+    pub(crate) fn resident_state(&self, column: ChunkColumn) -> Option<ResidentColumnState> {
+        self.ledger.resident_state(column)
+    }
+
+    pub(crate) fn column_lighting(&self, column: ChunkColumn) -> Option<ColumnLighting> {
+        self.resident_state(column)
+            .map(ResidentColumnState::lighting)
+    }
+
+    pub(crate) fn column_exposure(&self, column: ChunkColumn) -> Option<ColumnExposure> {
+        self.resident_state(column)
+            .map(ResidentColumnState::exposure)
+    }
+
     pub(crate) fn fail_load(
         &mut self,
         ticket: ColumnLoadTicket,
@@ -132,7 +173,7 @@ impl DimensionStreamState {
 
     pub(crate) fn eviction_tickets(&self) -> impl Iterator<Item = ColumnEvictionTicket> + '_ {
         self.ledger.states().filter_map(|(_, state)| match state {
-            ColumnResidency::Evicting { ticket } => Some(*ticket),
+            ColumnResidency::Evicting { ticket, .. } => Some(*ticket),
             _ => None,
         })
     }

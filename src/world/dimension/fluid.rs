@@ -57,7 +57,7 @@ fn step_chunk_fluids(
     mut commands: Commands,
     budget: Res<FluidStepBudget>,
     counter: Res<FluidTickCounter>,
-    dimension: Single<&Dimension, With<Active>>,
+    dimension: Single<&mut Dimension, With<Active>>,
     mut param_set: ParamSet<(Query<FluidChunkRead>, Query<FluidChunkWrite>)>,
 ) {
     // Water in Minecraft spreads at 1 block per 5 ticks (4/sec).
@@ -69,7 +69,7 @@ fn step_chunk_fluids(
         return;
     }
 
-    let dimension = dimension.into_inner();
+    let mut dimension = dimension.into_inner();
     let chunks_by_pos = dimension
         .iter_published_chunks()
         .map(|(position, entity)| (position.as_ivec3(), entity))
@@ -139,7 +139,7 @@ fn step_chunk_fluids(
         commands.entity(entity).remove::<ChunkNeedsFluidStep>();
     }
 
-    apply_chunk_invalidations(&mut commands, dimension, &invalidations);
+    apply_chunk_invalidations(&mut commands, &mut dimension, &invalidations);
 }
 
 fn expand_with_fluid_neighbors(

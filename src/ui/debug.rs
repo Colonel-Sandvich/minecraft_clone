@@ -134,9 +134,12 @@ fn update_debug_text(
     let current_block = current_light & 0x0F;
 
     let facing = facing_dir(cam_transform);
-    let loaded = active_dimension
-        .as_ref()
-        .map_or(0, |dimension| dimension.loaded_chunk_count());
+    let (loaded, published) = active_dimension.as_ref().map_or((0, 0), |dimension| {
+        (
+            dimension.loaded_chunk_count(),
+            dimension.published_chunk_count(),
+        )
+    });
     let memory = memory
         .as_deref()
         .map(|memory| format!("\n\nMemory:\n{}", memory.format_for_debug()))
@@ -152,7 +155,7 @@ fn update_debug_text(
          Chunk: {cx} {cy} {cz}\n\
          \n\
          Facing: {facing}\n\
-         Chunks loaded: {loaded}\n\
+         Chunks loaded: {loaded}  published: {published}\n\
          View dist: {vd}{memory}",
         x = pos.x,
         y = pos.y,

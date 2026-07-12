@@ -1,10 +1,13 @@
+use avian3d::prelude::Collider;
 use bevy::prelude::*;
 
 use crate::{
     player::Player,
     world::{
         chunk::{
-            ChunkColumn, ChunkInvalidationPlan, ChunkLight, ChunkNeedsSave, ChunkPos, ChunkPosition,
+            ChunkColumn, ChunkContentCounts, ChunkInvalidationPlan, ChunkLight,
+            ChunkNeedsColliderRebuild, ChunkNeedsFluidStep, ChunkNeedsLightRebuild,
+            ChunkNeedsRenderLightUpload, ChunkNeedsSave, ChunkPos, ChunkPosition,
         },
         generation::WorldMetadata,
         loading::load_or_generate_column,
@@ -12,7 +15,9 @@ use crate::{
     },
 };
 
-use super::{ColumnActivationBudget, ColumnLoadBudget};
+use super::{
+    ColumnActivationBudget, ColumnExposure, ColumnLighting, ColumnLoadBudget, ColumnStagingBudget,
+};
 use crate::world::dimension::{
     Active, ChunkTaskPool, DesiredColumnView, Dimension, ViewDistance, apply_chunk_invalidations,
 };
@@ -41,6 +46,8 @@ pub(crate) fn maintain_column_residency(
     dimension: Single<(&mut Dimension, Entity), With<Active>>,
     desired_view: Res<DesiredColumnView>,
     dirty_chunks: Query<(), With<ChunkNeedsSave>>,
+    children: Query<&Children>,
+    colliders: Query<(), With<Collider>>,
 ) {
     let (mut dimension, owner) = dimension.into_inner();
     dimension.assert_stream_owner(owner);
@@ -48,6 +55,41 @@ pub(crate) fn maintain_column_residency(
 
     for &column in desired_view.resident_columns() {
         dimension.stream_mut().mark_desired(column);
+    }
+
+    let published_columns = dimension
+        .stream()
+        .columns()
+        .filter(|&column| dimension.column_exposure(column) == Some(ColumnExposure::Published))
+        .collect::<Vec<_>>();
+    for column in published_columns {
+        if desired_view.contains_visible_column(column) {
+            continue;
+        }
+        assert!(dimension.unpublish_column(column));
+        let incarnation = dimension
+            .column_incarnation(column)
+            .expect("unpublished column must retain its incarnation");
+        commands.entity(incarnation).insert(Visibility::Hidden);
+
+        let chunks = dimension
+            .complete_loaded_column(column)
+            .expect("unpublished column must remain complete");
+        for (_, entity) in chunks {
+            commands.entity(entity).remove::<(
+                ChunkNeedsColliderRebuild,
+                ChunkNeedsFluidStep,
+                ChunkNeedsLightRebuild,
+                ChunkNeedsRenderLightUpload,
+            )>();
+            if let Ok(children) = children.get(entity) {
+                for child in children {
+                    if colliders.get(*child).is_ok() {
+                        commands.entity(*child).despawn();
+                    }
+                }
+            }
+        }
     }
 
     let tracked_columns = dimension.stream().columns().collect::<Vec<_>>();
@@ -58,7 +100,6 @@ pub(crate) fn maintain_column_residency(
     }
 
     let eviction_tickets = dimension.stream().eviction_tickets().collect::<Vec<_>>();
-    let mut invalidations = ChunkInvalidationPlan::new();
     for ticket in eviction_tickets {
         let entities = dimension
             .complete_loaded_column(ticket.column())
@@ -73,22 +114,17 @@ pub(crate) fn maintain_column_residency(
         let removed = dimension
             .evict_column(ticket)
             .expect("current clean eviction ticket must commit");
-        for (position, _) in removed.chunks {
-            invalidations.record_chunk_unloaded(position);
-        }
         commands.entity(removed.incarnation).despawn();
     }
-
-    apply_chunk_invalidations(&mut commands, &dimension, &invalidations);
 }
 
 pub(crate) fn finish_column_loads(
     mut commands: Commands,
     dimension: Single<(&mut Dimension, Entity), With<Active>>,
     desired_view: Res<DesiredColumnView>,
-    activation_budget: Res<ColumnActivationBudget>,
+    staging_budget: Res<ColumnStagingBudget>,
 ) {
-    if activation_budget.0 == 0 {
+    if staging_budget.0 == 0 {
         return;
     }
 
@@ -96,7 +132,7 @@ pub(crate) fn finish_column_loads(
     dimension.assert_stream_owner(owner);
     let mut completed = Vec::new();
     for &column in desired_view.resident_columns() {
-        if completed.len() >= activation_budget.0 {
+        if completed.len() >= staging_budget.0 {
             break;
         }
         if let Some(ready) = dimension.stream_mut().take_ready_load(column) {
@@ -104,7 +140,6 @@ pub(crate) fn finish_column_loads(
         }
     }
 
-    let mut invalidations = ChunkInvalidationPlan::new();
     for (ticket, result) in completed {
         if ticket.view_revision() != desired_view.revision() {
             trace!(
@@ -135,7 +170,7 @@ pub(crate) fn finish_column_loads(
                 ChildOf(owner),
                 LoadedColumnRoot,
                 Transform::default(),
-                Visibility::default(),
+                Visibility::Hidden,
             ))
             .id();
         let mut entities = Vec::with_capacity(loaded.height.chunks());
@@ -151,18 +186,59 @@ pub(crate) fn finish_column_loads(
                     heightmap,
                     counts,
                     Transform::from_translation(position.origin_translation()),
-                    Visibility::default(),
+                    Visibility::Inherited,
                 ))
                 .id();
             entities.push(entity);
-            invalidations.record_chunk_loaded(position, counts);
         }
 
         dimension.install_accepted_column(ticket, incarnation, entities);
-        assert!(dimension.publish_column(ticket.column()));
+    }
+}
+
+pub(crate) fn publish_lit_columns(
+    mut commands: Commands,
+    dimension: Single<&mut Dimension, With<Active>>,
+    desired_view: Res<DesiredColumnView>,
+    activation_budget: Res<ColumnActivationBudget>,
+    contents: Query<&ChunkContentCounts>,
+) {
+    if activation_budget.0 == 0 {
+        return;
+    }
+    let mut dimension = dimension.into_inner();
+    let mut invalidations = ChunkInvalidationPlan::new();
+
+    let mut activated = 0;
+    for &column in desired_view.visible_columns() {
+        if activated == activation_budget.0 {
+            break;
+        }
+        if dimension.column_lighting(column) != Some(ColumnLighting::Lit)
+            || dimension.column_exposure(column) != Some(ColumnExposure::Staged)
+            || !dimension.has_complete_resident_light_neighborhood(column)
+        {
+            continue;
+        }
+        assert!(dimension.publish_lit_column(column));
+        activated += 1;
+        let incarnation = dimension
+            .column_incarnation(column)
+            .expect("published column must retain its incarnation");
+        commands.entity(incarnation).insert(Visibility::Inherited);
+
+        for (position, entity) in dimension
+            .complete_loaded_column(column)
+            .expect("published column must remain complete")
+        {
+            let counts = *contents
+                .get(entity)
+                .expect("published chunk must retain its content counts");
+            invalidations.record_chunk_published(position, counts);
+        }
     }
 
-    apply_chunk_invalidations(&mut commands, &dimension, &invalidations);
+    apply_chunk_invalidations(&mut commands, &mut dimension, &invalidations);
 }
 
 pub(crate) fn start_column_loads(

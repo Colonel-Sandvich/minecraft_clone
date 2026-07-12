@@ -1,6 +1,7 @@
 mod fluid;
 mod invalidation;
 mod light;
+mod light_patch;
 mod persistence;
 mod streaming;
 mod view;
@@ -22,7 +23,8 @@ use self::{
     light::rebuild_chunk_light,
     persistence::{ChunkSaveBudget, finish_chunk_save_tasks, start_chunk_save_tasks},
     streaming::{
-        DimensionStreamState, finish_column_loads, maintain_column_residency,
+        ColumnExposure, ColumnLightRevision, ColumnLighting, DimensionStreamState,
+        ResidentColumnState, finish_column_loads, maintain_column_residency, publish_lit_columns,
         refresh_desired_column_view, start_column_loads,
     },
 };
@@ -34,7 +36,8 @@ use super::{
 
 pub(crate) use self::persistence::ChunkSaveTasks;
 pub use self::{
-    streaming::{ColumnActivationBudget, ColumnLoadBudget},
+    light_patch::ColumnLightBudget,
+    streaming::{ColumnActivationBudget, ColumnLoadBudget, ColumnStagingBudget},
     view::{DesiredColumnView, ViewDistance},
 };
 pub(crate) use invalidation::apply_chunk_invalidations;
@@ -89,7 +92,6 @@ struct LoadedColumnHandle {
 
 pub(crate) struct EvictedColumn {
     pub(crate) incarnation: Entity,
-    pub(crate) chunks: Vec<(ChunkPos, Entity)>,
 }
 
 #[cfg(test)]
@@ -242,6 +244,17 @@ impl Dimension {
         (0..self.height.chunks_i32()).any(|y| self.contains_loaded_chunk(column.chunk(y)))
     }
 
+    pub(crate) fn has_complete_loaded_column(&self, column: ChunkColumn) -> bool {
+        (0..self.height.chunks_i32()).all(|y| self.contains_loaded_chunk(column.chunk(y)))
+    }
+
+    pub(crate) fn has_complete_resident_light_neighborhood(&self, column: ChunkColumn) -> bool {
+        column.chebyshev_neighborhood(1).all(|dependency| {
+            self.has_complete_loaded_column(dependency)
+                && self.resident_column_state(dependency).is_some()
+        })
+    }
+
     pub(crate) fn complete_loaded_column(
         &self,
         column: ChunkColumn,
@@ -287,8 +300,12 @@ impl Dimension {
             .insert(ticket.column(), LoadedColumnHandle { incarnation });
     }
 
-    pub(crate) fn publish_column(&mut self, column: ChunkColumn) -> bool {
-        if !self.loaded_columns.contains_key(&column) {
+    fn expose_loaded_column(&mut self, column: ChunkColumn) -> bool {
+        if !self.loaded_columns.contains_key(&column)
+            || !self.has_complete_loaded_column(column)
+            || (0..self.height.chunks_i32())
+                .any(|y| self.published_chunks.contains(&column.chunk(y)))
+        {
             return false;
         }
         let chunks = self
@@ -300,20 +317,96 @@ impl Dimension {
         true
     }
 
-    pub(crate) fn unpublish_column(&mut self, column: ChunkColumn) -> bool {
-        if !self.loaded_columns.contains_key(&column) {
+    fn hide_loaded_column(&mut self, column: ChunkColumn) -> bool {
+        if !self.loaded_columns.contains_key(&column)
+            || !(0..self.height.chunks_i32())
+                .all(|y| self.published_chunks.contains(&column.chunk(y)))
+        {
             return false;
         }
-        let mut changed = false;
         for y in 0..self.height.chunks_i32() {
-            changed |= self.published_chunks.remove(&column.chunk(y));
+            assert!(self.published_chunks.remove(&column.chunk(y)));
         }
-        changed
+        true
+    }
+
+    pub(crate) fn resident_column_state(&self, column: ChunkColumn) -> Option<ResidentColumnState> {
+        self.stream.resident_state(column)
+    }
+
+    pub(crate) fn column_lighting(&self, column: ChunkColumn) -> Option<ColumnLighting> {
+        self.stream.column_lighting(column)
+    }
+
+    pub(crate) fn column_exposure(&self, column: ChunkColumn) -> Option<ColumnExposure> {
+        self.stream.column_exposure(column)
+    }
+
+    pub(crate) fn mark_column_light_pending(&mut self, column: ChunkColumn) -> bool {
+        self.stream.mark_light_pending(column)
+    }
+
+    pub(crate) fn finish_column_lighting(
+        &mut self,
+        column: ChunkColumn,
+    ) -> Option<ColumnLightRevision> {
+        let revision = self.stream.finish_lighting(column)?;
+        debug_assert_eq!(
+            self.stream
+                .resident_state(column)
+                .map(ResidentColumnState::light_revision),
+            Some(revision)
+        );
+        Some(revision)
+    }
+
+    pub(crate) fn publish_lit_column(&mut self, column: ChunkColumn) -> bool {
+        if !self.loaded_columns.contains_key(&column)
+            || !self.has_complete_loaded_column(column)
+            || (0..self.height.chunks_i32())
+                .any(|y| self.published_chunks.contains(&column.chunk(y)))
+            || !self.stream.publish(column)
+        {
+            return false;
+        }
+        assert!(
+            self.expose_loaded_column(column),
+            "published resident column must remain loaded"
+        );
+        true
+    }
+
+    pub(crate) fn unpublish_column(&mut self, column: ChunkColumn) -> bool {
+        if !self.loaded_columns.contains_key(&column)
+            || !(0..self.height.chunks_i32())
+                .all(|y| self.published_chunks.contains(&column.chunk(y)))
+            || !self.stream.unpublish(column)
+        {
+            return false;
+        }
+        assert!(
+            self.hide_loaded_column(column),
+            "unpublished resident column must have been exposed"
+        );
+        true
+    }
+
+    pub(crate) fn column_incarnation(&self, column: ChunkColumn) -> Option<Entity> {
+        self.loaded_columns
+            .get(&column)
+            .map(|handle| handle.incarnation)
     }
 
     pub(crate) fn evict_column(&mut self, ticket: ColumnEvictionTicket) -> Option<EvictedColumn> {
         assert_eq!(ticket.owner(), self.stream.owner());
         let chunks = self.complete_loaded_column(ticket.column())?;
+        let incarnation = self.loaded_columns.get(&ticket.column())?.incarnation;
+        assert!(
+            chunks
+                .iter()
+                .all(|(position, _)| !self.published_chunks.contains(position)),
+            "evicted column must be unpublished before registry removal"
+        );
         if !self.stream.commit_eviction(ticket) {
             return None;
         }
@@ -325,10 +418,8 @@ impl Dimension {
             .loaded_columns
             .remove(&ticket.column())
             .expect("resident column must retain its incarnation until eviction");
-        Some(EvictedColumn {
-            incarnation: handle.incarnation,
-            chunks,
-        })
+        assert_eq!(handle.incarnation, incarnation);
+        Some(EvictedColumn { incarnation })
     }
 }
 
@@ -340,7 +431,9 @@ impl Plugin for DimensionPlugin {
             .init_resource::<WorldMetadata>()
             .init_resource::<ChunkRepository>()
             .init_resource::<ColumnLoadBudget>()
+            .init_resource::<ColumnStagingBudget>()
             .init_resource::<ColumnActivationBudget>()
+            .init_resource::<ColumnLightBudget>()
             .init_resource::<ChunkSaveBudget>()
             .init_resource::<ChunkSaveTasks>()
             .init_resource::<ViewDistance>()
@@ -368,6 +461,7 @@ impl Plugin for DimensionPlugin {
                 finish_column_loads,
                 start_column_loads,
                 rebuild_chunk_light,
+                publish_lit_columns,
             )
                 .chain()
                 .in_set(Playing),
@@ -463,17 +557,17 @@ mod tests {
 
         assert_eq!(dimension.loaded_chunk_count(), height.chunks());
         assert_eq!(dimension.published_chunk_count(), 0);
-        assert!(dimension.publish_column(column));
+        assert!(dimension.expose_loaded_column(column));
         for (y, entity) in entities.into_iter().enumerate() {
             let position = column.chunk(y as i32);
             assert_eq!(dimension.loaded_chunk_entity(position), Some(entity));
             assert_eq!(dimension.published_chunk_entity(position), Some(entity));
         }
 
-        assert!(dimension.unpublish_column(column));
+        assert!(dimension.hide_loaded_column(column));
         assert_eq!(dimension.loaded_chunk_count(), height.chunks());
         assert_eq!(dimension.published_chunk_count(), 0);
-        assert!(!dimension.unpublish_column(column));
+        assert!(!dimension.hide_loaded_column(column));
         for y in 0..height.chunks_i32() {
             let position = column.chunk(y);
             assert!(dimension.contains_loaded_chunk(position));

@@ -11,6 +11,11 @@ use super::{
 pub struct ChunkPerfCounters {
     pub mesh_rebuilds: usize,
     pub light_rebuild_targets: usize,
+    pub light_patch_runs: usize,
+    pub light_patch_calculation_chunks: usize,
+    pub light_patch_max_calculation_chunks: usize,
+    pub light_patch_scratch_chunks: usize,
+    pub light_patch_committed_columns: usize,
     pub light_uploads: usize,
 }
 

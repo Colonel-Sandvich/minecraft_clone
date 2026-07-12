@@ -110,6 +110,27 @@ impl ChunkMeshLight {
     }
 }
 
+/// Exact padded lighting prepared for a chunk by an authoritative light solve.
+#[derive(Component, Clone)]
+pub(crate) struct PreparedChunkMeshLight {
+    data: Arc<[u32]>,
+}
+
+impl PreparedChunkMeshLight {
+    pub(crate) fn new(data: Arc<[u32]>) -> Self {
+        Self { data }
+    }
+
+    pub(crate) fn shared_data(&self) -> Arc<[u32]> {
+        Arc::clone(&self.data)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn data(&self) -> &[u32] {
+        &self.data
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(crate) struct SharedLightDataKey {
     pub(crate) ptr: usize,

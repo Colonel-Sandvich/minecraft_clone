@@ -10,9 +10,13 @@ use super::Dimension;
 /// Applies coalesced chunk work only to entities owned by `dimension`.
 pub(crate) fn apply_chunk_invalidations(
     commands: &mut Commands,
-    dimension: &Dimension,
+    dimension: &mut Dimension,
     plan: &ChunkInvalidationPlan,
 ) {
+    for column in plan.light_columns() {
+        dimension.mark_column_light_pending(column);
+    }
+
     for (position, effects) in plan.chunks() {
         let Some(entity) = dimension.published_chunk_entity(position) else {
             continue;
@@ -67,10 +71,11 @@ mod tests {
 
     fn apply_test_plan(
         mut commands: Commands,
-        dimension: Single<&Dimension, With<Active>>,
+        dimension: Single<&mut Dimension, With<Active>>,
         plan: Res<TestPlan>,
     ) {
-        apply_chunk_invalidations(&mut commands, &dimension, &plan.0);
+        let mut dimension = dimension.into_inner();
+        apply_chunk_invalidations(&mut commands, &mut dimension, &plan.0);
     }
 
     #[test]

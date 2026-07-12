@@ -61,11 +61,120 @@ pub(crate) enum ColumnResidency {
         attempt: u32,
         accepted: bool,
     },
-    Resident,
+    Resident(ResidentColumnState),
     Evicting {
         ticket: ColumnEvictionTicket,
+        resident: ResidentColumnState,
     },
     Failed(ColumnLoadFailure),
+}
+
+/// Derived lighting readiness for a loaded column.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ColumnLighting {
+    Pending,
+    Lit,
+}
+
+/// Monotonic revision of the last authoritative column-light result.
+#[repr(transparent)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) struct ColumnLightRevision(u64);
+
+impl ColumnLightRevision {
+    pub(crate) const INITIAL: Self = Self(0);
+
+    fn advance(self) -> Self {
+        Self(
+            self.0
+                .checked_add(1)
+                .expect("column light revision overflowed"),
+        )
+    }
+}
+
+/// Whether a loaded column is exposed to gameplay and rendering consumers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ColumnExposure {
+    Staged,
+    Published,
+}
+
+/// Orthogonal derived-data and exposure state retained for a loaded column.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ResidentColumnState {
+    lighting: ColumnLighting,
+    exposure: ColumnExposure,
+    light_revision: ColumnLightRevision,
+}
+
+impl ResidentColumnState {
+    pub(crate) const STAGED_PENDING: Self = Self {
+        lighting: ColumnLighting::Pending,
+        exposure: ColumnExposure::Staged,
+        light_revision: ColumnLightRevision::INITIAL,
+    };
+
+    pub(crate) const fn lighting(self) -> ColumnLighting {
+        self.lighting
+    }
+
+    pub(crate) const fn exposure(self) -> ColumnExposure {
+        self.exposure
+    }
+
+    pub(crate) const fn light_revision(self) -> ColumnLightRevision {
+        self.light_revision
+    }
+
+    pub(crate) const fn is_light_pending(self) -> bool {
+        matches!(self.lighting, ColumnLighting::Pending)
+    }
+
+    pub(crate) const fn is_lit(self) -> bool {
+        matches!(self.lighting, ColumnLighting::Lit)
+    }
+
+    pub(crate) const fn is_staged(self) -> bool {
+        matches!(self.exposure, ColumnExposure::Staged)
+    }
+
+    pub(crate) const fn is_published(self) -> bool {
+        matches!(self.exposure, ColumnExposure::Published)
+    }
+
+    fn mark_light_pending(&mut self) -> bool {
+        if self.is_light_pending() {
+            return false;
+        }
+        self.lighting = ColumnLighting::Pending;
+        true
+    }
+
+    fn finish_lighting(&mut self) -> Option<ColumnLightRevision> {
+        if !self.is_light_pending() {
+            return None;
+        }
+        self.light_revision = self.light_revision.advance();
+        self.lighting = ColumnLighting::Lit;
+        Some(self.light_revision)
+    }
+
+    fn publish(&mut self) -> bool {
+        if !self.is_lit() || self.is_published() {
+            return false;
+        }
+        self.exposure = ColumnExposure::Published;
+        true
+    }
+
+    fn unpublish(&mut self) -> bool {
+        if self.is_staged() {
+            return false;
+        }
+        self.exposure = ColumnExposure::Staged;
+        true
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -132,31 +241,30 @@ impl ColumnResidencyLedger {
     }
 
     /// Marks a column wanted. Re-entry cancels an outstanding eviction and
-    /// restores resident state without issuing a load.
+    /// restores its exact resident state without issuing a load.
     pub(crate) fn mark_desired(&mut self, column: ChunkColumn) -> bool {
-        if matches!(
-            self.states.get(&column),
-            Some(ColumnResidency::Evicting { .. })
-        ) {
-            self.states.insert(column, ColumnResidency::Resident);
-            return true;
-        }
-        false
+        let Some(ColumnResidency::Evicting { resident, .. }) = self.states.get(&column) else {
+            return false;
+        };
+        let resident = *resident;
+        self.states
+            .insert(column, ColumnResidency::Resident(resident));
+        true
     }
 
     /// Marks a column unwanted. Loads and failures are discarded immediately;
     /// resident columns receive an owner/version-bound eviction ticket.
     pub(crate) fn mark_undesired(&mut self, column: ChunkColumn) -> Option<ColumnEvictionTicket> {
         match self.states.remove(&column) {
-            Some(ColumnResidency::Resident) => {
+            Some(ColumnResidency::Resident(resident)) => {
                 let ticket = self.issue_eviction_ticket(column);
                 self.states
-                    .insert(column, ColumnResidency::Evicting { ticket });
+                    .insert(column, ColumnResidency::Evicting { ticket, resident });
                 Some(ticket)
             }
-            Some(ColumnResidency::Evicting { ticket }) => {
+            Some(ColumnResidency::Evicting { ticket, resident }) => {
                 self.states
-                    .insert(column, ColumnResidency::Evicting { ticket });
+                    .insert(column, ColumnResidency::Evicting { ticket, resident });
                 Some(ticket)
             }
             Some(ColumnResidency::Loading { .. }) | Some(ColumnResidency::Failed(_)) | None => None,
@@ -215,8 +323,9 @@ impl ColumnResidencyLedger {
         true
     }
 
-    /// Commits ECS activation after a previously accepted result has been
-    /// registered in `Dimension`.
+    /// Commits installation after a previously accepted result has been
+    /// registered in `Dimension`. Newly installed data is staged and awaits
+    /// its first lighting result before it can be published.
     pub(crate) fn activate_load(&mut self, ticket: ColumnLoadTicket) -> bool {
         if ticket.owner != self.owner {
             return false;
@@ -233,8 +342,45 @@ impl ColumnResidencyLedger {
             return false;
         }
 
-        self.states.insert(ticket.column, ColumnResidency::Resident);
+        self.states.insert(
+            ticket.column,
+            ColumnResidency::Resident(ResidentColumnState::STAGED_PENDING),
+        );
         true
+    }
+
+    /// Invalidates derived light while preserving whether the column is
+    /// currently staged or published.
+    pub(crate) fn mark_light_pending(&mut self, column: ChunkColumn) -> bool {
+        let Some(ColumnResidency::Resident(resident)) = self.states.get_mut(&column) else {
+            return false;
+        };
+        resident.mark_light_pending()
+    }
+
+    /// Records an exact lighting result for a currently pending resident.
+    pub(crate) fn finish_lighting(&mut self, column: ChunkColumn) -> Option<ColumnLightRevision> {
+        let Some(ColumnResidency::Resident(resident)) = self.states.get_mut(&column) else {
+            return None;
+        };
+        resident.finish_lighting()
+    }
+
+    /// Publishes a staged resident only after exact lighting is available.
+    pub(crate) fn publish(&mut self, column: ChunkColumn) -> bool {
+        let Some(ColumnResidency::Resident(resident)) = self.states.get_mut(&column) else {
+            return false;
+        };
+        resident.publish()
+    }
+
+    /// Stops exposing a resident without discarding its loaded or lighting
+    /// state.
+    pub(crate) fn unpublish(&mut self, column: ChunkColumn) -> bool {
+        let Some(ColumnResidency::Resident(resident)) = self.states.get_mut(&column) else {
+            return false;
+        };
+        resident.unpublish()
     }
 
     pub(crate) fn fail_load(&mut self, ticket: ColumnLoadTicket, error: ChunkLoadError) -> bool {
@@ -289,7 +435,9 @@ impl ColumnResidencyLedger {
         }
         let matches = matches!(
             self.states.get(&ticket.column),
-            Some(ColumnResidency::Evicting { ticket: active }) if *active == ticket
+            Some(ColumnResidency::Evicting {
+                ticket: active, ..
+            }) if *active == ticket
         );
         if matches {
             self.states.remove(&ticket.column);
@@ -321,10 +469,17 @@ impl ColumnResidencyLedger {
         }
     }
 
+    pub(crate) fn resident_state(&self, column: ChunkColumn) -> Option<ResidentColumnState> {
+        match self.states.get(&column) {
+            Some(ColumnResidency::Resident(resident)) => Some(*resident),
+            _ => None,
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn eviction_ticket(&self, column: ChunkColumn) -> Option<ColumnEvictionTicket> {
         match self.states.get(&column) {
-            Some(ColumnResidency::Evicting { ticket }) => Some(*ticket),
+            Some(ColumnResidency::Evicting { ticket, .. }) => Some(*ticket),
             _ => None,
         }
     }
@@ -343,7 +498,7 @@ impl ColumnResidencyLedger {
                     stats.loading += 1;
                     stats.accepted_loads += *accepted as usize;
                 }
-                ColumnResidency::Resident => stats.resident += 1,
+                ColumnResidency::Resident(_) => stats.resident += 1,
                 ColumnResidency::Evicting { .. } => stats.evicting += 1,
                 ColumnResidency::Failed(failure) => {
                     stats.failed += 1;
@@ -440,7 +595,16 @@ mod tests {
         assert!(ledger.accept_load(ticket));
         assert!(!ledger.fail_load(ticket, transient_error()));
         assert!(ledger.activate_load(ticket));
-        assert_eq!(ledger.state(column), Some(&ColumnResidency::Resident));
+        assert_eq!(
+            ledger.state(column),
+            Some(&ColumnResidency::Resident(
+                ResidentColumnState::STAGED_PENDING
+            ))
+        );
+        assert_eq!(
+            ledger.resident_state(column),
+            Some(ResidentColumnState::STAGED_PENDING)
+        );
     }
 
     #[test]
@@ -518,6 +682,9 @@ mod tests {
         let column = ChunkColumn::new(6, -2);
         let mut ledger = ColumnResidencyLedger::new(Entity::PLACEHOLDER);
         let load = load_resident(&mut ledger, column, 1);
+        assert_eq!(ledger.finish_lighting(column), Some(ColumnLightRevision(1)));
+        assert!(ledger.publish(column));
+        let resident = ledger.resident_state(column).unwrap();
         let first = ledger.mark_undesired(column).unwrap();
         assert!(first.version() > load.version());
         assert_eq!(first.owner(), ledger.owner());
@@ -526,11 +693,17 @@ mod tests {
         assert_eq!(ledger.loading_ticket(column), None);
         assert_eq!(
             ledger.state(column),
-            Some(&ColumnResidency::Evicting { ticket: first })
+            Some(&ColumnResidency::Evicting {
+                ticket: first,
+                resident,
+            })
         );
 
         assert!(ledger.mark_desired(column));
-        assert_eq!(ledger.state(column), Some(&ColumnResidency::Resident));
+        assert_eq!(
+            ledger.state(column),
+            Some(&ColumnResidency::Resident(resident))
+        );
         assert!(!ledger.commit_eviction(first));
 
         let second = ledger.mark_undesired(column).unwrap();
@@ -550,6 +723,80 @@ mod tests {
 
         assert_eq!(first, second);
         assert!(ledger.commit_eviction(first));
+    }
+
+    #[test]
+    fn lighting_and_exposure_transition_independently() {
+        let column = ChunkColumn::new(-7, 12);
+        let mut ledger = ColumnResidencyLedger::new(Entity::PLACEHOLDER);
+        load_resident(&mut ledger, column, 1);
+
+        let pending = ledger.resident_state(column).unwrap();
+        assert_eq!(pending.lighting(), ColumnLighting::Pending);
+        assert_eq!(pending.exposure(), ColumnExposure::Staged);
+        assert_eq!(pending.light_revision(), ColumnLightRevision::INITIAL);
+        assert_eq!(pending.light_revision(), ColumnLightRevision(0));
+        assert!(pending.is_light_pending());
+        assert!(pending.is_staged());
+        assert!(!ledger.publish(column));
+        assert!(!ledger.mark_light_pending(column));
+
+        let first_revision = ledger.finish_lighting(column).unwrap();
+        assert_eq!(first_revision, ColumnLightRevision(1));
+        let staged_lit = ledger.resident_state(column).unwrap();
+        assert_eq!(staged_lit.lighting(), ColumnLighting::Lit);
+        assert_eq!(staged_lit.light_revision(), first_revision);
+        assert!(staged_lit.is_lit());
+        assert!(staged_lit.is_staged());
+        assert_eq!(ledger.finish_lighting(column), None);
+
+        assert!(ledger.publish(column));
+        let published_lit = ledger.resident_state(column).unwrap();
+        assert!(published_lit.is_published());
+        assert!(published_lit.is_lit());
+        assert!(!ledger.publish(column));
+
+        assert!(ledger.mark_light_pending(column));
+        let published_pending = ledger.resident_state(column).unwrap();
+        assert!(published_pending.is_published());
+        assert!(published_pending.is_light_pending());
+        assert_eq!(published_pending.light_revision(), first_revision);
+
+        let second_revision = ledger.finish_lighting(column).unwrap();
+        assert_eq!(second_revision, ColumnLightRevision(2));
+        assert!(ledger.resident_state(column).unwrap().is_published());
+        assert!(ledger.unpublish(column));
+        let staged_lit = ledger.resident_state(column).unwrap();
+        assert!(staged_lit.is_staged());
+        assert_eq!(staged_lit.light_revision(), second_revision);
+        assert!(!ledger.unpublish(column));
+    }
+
+    #[test]
+    fn eviction_freezes_resident_phase_until_reentry_or_commit() {
+        let column = ChunkColumn::new(8, 3);
+        let mut ledger = ColumnResidencyLedger::new(Entity::PLACEHOLDER);
+        load_resident(&mut ledger, column, 2);
+        assert!(ledger.finish_lighting(column).is_some());
+        let resident = ledger.resident_state(column).unwrap();
+        let ticket = ledger.mark_undesired(column).unwrap();
+
+        assert_eq!(ledger.resident_state(column), None);
+        assert!(!ledger.mark_light_pending(column));
+        assert_eq!(ledger.finish_lighting(column), None);
+        assert!(!ledger.publish(column));
+        assert!(!ledger.unpublish(column));
+        assert_eq!(
+            ledger.state(column),
+            Some(&ColumnResidency::Evicting { ticket, resident })
+        );
+
+        assert!(ledger.mark_desired(column));
+        assert_eq!(ledger.resident_state(column), Some(resident));
+        let next = ledger.mark_undesired(column).unwrap();
+        assert_ne!(next, ticket);
+        assert!(ledger.commit_eviction(next));
+        assert!(ledger.state(column).is_none());
     }
 
     #[test]

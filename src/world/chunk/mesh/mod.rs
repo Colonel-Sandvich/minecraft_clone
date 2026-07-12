@@ -20,7 +20,7 @@ pub use face::PackedFace;
 pub use mesher::LayerMesh;
 
 pub(crate) use blocks::DIRECTION_COUNT;
-pub(crate) use components::SharedLightDataKey;
+pub(crate) use components::{PreparedChunkMeshLight, SharedLightDataKey};
 
 /// Shader source exposed for CPU/GPU contract validation.
 pub const TERRAIN_SHADER_SOURCE: &str = render::VERTEX_PULLING_SHADER_SOURCE;

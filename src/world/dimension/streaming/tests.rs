@@ -4,10 +4,18 @@ use bevy::prelude::*;
 
 use super::*;
 use crate::{
+    block::BlockType,
     player::Player,
     world::{
-        chunk::{CHUNK_SIZE, ChunkColumn, ChunkNeedsLightRebuild, ChunkNeedsSave},
-        dimension::{Active, ChunkTaskPool, DesiredColumnView, Dimension, ViewDistance},
+        chunk::{
+            CHUNK_SIZE, Chunk, ChunkColumn, ChunkLight, ChunkNeedsMeshRebuild, ChunkNeedsSave,
+            LocalBlockPos,
+            mesh::{PreparedChunkMeshLight, padded_chunk_index},
+        },
+        dimension::{
+            Active, ChunkTaskPool, ColumnLightBudget, DesiredColumnView, Dimension, ViewDistance,
+            light::rebuild_chunk_light,
+        },
         generation::WorldMetadata,
         storage::{ChunkRepository, NoopChunkStore},
     },
@@ -38,6 +46,7 @@ fn streaming_app(height_chunks: usize) -> (App, Entity, Entity) {
         .insert_resource(repository)
         .insert_resource(ChunkTaskPool::new_for_test())
         .insert_resource(ColumnLoadBudget(1))
+        .insert_resource(ColumnStagingBudget(1))
         .insert_resource(ColumnActivationBudget(1))
         .insert_resource(ViewDistance::new(1))
         .init_resource::<DesiredColumnView>()
@@ -48,6 +57,41 @@ fn streaming_app(height_chunks: usize) -> (App, Entity, Entity) {
                 maintain_column_residency,
                 finish_column_loads,
                 start_column_loads,
+            )
+                .chain(),
+        );
+    let dimension = spawn_dimension(&mut app, metadata.height(), true);
+    let player = app
+        .world_mut()
+        .spawn((Player::default(), Transform::default()))
+        .id();
+    (app, dimension, player)
+}
+
+fn staged_lighting_app(height_chunks: usize) -> (App, Entity, Entity) {
+    let metadata = metadata(height_chunks);
+    let repository = ChunkRepository::new(NoopChunkStore::new(metadata.clone()));
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins)
+        .insert_resource(metadata.clone())
+        .insert_resource(repository)
+        .insert_resource(ChunkTaskPool::new_for_test())
+        .insert_resource(ColumnLoadBudget(9))
+        .insert_resource(ColumnStagingBudget(1))
+        .insert_resource(ColumnActivationBudget(9))
+        .insert_resource(ColumnLightBudget(100))
+        .insert_resource(ViewDistance::new(1))
+        .init_resource::<DesiredColumnView>()
+        .init_resource::<crate::world::chunk::ChunkPerfCounters>()
+        .add_systems(
+            Update,
+            (
+                refresh_desired_column_view,
+                maintain_column_residency,
+                finish_column_loads,
+                start_column_loads,
+                rebuild_chunk_light,
+                publish_lit_columns,
             )
                 .chain(),
         );
@@ -78,7 +122,7 @@ fn loaded_in_column(world: &World, dimension: Entity, column: ChunkColumn) -> us
 }
 
 #[test]
-fn activation_publishes_a_complete_column_in_one_update() {
+fn activation_stages_a_complete_pending_column_in_one_update() {
     let height_chunks = 3;
     let center = ChunkColumn::new(0, 0);
     let (mut app, dimension, _) = streaming_app(height_chunks);
@@ -99,8 +143,16 @@ fn activation_publishes_a_complete_column_in_one_update() {
     let world = app.world();
     let dimension_ref = world.get::<Dimension>(dimension).unwrap();
     assert_eq!(loaded_in_column(world, dimension, center), height_chunks);
-    for (_, entity) in dimension_ref.complete_loaded_column(center).unwrap() {
-        assert!(world.get::<ChunkNeedsLightRebuild>(entity).is_some());
+    assert_eq!(dimension_ref.published_chunk_count(), 0);
+    let state = dimension_ref.resident_column_state(center).unwrap();
+    assert!(state.is_staged());
+    assert!(state.is_light_pending());
+    assert_eq!(
+        world.get::<Visibility>(dimension_ref.column_incarnation(center).unwrap()),
+        Some(&Visibility::Hidden)
+    );
+    for (position, _) in dimension_ref.complete_loaded_column(center).unwrap() {
+        assert!(!dimension_ref.contains_published_chunk(position));
     }
 }
 
@@ -158,6 +210,25 @@ fn one_dirty_chunk_blocks_eviction_of_the_whole_column() {
         .unwrap()
         .loaded_chunk_entity(center.chunk(1))
         .unwrap();
+    let root = app
+        .world()
+        .get::<Dimension>(dimension)
+        .unwrap()
+        .column_incarnation(center)
+        .unwrap();
+    let chunk_entities = app
+        .world()
+        .get::<Dimension>(dimension)
+        .unwrap()
+        .complete_loaded_column(center)
+        .unwrap()
+        .into_iter()
+        .map(|(_, entity)| entity)
+        .collect::<Vec<_>>();
+    let grandchild = app
+        .world_mut()
+        .spawn((ChildOf(dirty), Name::new("test descendant")))
+        .id();
     app.world_mut().entity_mut(dirty).insert(ChunkNeedsSave);
     app.world_mut()
         .entity_mut(player)
@@ -182,6 +253,11 @@ fn one_dirty_chunk_blocks_eviction_of_the_whole_column() {
     app.world_mut().entity_mut(dirty).remove::<ChunkNeedsSave>();
     app.update();
     assert_eq!(loaded_in_column(app.world(), dimension, center), 0);
+    assert!(app.world().get_entity(root).is_err());
+    assert!(app.world().get_entity(grandchild).is_err());
+    for entity in chunk_entities {
+        assert!(app.world().get_entity(entity).is_err());
+    }
 }
 
 #[test]
@@ -194,4 +270,322 @@ fn column_budgets_count_columns_not_subchunks() {
     let dimension = app.world().get::<Dimension>(dimension).unwrap();
     assert_eq!(dimension.stream().loading_count(), 1);
     assert_eq!(dimension.loaded_chunk_count(), 0);
+}
+
+#[test]
+fn complete_dependency_halo_lights_and_publishes_center_exactly_once() {
+    let height_chunks = 2;
+    let center = ChunkColumn::new(0, 0);
+    let (mut app, dimension, _) = staged_lighting_app(height_chunks);
+
+    // Issue exactly the center's 3x3 dependency closure, then prevent the
+    // scheduler from filling later support positions while those tasks finish.
+    app.update();
+    app.world_mut().resource_mut::<ColumnLoadBudget>().0 = 0;
+    for expected_columns in 1..=8 {
+        update_until(&mut app, |world| {
+            world
+                .get::<Dimension>(dimension)
+                .unwrap()
+                .loaded_chunk_count()
+                == expected_columns * height_chunks
+        });
+        let world = app.world();
+        let dimension_ref = world.get::<Dimension>(dimension).unwrap();
+        assert_eq!(dimension_ref.published_chunk_count(), 0);
+        if let Some(state) = dimension_ref.resident_column_state(center) {
+            assert!(state.is_staged());
+            assert!(state.is_light_pending());
+        }
+        let perf = world.resource::<crate::world::chunk::ChunkPerfCounters>();
+        assert_eq!(perf.light_patch_runs, 0);
+        assert_eq!(perf.light_patch_calculation_chunks, 0);
+        assert_eq!(perf.light_patch_max_calculation_chunks, 0);
+        assert_eq!(perf.light_patch_scratch_chunks, 0);
+        assert_eq!(perf.light_patch_committed_columns, 0);
+        assert_eq!(perf.light_rebuild_targets, 0);
+    }
+    update_until(&mut app, |world| {
+        world
+            .get::<Dimension>(dimension)
+            .unwrap()
+            .contains_published_chunk(center.chunk(0))
+    });
+
+    let world = app.world();
+    let dimension_ref = world.get::<Dimension>(dimension).unwrap();
+    assert_eq!(dimension_ref.loaded_chunk_count(), 9 * height_chunks);
+    assert_eq!(dimension_ref.published_chunk_count(), height_chunks);
+    let center_state = dimension_ref.resident_column_state(center).unwrap();
+    assert!(center_state.is_lit());
+    assert!(center_state.is_published());
+    for dependency in center.chebyshev_neighborhood(1) {
+        assert!(dimension_ref.has_complete_loaded_column(dependency));
+        if dependency != center {
+            let state = dimension_ref.resident_column_state(dependency).unwrap();
+            assert!(state.is_staged());
+            assert!(state.is_light_pending());
+        }
+    }
+
+    let perf = world.resource::<crate::world::chunk::ChunkPerfCounters>();
+    assert_eq!(perf.light_patch_runs, 1);
+    assert_eq!(perf.light_patch_calculation_chunks, 9 * height_chunks);
+    assert_eq!(perf.light_patch_max_calculation_chunks, 9 * height_chunks);
+    assert_eq!(perf.light_patch_scratch_chunks, 8 * height_chunks);
+    assert_eq!(perf.light_patch_committed_columns, 1);
+    assert_eq!(perf.light_rebuild_targets, 0);
+    let center_revision = center_state.light_revision();
+
+    // The next nearest resident position is outside the finalized center's
+    // dependency closure. Its arrival must not reopen or relight the center.
+    app.world_mut().resource_mut::<ColumnLoadBudget>().0 = 1;
+    app.update();
+    app.world_mut().resource_mut::<ColumnLoadBudget>().0 = 0;
+    update_until(&mut app, |world| {
+        world
+            .get::<Dimension>(dimension)
+            .unwrap()
+            .loaded_chunk_count()
+            == 10 * height_chunks
+    });
+    app.update();
+
+    let world = app.world();
+    let dimension_ref = world.get::<Dimension>(dimension).unwrap();
+    assert_eq!(
+        dimension_ref
+            .resident_column_state(center)
+            .unwrap()
+            .light_revision(),
+        center_revision
+    );
+    let perf = world.resource::<crate::world::chunk::ChunkPerfCounters>();
+    assert_eq!(perf.light_patch_runs, 1);
+    assert_eq!(perf.light_patch_calculation_chunks, 9 * height_chunks);
+    assert_eq!(perf.light_patch_max_calculation_chunks, 9 * height_chunks);
+    assert_eq!(perf.light_patch_scratch_chunks, 8 * height_chunks);
+    assert_eq!(perf.light_patch_committed_columns, 1);
+    assert_eq!(perf.light_rebuild_targets, 0);
+}
+
+#[test]
+fn ready_three_by_three_core_is_coalesced_into_one_five_by_five_patch() {
+    let height_chunks = 2;
+    let (mut app, dimension, _) = streaming_app(height_chunks);
+    *app.world_mut().resource_mut::<ViewDistance>() = ViewDistance::new(2);
+    app.world_mut().resource_mut::<ColumnLoadBudget>().0 = 25;
+    app.world_mut().resource_mut::<ColumnStagingBudget>().0 = 25;
+    app.world_mut().resource_mut::<ColumnActivationBudget>().0 = 25;
+
+    app.update();
+    app.world_mut().resource_mut::<ColumnLoadBudget>().0 = 0;
+    update_until(&mut app, |world| {
+        world
+            .get::<Dimension>(dimension)
+            .unwrap()
+            .loaded_chunk_count()
+            == 25 * height_chunks
+    });
+    assert_eq!(
+        app.world()
+            .get::<Dimension>(dimension)
+            .unwrap()
+            .published_chunk_count(),
+        0
+    );
+
+    app.insert_resource(ColumnLightBudget(25 * height_chunks))
+        .init_resource::<crate::world::chunk::ChunkPerfCounters>()
+        .add_systems(Update, (rebuild_chunk_light, publish_lit_columns).chain());
+    app.update();
+
+    let world = app.world();
+    let dimension_ref = world.get::<Dimension>(dimension).unwrap();
+    assert_eq!(dimension_ref.loaded_chunk_count(), 25 * height_chunks);
+    assert_eq!(dimension_ref.published_chunk_count(), 9 * height_chunks);
+    for x in -1..=1 {
+        for z in -1..=1 {
+            let state = dimension_ref
+                .resident_column_state(ChunkColumn::new(x, z))
+                .unwrap();
+            assert!(state.is_lit());
+            assert!(state.is_published());
+        }
+    }
+    for x in -2..=2 {
+        for z in -2..=2 {
+            if (-1..=1).contains(&x) && (-1..=1).contains(&z) {
+                continue;
+            }
+            let state = dimension_ref
+                .resident_column_state(ChunkColumn::new(x, z))
+                .unwrap();
+            assert!(state.is_staged());
+            assert!(state.is_light_pending());
+            assert_eq!(state.light_revision(), ColumnLightRevision::INITIAL);
+        }
+    }
+
+    let perf = world.resource::<crate::world::chunk::ChunkPerfCounters>();
+    assert_eq!(perf.light_patch_runs, 1);
+    assert_eq!(perf.light_patch_calculation_chunks, 25 * height_chunks);
+    assert_eq!(perf.light_patch_max_calculation_chunks, 25 * height_chunks);
+    assert_eq!(perf.light_patch_scratch_chunks, 16 * height_chunks);
+    assert_eq!(perf.light_patch_committed_columns, 9);
+    assert_eq!(perf.light_rebuild_targets, 0);
+
+    // Split a runtime relight so the center commits while its right-hand
+    // published neighbor remains pending scratch. The center's prepared
+    // render payload must use the solved scratch halo without overwriting the
+    // neighbor's authoritative ChunkLight.
+    let center = ChunkColumn::new(0, 0);
+    let right = ChunkColumn::new(1, 0);
+    let right_position = right.chunk(0);
+    let emitter = LocalBlockPos::new(0, 8, 8);
+    let (center_revision, right_revision, center_entity, right_entity, old_right_light) = {
+        let dimension_ref = app.world().get::<Dimension>(dimension).unwrap();
+        let center_entity = dimension_ref.loaded_chunk_entity(center.chunk(0)).unwrap();
+        let right_entity = dimension_ref.loaded_chunk_entity(right_position).unwrap();
+        (
+            dimension_ref
+                .resident_column_state(center)
+                .unwrap()
+                .light_revision(),
+            dimension_ref
+                .resident_column_state(right)
+                .unwrap()
+                .light_revision(),
+            center_entity,
+            right_entity,
+            app.world().get::<ChunkLight>(right_entity).unwrap().clone(),
+        )
+    };
+    app.world_mut()
+        .get_mut::<Chunk>(center_entity)
+        .unwrap()
+        .set_cell_xyz(
+            15,
+            emitter.y(),
+            emitter.z(),
+            crate::world::chunk::ChunkCell::EMPTY,
+        );
+    app.world_mut()
+        .get_mut::<Chunk>(right_entity)
+        .unwrap()
+        .set_cell_xyz(
+            emitter.x(),
+            emitter.y(),
+            emitter.z(),
+            BlockType::Glowstone.into(),
+        );
+    {
+        let mut dimension_ref = app.world_mut().get_mut::<Dimension>(dimension).unwrap();
+        for dirty in right.chebyshev_neighborhood(1) {
+            dimension_ref.mark_column_light_pending(dirty);
+        }
+    }
+    app.world_mut().resource_mut::<ColumnLightBudget>().0 = 9 * height_chunks;
+    app.update();
+
+    let world = app.world();
+    let dimension_ref = world.get::<Dimension>(dimension).unwrap();
+    let center_state = dimension_ref.resident_column_state(center).unwrap();
+    let right_state = dimension_ref.resident_column_state(right).unwrap();
+    assert!(center_state.is_lit());
+    assert_ne!(center_state.light_revision(), center_revision);
+    assert!(right_state.is_light_pending());
+    assert!(right_state.is_published());
+    assert_eq!(right_state.light_revision(), right_revision);
+    assert_eq!(
+        world.get::<ChunkLight>(right_entity).unwrap(),
+        &old_right_light
+    );
+
+    assert_eq!(
+        world
+            .get::<ChunkLight>(center_entity)
+            .unwrap()
+            .block_light(LocalBlockPos::new(15, 8, 8)),
+        14
+    );
+    let prepared = world.get::<PreparedChunkMeshLight>(center_entity).unwrap();
+    let padded = padded_chunk_index(17, 9, 9);
+    let packed = ((prepared.data()[padded / 4] >> ((padded % 4) * 8)) & 0xFF) as u8;
+    assert_eq!(packed & 0x0F, 15);
+
+    let perf = world.resource::<crate::world::chunk::ChunkPerfCounters>();
+    assert_eq!(perf.light_patch_runs, 2);
+    assert_eq!(perf.light_patch_calculation_chunks, 34 * height_chunks);
+    assert_eq!(perf.light_patch_max_calculation_chunks, 25 * height_chunks);
+    assert_eq!(perf.light_patch_scratch_chunks, 24 * height_chunks);
+    assert_eq!(perf.light_patch_committed_columns, 10);
+    assert_eq!(perf.light_rebuild_targets, 0);
+}
+
+#[test]
+fn outgoing_published_column_becomes_hidden_lit_support_without_relighting() {
+    let center = ChunkColumn::new(0, 0);
+    let (mut app, dimension, player) = staged_lighting_app(1);
+    app.update();
+    app.world_mut().resource_mut::<ColumnLoadBudget>().0 = 0;
+    update_until(&mut app, |world| {
+        world
+            .get::<Dimension>(dimension)
+            .unwrap()
+            .contains_published_chunk(center.chunk(0))
+    });
+
+    let before = app
+        .world()
+        .get::<Dimension>(dimension)
+        .unwrap()
+        .resident_column_state(center)
+        .unwrap();
+    let root = app
+        .world()
+        .get::<Dimension>(dimension)
+        .unwrap()
+        .column_incarnation(center)
+        .unwrap();
+    app.world_mut()
+        .entity_mut(player)
+        .get_mut::<Transform>()
+        .unwrap()
+        .translation = Vec3::X * (CHUNK_SIZE as f32 * 2.0);
+    app.update();
+
+    let world = app.world();
+    let dimension_ref = world.get::<Dimension>(dimension).unwrap();
+    let after = dimension_ref.resident_column_state(center).unwrap();
+    assert!(after.is_staged());
+    assert!(after.is_lit());
+    assert_eq!(after.light_revision(), before.light_revision());
+    assert!(dimension_ref.contains_loaded_chunk(center.chunk(0)));
+    assert!(!dimension_ref.contains_published_chunk(center.chunk(0)));
+    assert_eq!(world.get::<Visibility>(root), Some(&Visibility::Hidden));
+    let center_entity = dimension_ref.loaded_chunk_entity(center.chunk(0)).unwrap();
+    assert!(world.get::<ChunkNeedsMeshRebuild>(center_entity).is_some());
+    let perf = world.resource::<crate::world::chunk::ChunkPerfCounters>();
+    assert_eq!(perf.light_patch_runs, 1);
+    assert_eq!(perf.light_patch_calculation_chunks, 9);
+    assert_eq!(perf.light_patch_max_calculation_chunks, 9);
+    assert_eq!(perf.light_patch_scratch_chunks, 8);
+    assert_eq!(perf.light_patch_committed_columns, 1);
+    assert_eq!(perf.light_rebuild_targets, 0);
+
+    // Returning before the evicted side of the old halo reloads must not
+    // expose the retained Lit column against incomplete raw topology.
+    app.world_mut()
+        .entity_mut(player)
+        .get_mut::<Transform>()
+        .unwrap()
+        .translation = Vec3::ZERO;
+    app.update();
+    let dimension_ref = app.world().get::<Dimension>(dimension).unwrap();
+    let center_state = dimension_ref.resident_column_state(center).unwrap();
+    assert!(center_state.is_staged());
+    assert!(center_state.is_lit());
+    assert!(!dimension_ref.contains_published_chunk(center.chunk(0)));
+    assert!(!dimension_ref.has_complete_resident_light_neighborhood(center));
 }

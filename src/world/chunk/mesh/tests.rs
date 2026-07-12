@@ -15,8 +15,8 @@ use crate::world::chunk::{
 use crate::world::dimension::{Active, Dimension};
 
 use super::{
-    ChunkMeshBlocks, ChunkMeshFaces, ChunkMeshLayer, ChunkMeshLight, face_ao_from_indices,
-    padded_chunk_index, water_below_pair, water_corner_heights,
+    ChunkMeshBlocks, ChunkMeshFaces, ChunkMeshLayer, ChunkMeshLight, PreparedChunkMeshLight,
+    face_ao_from_indices, padded_chunk_index, water_below_pair, water_corner_heights,
 };
 
 // Mirrors the removed mod.rs VERTEX_OFFSETS — only needed in test AO helpers.
@@ -643,6 +643,38 @@ fn light_upload_marker_updates_existing_chunk_mesh_light() {
         &child_light.shared_data(),
         &sibling_child_light.shared_data()
     ));
+}
+
+#[test]
+fn light_upload_prefers_the_authoritative_prepared_patch_payload() {
+    let mut app = light_upload_app();
+    let mut solved_light = ChunkLight::default();
+    solved_light.set_sky_light(LocalBlockPos::ZERO, 3);
+    solved_light.set_block_light(LocalBlockPos::ZERO, 12);
+    let prepared_data: Arc<[u32]> = ChunkMeshLight::build_padded_data(
+        ChunkPos::ZERO,
+        &HashMap::from([(ChunkPos::ZERO, &solved_light)]),
+    )
+    .into();
+
+    let chunk_entity = app
+        .world_mut()
+        .spawn((
+            ChunkPosition::from(ChunkPos::ZERO),
+            Chunk::default(),
+            ChunkLight::default(),
+            PreparedChunkMeshLight::new(prepared_data.clone()),
+            ChunkNeedsRenderLightUpload,
+        ))
+        .id();
+    register_active_chunk(&mut app, ChunkPos::ZERO, chunk_entity);
+    let child = spawn_light_child(app.world_mut(), chunk_entity, empty_light_data());
+
+    app.update();
+
+    let uploaded = app.world().get::<ChunkMeshLight>(child).unwrap();
+    assert_eq!(uploaded.data(), prepared_data.as_ref());
+    assert!(Arc::ptr_eq(&uploaded.shared_data(), &prepared_data));
 }
 
 #[test]

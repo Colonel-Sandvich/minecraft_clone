@@ -8,6 +8,8 @@ use super::super::{CHUNK_ISIZE, CHUNK_SIZE, ChunkBlockPos, ChunkColumn, ChunkPos
 use super::region::ChunkLightRegion;
 use super::storage::SKY_LIGHT_MAX;
 
+const _: () = assert!(CHUNK_SIZE > SKY_LIGHT_MAX as usize);
+
 pub(super) fn rebuild(region: &mut ChunkLightRegion<'_>) {
     let calculation_positions = region.calculation_positions();
     let mut sky_queue = VecDeque::new();

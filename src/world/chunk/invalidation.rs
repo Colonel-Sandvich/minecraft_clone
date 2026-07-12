@@ -190,10 +190,15 @@ impl ChunkInvalidationPlan {
         effects
     }
 
-    pub fn record_chunk_loaded(&mut self, chunk: ChunkPos, contents: ChunkContentCounts) {
-        let mut own = LIGHT_REBUILD;
+    /// Records the work needed when already-resident data becomes visible.
+    ///
+    /// Lighting and neighboring meshes already saw this chunk as support data,
+    /// so publication only initializes the chunk's own derived consumers and
+    /// wakes nearby fluid simulation at the newly writable boundary.
+    pub fn record_chunk_published(&mut self, chunk: ChunkPos, contents: ChunkContentCounts) {
+        let mut own = 0;
         if contents.rendered > 0 {
-            own |= MESH;
+            own |= MESH | RENDER_LIGHT_UPLOAD;
         }
         if contents.solid > 0 {
             own |= COLLIDER;
@@ -201,16 +206,12 @@ impl ChunkInvalidationPlan {
         if contents.fluids > 0 {
             own |= FLUID_STEP;
         }
-
         self.mark(chunk, ChunkInvalidationEffects::from_bits(own));
-        self.record_light_columns(chunk);
-        self.record_topology_neighbor_fanout(chunk);
-    }
 
-    pub fn record_chunk_unloaded(&mut self, chunk: ChunkPos) {
-        self.chunks.remove(&chunk);
-        self.record_light_columns(chunk);
-        self.record_topology_neighbor_fanout(chunk);
+        let fluid = ChunkInvalidationEffects::from_bits(FLUID_STEP);
+        for offset in NeighborOffset::all() {
+            self.mark_neighbor(chunk, offset, fluid);
+        }
     }
 
     /// Records consumers of a newly calculated chunk-light halo.
@@ -219,13 +220,6 @@ impl ChunkInvalidationPlan {
         self.mark(chunk, upload);
         for offset in NeighborOffset::all() {
             self.mark_neighbor(chunk, offset, upload);
-        }
-    }
-
-    fn record_topology_neighbor_fanout(&mut self, chunk: ChunkPos) {
-        let effects = ChunkInvalidationEffects::from_bits(MESH | FLUID_STEP | RENDER_LIGHT_UPLOAD);
-        for offset in NeighborOffset::all() {
-            self.mark_neighbor(chunk, offset, effects);
         }
     }
 
@@ -451,81 +445,34 @@ mod tests {
     }
 
     #[test]
-    fn chunk_load_initializes_self_and_all_topology_neighbors() {
-        let origin = ChunkPos::new(-2, 3, 7);
+    fn chunk_publication_initializes_consumers_without_topology_relighting() {
+        let origin = ChunkPos::new(-3, 2, 9);
         let mut plan = ChunkInvalidationPlan::new();
-        plan.record_chunk_loaded(
+
+        plan.record_chunk_published(
             origin,
             ChunkContentCounts {
-                rendered: 1,
+                rendered: 2,
                 solid: 1,
                 fluids: 1,
-                ..Default::default()
+                ..ChunkContentCounts::default()
             },
-        );
-
-        assert_eq!(plan.chunk_count(), 27);
-        assert_eq!(plan.light_column_count(), 9);
-        assert_eq!(
-            plan.light_columns().collect::<HashSet<_>>(),
-            light_column_neighborhood(origin)
         );
 
         let own = effects(&plan, origin);
         assert!(own.needs_mesh_rebuild());
+        assert!(own.needs_render_light_upload());
         assert!(own.needs_collider_rebuild());
-        assert!(own.needs_light_rebuild());
         assert!(own.needs_fluid_step());
+        assert!(!own.needs_light_rebuild());
         assert!(!own.needs_save());
-        assert!(!own.needs_render_light_upload());
+        assert_eq!(plan.light_column_count(), 0);
 
         for offset in NeighborOffset::all() {
-            let adjacent = effects(&plan, origin.offset(offset.as_ivec3()));
-            assert!(adjacent.needs_mesh_rebuild());
-            assert!(adjacent.needs_fluid_step());
-            assert!(adjacent.needs_render_light_upload());
-            assert!(!adjacent.needs_collider_rebuild());
-            assert!(!adjacent.needs_light_rebuild());
-            assert!(!adjacent.needs_save());
-        }
-    }
-
-    #[test]
-    fn empty_chunk_load_skips_content_dependent_self_work() {
-        let origin = ChunkPos::ZERO;
-        let mut plan = ChunkInvalidationPlan::new();
-        plan.record_chunk_loaded(origin, ChunkContentCounts::default());
-
-        let own = effects(&plan, origin);
-        assert!(!own.needs_mesh_rebuild());
-        assert!(!own.needs_collider_rebuild());
-        assert!(!own.needs_fluid_step());
-        assert!(own.needs_light_rebuild());
-    }
-
-    #[test]
-    fn chunk_unload_discards_self_work_and_invalidates_all_neighbors() {
-        let origin = ChunkPos::new(1, 2, 3);
-        let mut plan = ChunkInvalidationPlan::new();
-        plan.record_cell_delta(
-            origin,
-            LocalBlockPos::new(1, 1, 1),
-            delta(ChunkCell::EMPTY, BlockType::Stone.into()),
-        );
-        plan.record_chunk_unloaded(origin);
-
-        assert_eq!(plan.effects_for(origin), None);
-        assert_eq!(plan.chunk_count(), 26);
-        assert_eq!(plan.light_column_count(), 9);
-        assert_eq!(
-            plan.light_columns().collect::<HashSet<_>>(),
-            light_column_neighborhood(origin)
-        );
-        for offset in NeighborOffset::all() {
-            let adjacent = effects(&plan, origin.offset(offset.as_ivec3()));
-            assert!(adjacent.needs_mesh_rebuild());
-            assert!(adjacent.needs_fluid_step());
-            assert!(adjacent.needs_render_light_upload());
+            let neighbor = effects(&plan, origin + offset.as_ivec3());
+            assert!(neighbor.needs_fluid_step());
+            assert!(!neighbor.needs_mesh_rebuild());
+            assert!(!neighbor.needs_light_rebuild());
         }
     }
 

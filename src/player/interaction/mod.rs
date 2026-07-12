@@ -159,12 +159,12 @@ fn emit_block_interaction_requests(
 fn apply_block_interaction_requests(
     mut commands: Commands,
     mut requests: MessageReader<BlockInteractionRequest>,
-    dimension: Single<&Dimension, With<Active>>,
+    dimension: Single<&mut Dimension, With<Active>>,
     mut chunks: Query<(&mut Chunk, &mut ChunkContentCounts)>,
     mut hotbar: ResMut<Hotbar>,
     spatial_query: SpatialQuery,
 ) {
-    let dimension = dimension.into_inner();
+    let mut dimension = dimension.into_inner();
     let mut invalidations = ChunkInvalidationPlan::new();
 
     for request in requests.read().copied() {
@@ -209,7 +209,7 @@ fn apply_block_interaction_requests(
         }
     }
 
-    apply_chunk_invalidations(&mut commands, dimension, &invalidations);
+    apply_chunk_invalidations(&mut commands, &mut dimension, &invalidations);
 }
 
 fn placement_requires_actor_clearance(cell: ChunkCell) -> bool {

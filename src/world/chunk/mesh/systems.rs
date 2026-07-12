@@ -11,7 +11,7 @@ use super::super::{
     ChunkPerfCounters, ChunkPos, ChunkPosition,
 };
 use super::{
-    ChunkMeshBlocks, ChunkMeshFaces, ChunkMeshLayer, ChunkMeshLight,
+    ChunkMeshBlocks, ChunkMeshFaces, ChunkMeshLayer, ChunkMeshLight, PreparedChunkMeshLight,
     mesher::{self, LayerMesh},
 };
 
@@ -46,6 +46,7 @@ pub(super) fn rebuild_chunk_meshes(
     children_q: Query<&Children>,
     mut mesh_q: Query<&mut ChunkMeshLayer>,
     mesh_light_q: Query<&ChunkMeshLight>,
+    prepared_light_q: Query<&PreparedChunkMeshLight>,
     chunk_transform_q: Query<&Transform>,
     dimension: Option<Single<&Dimension, With<Active>>>,
 ) {
@@ -78,14 +79,19 @@ pub(super) fn rebuild_chunk_meshes(
         }
     }
 
-    let mut lights_by_pos: HashMap<ChunkPos, &ChunkLight> =
-        HashMap::with_capacity(dimension.loaded_chunk_count());
-    for (registered, entity) in dimension.iter_loaded_chunks() {
-        let Ok((actual, light)) = light_q.get(entity) else {
-            continue;
-        };
-        if actual.chunk_pos() == registered {
-            lights_by_pos.insert(registered, light);
+    let mut lights_by_pos = HashMap::default();
+    if active_dirty
+        .keys()
+        .any(|&entity| prepared_light_q.get(entity).is_err())
+    {
+        lights_by_pos.reserve(dimension.loaded_chunk_count());
+        for (registered, entity) in dimension.iter_loaded_chunks() {
+            let Ok((actual, light)) = light_q.get(entity) else {
+                continue;
+            };
+            if actual.chunk_pos() == registered {
+                lights_by_pos.insert(registered, light);
+            }
         }
     }
 
@@ -124,6 +130,7 @@ pub(super) fn rebuild_chunk_meshes(
             origin,
             &lights_by_pos,
             &mesh_light_q,
+            prepared_light_q.get(build.entity).ok(),
         );
         commands
             .entity(build.entity)
@@ -152,6 +159,7 @@ fn update_chunk_mesh_children(
     chunk_origin: Vec3,
     lights_by_pos: &HashMap<ChunkPos, &ChunkLight>,
     mesh_light_q: &Query<&ChunkMeshLight>,
+    prepared_light: Option<&PreparedChunkMeshLight>,
 ) {
     let existing = children
         .map(|children| {
@@ -168,7 +176,9 @@ fn update_chunk_mesh_children(
         .unwrap_or_default();
 
     let mut updated = Vec::with_capacity(layers.len());
-    let mut shared_light_data = existing_child_light_data(&existing, mesh_light_q);
+    let mut shared_light_data = prepared_light
+        .map(PreparedChunkMeshLight::shared_data)
+        .or_else(|| existing_child_light_data(&existing, mesh_light_q));
     for LayerMesh {
         material_layer,
         faces,
@@ -233,11 +243,13 @@ fn light_data_for_new_mesh_child(
         .clone()
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn upload_chunk_lights(
     mut commands: Commands,
     mut perf: Option<ResMut<ChunkPerfCounters>>,
     dirty_chunks_q: Query<(&ChunkPosition, Entity), With<ChunkNeedsRenderLightUpload>>,
     light_q: Query<(&ChunkPosition, &ChunkLight)>,
+    prepared_light_q: Query<&PreparedChunkMeshLight>,
     children_q: Query<&Children>,
     mut mesh_light_q: Query<&mut ChunkMeshLight>,
     dimension: Option<Single<&Dimension, With<Active>>>,
@@ -262,20 +274,29 @@ pub(super) fn upload_chunk_lights(
     }
     let upload_count = dirty_chunks.len();
 
-    let mut lights_by_pos: HashMap<ChunkPos, &ChunkLight> =
-        HashMap::with_capacity(dimension.loaded_chunk_count());
-    for (registered, entity) in dimension.iter_loaded_chunks() {
-        let Ok((actual, light)) = light_q.get(entity) else {
-            continue;
-        };
-        if actual.chunk_pos() == registered {
-            lights_by_pos.insert(registered, light);
+    let mut lights_by_pos = HashMap::default();
+    if dirty_chunks
+        .iter()
+        .any(|(_, entity)| prepared_light_q.get(*entity).is_err())
+    {
+        lights_by_pos.reserve(dimension.loaded_chunk_count());
+        for (registered, entity) in dimension.iter_loaded_chunks() {
+            let Ok((actual, light)) = light_q.get(entity) else {
+                continue;
+            };
+            if actual.chunk_pos() == registered {
+                lights_by_pos.insert(registered, light);
+            }
         }
     }
 
     for (chunk_pos, chunk_entity) in dirty_chunks {
-        let light_data: Arc<[u32]> =
-            ChunkMeshLight::build_padded_data(chunk_pos, &lights_by_pos).into();
+        let light_data = prepared_light_q
+            .get(chunk_entity)
+            .map(PreparedChunkMeshLight::shared_data)
+            .unwrap_or_else(|_| {
+                Arc::from(ChunkMeshLight::build_padded_data(chunk_pos, &lights_by_pos))
+            });
         if let Ok(children) = children_q.get(chunk_entity) {
             for child in children {
                 if let Ok(mut light) = mesh_light_q.get_mut(*child) {
