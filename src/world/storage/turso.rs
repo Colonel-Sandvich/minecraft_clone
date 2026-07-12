@@ -6,13 +6,14 @@ use std::{
 use bevy::prelude::*;
 
 use crate::world::{
-    chunk::{Chunk, ChunkHeightmap},
+    chunk::{Chunk, ChunkColumn, ChunkHeightmap, ChunkPos},
     generation::WorldMetadata,
 };
 
 use super::{
     ChunkStore, ChunkStoreError, ChunkStoreResult, SQL_CREATE_WORLD_METADATA,
-    SQL_INSERT_METADATA_VALUE, SQL_SELECT_METADATA_VALUE, StoredChunk, metadata_entries,
+    SQL_INSERT_METADATA_VALUE, SQL_SELECT_METADATA_VALUE, StoredChunk, StoredColumn,
+    metadata_entries,
 };
 
 const SQL_CREATE_CHUNKS: &str = "CREATE TABLE IF NOT EXISTS chunks (
@@ -118,13 +119,13 @@ impl ChunkStore for TursoChunkStore {
         })
     }
 
-    fn load_stored_column(&self, column: IVec2) -> ChunkStoreResult<Vec<StoredChunk>> {
+    fn load_stored_column(&self, column: ChunkColumn) -> ChunkStoreResult<StoredColumn> {
         self.runtime.block_on(async {
             let connection = self.database.connect()?;
             let mut rows = connection
                 .query(
                     SQL_SELECT_COLUMN,
-                    (column.x, column.y, self.metadata.height_chunks as i32),
+                    (column.x(), column.z(), self.metadata.height().chunks_i32()),
                 )
                 .await?;
             let mut chunks = Vec::new();
@@ -132,13 +133,15 @@ impl ChunkStore for TursoChunkStore {
                 let y = row.get::<i32>(0)?;
                 let bytes = row.get::<Vec<u8>>(1)?;
                 let chunk = Chunk::try_from_storage_bytes(&bytes)?;
-                chunks.push(StoredChunk {
-                    pos: ivec3(column.x, y, column.y),
+                chunks.push(StoredChunk::new(
+                    ChunkPos::new(column.x(), y, column.z()),
                     chunk,
-                });
+                ));
             }
+            let heightmap = load_column_heightmap(&connection, column.x(), column.z()).await?;
 
-            Ok(chunks)
+            StoredColumn::try_new(column, self.metadata.height(), heightmap, chunks)
+                .map_err(Into::into)
         })
     }
 

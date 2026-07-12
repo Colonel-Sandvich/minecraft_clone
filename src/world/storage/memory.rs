@@ -3,11 +3,11 @@ use std::{collections::HashMap, sync::Mutex};
 use bevy::prelude::*;
 
 use crate::world::{
-    chunk::{Chunk, ChunkHeightmap},
+    chunk::{Chunk, ChunkColumn, ChunkHeightmap, ChunkPos},
     generation::WorldMetadata,
 };
 
-use super::{ChunkStore, ChunkStoreError, ChunkStoreResult, StoredChunk};
+use super::{ChunkStore, ChunkStoreError, ChunkStoreResult, StoredChunk, StoredColumn};
 
 pub struct InMemoryChunkStore {
     metadata: WorldMetadata,
@@ -16,8 +16,8 @@ pub struct InMemoryChunkStore {
 
 #[derive(Default)]
 struct InMemoryChunkStoreInner {
-    chunks: HashMap<IVec3, Vec<u8>>,
-    column_heightmaps: HashMap<(i32, i32), Vec<u8>>,
+    chunks: HashMap<ChunkPos, Vec<u8>>,
+    column_heightmaps: HashMap<ChunkColumn, Vec<u8>>,
 }
 
 impl InMemoryChunkStore {
@@ -41,6 +41,7 @@ impl ChunkStore for InMemoryChunkStore {
     }
 
     fn load_chunk(&self, pos: IVec3) -> ChunkStoreResult<Option<(Chunk, ChunkHeightmap)>> {
+        let position = ChunkPos::from(pos);
         let inner = self
             .inner
             .lock()
@@ -48,21 +49,21 @@ impl ChunkStore for InMemoryChunkStore {
                 store: "in-memory chunk store",
             })?;
 
-        let Some(bytes) = inner.chunks.get(&pos) else {
+        let Some(bytes) = inner.chunks.get(&position) else {
             return Ok(None);
         };
 
         let chunk = Chunk::try_from_storage_bytes(bytes)?;
         let heightmap = inner
             .column_heightmaps
-            .get(&(pos.x, pos.z))
+            .get(&ChunkColumn::from(position))
             .map(|b| ChunkHeightmap::from_bytes(b))
             .unwrap_or_default();
 
         Ok(Some((chunk, heightmap)))
     }
 
-    fn load_stored_column(&self, column: IVec2) -> ChunkStoreResult<Vec<StoredChunk>> {
+    fn load_stored_column(&self, column: ChunkColumn) -> ChunkStoreResult<StoredColumn> {
         let inner = self
             .inner
             .lock()
@@ -70,18 +71,22 @@ impl ChunkStore for InMemoryChunkStore {
                 store: "in-memory chunk store",
             })?;
 
-        let mut chunks = inner
+        let chunks = inner
             .chunks
             .iter()
-            .filter(|(pos, _)| pos.x == column.x && pos.z == column.y)
-            .map(|(pos, bytes)| {
+            .filter(|(position, _)| ChunkColumn::from(**position) == column)
+            .map(|(&position, bytes)| {
                 let chunk = Chunk::try_from_storage_bytes(bytes)?;
-                Ok(StoredChunk { pos: *pos, chunk })
+                Ok(StoredChunk::new(position, chunk))
             })
             .collect::<ChunkStoreResult<Vec<_>>>()?;
-        chunks.sort_by_key(|chunk| chunk.pos.y);
+        let heightmap = inner
+            .column_heightmaps
+            .get(&column)
+            .map(|bytes| ChunkHeightmap::from_bytes(bytes))
+            .unwrap_or_default();
 
-        Ok(chunks)
+        StoredColumn::try_new(column, self.metadata.height(), heightmap, chunks).map_err(Into::into)
     }
 
     fn save_chunk(
@@ -90,6 +95,7 @@ impl ChunkStore for InMemoryChunkStore {
         chunk: &Chunk,
         heightmap: &ChunkHeightmap,
     ) -> ChunkStoreResult<()> {
+        let position = ChunkPos::from(pos);
         let mut inner = self
             .inner
             .lock()
@@ -97,10 +103,10 @@ impl ChunkStore for InMemoryChunkStore {
                 store: "in-memory chunk store",
             })?;
 
-        inner.chunks.insert(pos, chunk.to_storage_bytes());
+        inner.chunks.insert(position, chunk.to_storage_bytes());
         inner
             .column_heightmaps
-            .insert((pos.x, pos.z), heightmap.to_bytes());
+            .insert(ChunkColumn::from(position), heightmap.to_bytes());
         Ok(())
     }
 }
@@ -130,8 +136,8 @@ impl ChunkStore for NoopChunkStore {
         Ok(None)
     }
 
-    fn load_stored_column(&self, _column: IVec2) -> ChunkStoreResult<Vec<StoredChunk>> {
-        Ok(Vec::new())
+    fn load_stored_column(&self, column: ChunkColumn) -> ChunkStoreResult<StoredColumn> {
+        StoredColumn::empty(column, self.metadata.height()).map_err(Into::into)
     }
 
     fn save_chunk(

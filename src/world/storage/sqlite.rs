@@ -7,13 +7,13 @@ use bevy::prelude::*;
 use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::world::{
-    chunk::{Chunk, ChunkHeightmap},
+    chunk::{Chunk, ChunkColumn, ChunkHeightmap, ChunkPos},
     generation::WorldMetadata,
 };
 
 use super::{
     ChunkStore, ChunkStoreResult, SQL_CREATE_WORLD_METADATA, SQL_INSERT_METADATA_VALUE,
-    SQL_SELECT_METADATA_VALUE, StoredChunk, metadata_entries,
+    SQL_SELECT_METADATA_VALUE, StoredChunk, StoredColumn, metadata_entries,
 };
 
 const SQLITE_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -113,11 +113,11 @@ impl ChunkStore for SqliteChunkStore {
         Ok(Some((chunk, heightmap)))
     }
 
-    fn load_stored_column(&self, column: IVec2) -> ChunkStoreResult<Vec<StoredChunk>> {
+    fn load_stored_column(&self, column: ChunkColumn) -> ChunkStoreResult<StoredColumn> {
         let connection = self.open_connection()?;
         let mut statement = connection.prepare(SQL_SELECT_COLUMN)?;
         let rows = statement.query_map(
-            params![column.x, column.y, self.metadata.height_chunks as i32],
+            params![column.x(), column.z(), self.metadata.height().chunks_i32()],
             |row| Ok((row.get::<_, i32>(0)?, row.get::<_, Vec<u8>>(1)?)),
         )?;
 
@@ -125,13 +125,14 @@ impl ChunkStore for SqliteChunkStore {
         for row in rows {
             let (y, bytes) = row?;
             let chunk = Chunk::try_from_storage_bytes(&bytes)?;
-            chunks.push(StoredChunk {
-                pos: ivec3(column.x, y, column.y),
+            chunks.push(StoredChunk::new(
+                ChunkPos::new(column.x(), y, column.z()),
                 chunk,
-            });
+            ));
         }
+        let heightmap = load_column_heightmap(&connection, column.x(), column.z())?;
 
-        Ok(chunks)
+        StoredColumn::try_new(column, self.metadata.height(), heightmap, chunks).map_err(Into::into)
     }
 
     fn save_chunk(

@@ -8,7 +8,8 @@ use bevy::prelude::*;
 
 use super::*;
 use crate::block::BlockType;
-use crate::world::chunk::ChunkHeightmap;
+use crate::world::chunk::{ChunkColumn, ChunkHeightmap, ChunkPos};
+use crate::world::generation::WorldHeight;
 
 static NEXT_TEST_STORE_ID: AtomicU64 = AtomicU64::new(0);
 
@@ -98,13 +99,15 @@ fn default_heightmap() -> ChunkHeightmap {
 fn sqlite_store_roundtrips_full_chunks() {
     let metadata = WorldMetadata::with_seed(42);
     let store = test_sqlite_store(&metadata);
-    let pos = ivec3(-2, 1, 3);
+    let position = ChunkPos::new(-2, 1, 3);
     let mut chunk = chunk_with_block(BlockType::Grass);
     chunk.set_cell_xyz(15, 15, 15, BlockType::OakLeaves.into());
 
-    store.save_chunk(pos, &chunk, &default_heightmap()).unwrap();
+    store
+        .save_chunk(position.as_ivec3(), &chunk, &default_heightmap())
+        .unwrap();
 
-    let (loaded, _h) = store.load_chunk(pos).unwrap().unwrap();
+    let (loaded, _h) = store.load_chunk(position.as_ivec3()).unwrap().unwrap();
     assert_eq!(loaded, chunk);
 }
 
@@ -112,72 +115,79 @@ fn sqlite_store_roundtrips_full_chunks() {
 fn sqlite_store_loads_columns_by_xz() {
     let metadata = WorldMetadata::with_seed(42);
     let store = test_sqlite_store(&metadata);
-    let column = ivec2(-2, 3);
+    let column = ChunkColumn::new(-2, 3);
     let lower = chunk_with_block(BlockType::Grass);
     let upper = chunk_with_block(BlockType::Stone);
     let other_column = chunk_with_block(BlockType::Dirt);
 
     store
-        .save_chunk(ivec3(column.x, 3, column.y), &upper, &default_heightmap())
+        .save_chunk(column.chunk(3).as_ivec3(), &upper, &default_heightmap())
         .unwrap();
     store
-        .save_chunk(ivec3(column.x, 0, column.y), &lower, &default_heightmap())
+        .save_chunk(column.chunk(0).as_ivec3(), &lower, &default_heightmap())
         .unwrap();
     store
         .save_chunk(
-            ivec3(column.x + 1, 0, column.y),
+            ChunkPos::new(column.x() + 1, 0, column.z()).as_ivec3(),
             &other_column,
             &default_heightmap(),
         )
         .unwrap();
 
     let column_data = store.load_stored_column(column).unwrap();
-    assert_eq!(column_data.len(), 2);
-    assert_eq!(column_data[0].pos, ivec3(column.x, 0, column.y));
-    assert_eq!(column_data[0].chunk, lower);
-    assert_eq!(column_data[1].pos, ivec3(column.x, 3, column.y));
-    assert_eq!(column_data[1].chunk, upper);
+    assert_eq!(column_data.position(), column);
+    assert_eq!(column_data.chunks().len(), 2);
+    assert_eq!(column_data.chunks()[0].position, column.chunk(0));
+    assert_eq!(column_data.chunks()[0].chunk, lower);
+    assert_eq!(column_data.chunks()[1].position, column.chunk(3));
+    assert_eq!(column_data.chunks()[1].chunk, upper);
 }
 
 #[test]
 fn in_memory_store_loads_columns_by_xz() {
     let metadata = WorldMetadata::with_seed(42);
     let store = InMemoryChunkStore::new(metadata);
-    let column = ivec2(2, -1);
+    let column = ChunkColumn::new(2, -1);
     let lower = chunk_with_block(BlockType::OakLog);
     let upper = chunk_with_block(BlockType::OakLeaves);
 
     store
-        .save_chunk(ivec3(column.x, 2, column.y), &upper, &default_heightmap())
+        .save_chunk(column.chunk(2).as_ivec3(), &upper, &default_heightmap())
         .unwrap();
     store
-        .save_chunk(ivec3(column.x, 0, column.y), &lower, &default_heightmap())
+        .save_chunk(column.chunk(0).as_ivec3(), &lower, &default_heightmap())
         .unwrap();
 
     let column_data = store.load_stored_column(column).unwrap();
-    assert_eq!(column_data.len(), 2);
-    assert_eq!(column_data[0].pos, ivec3(column.x, 0, column.y));
-    assert_eq!(column_data[0].chunk, lower);
-    assert_eq!(column_data[1].pos, ivec3(column.x, 2, column.y));
-    assert_eq!(column_data[1].chunk, upper);
+    assert_eq!(column_data.chunks().len(), 2);
+    assert_eq!(column_data.chunks()[0].position, column.chunk(0));
+    assert_eq!(column_data.chunks()[0].chunk, lower);
+    assert_eq!(column_data.chunks()[1].position, column.chunk(2));
+    assert_eq!(column_data.chunks()[1].chunk, upper);
 }
 
 #[test]
 fn noop_store_discards_chunks() {
     let metadata = WorldMetadata::with_seed(42);
     let store = NoopChunkStore::new(metadata);
-    let pos = ivec3(1, 0, 2);
+    let position = ChunkPos::new(1, 0, 2);
 
     store
         .save_chunk(
-            pos,
+            position.as_ivec3(),
             &chunk_with_block(BlockType::Grass),
             &default_heightmap(),
         )
         .unwrap();
 
-    assert_eq!(store.load_chunk(pos).unwrap(), None);
-    assert_eq!(store.load_stored_column(ivec2(pos.x, pos.z)).unwrap(), []);
+    assert_eq!(store.load_chunk(position.as_ivec3()).unwrap(), None);
+    assert!(
+        store
+            .load_stored_column(ChunkColumn::from(position))
+            .unwrap()
+            .chunks()
+            .is_empty()
+    );
 }
 
 #[cfg(feature = "turso-store")]
@@ -185,13 +195,15 @@ fn noop_store_discards_chunks() {
 fn turso_store_roundtrips_full_chunks() {
     let metadata = WorldMetadata::with_seed(42);
     let store = test_turso_store(&metadata);
-    let pos = ivec3(-2, 1, 3);
+    let position = ChunkPos::new(-2, 1, 3);
     let mut chunk = chunk_with_block(BlockType::Grass);
     chunk.set_cell_xyz(15, 15, 15, BlockType::OakLeaves.into());
 
-    store.save_chunk(pos, &chunk, &default_heightmap()).unwrap();
+    store
+        .save_chunk(position.as_ivec3(), &chunk, &default_heightmap())
+        .unwrap();
 
-    let (loaded, _h) = store.load_chunk(pos).unwrap().unwrap();
+    let (loaded, _h) = store.load_chunk(position.as_ivec3()).unwrap().unwrap();
     assert_eq!(loaded, chunk);
 }
 
@@ -200,31 +212,33 @@ fn turso_store_roundtrips_full_chunks() {
 fn turso_store_loads_columns_by_xz() {
     let metadata = WorldMetadata::with_seed(42);
     let store = test_turso_store(&metadata);
-    let column = ivec2(-2, 3);
+    let column = ChunkColumn::new(-2, 3);
     let lower = chunk_with_block(BlockType::Grass);
     let upper = chunk_with_block(BlockType::Stone);
 
     store
-        .save_chunk(ivec3(column.x, 3, column.y), &upper, &default_heightmap())
+        .save_chunk(column.chunk(3).as_ivec3(), &upper, &default_heightmap())
         .unwrap();
     store
-        .save_chunk(ivec3(column.x, 0, column.y), &lower, &default_heightmap())
+        .save_chunk(column.chunk(0).as_ivec3(), &lower, &default_heightmap())
         .unwrap();
 
     let column_data = store.load_stored_column(column).unwrap();
-    assert_eq!(column_data.len(), 2);
-    assert_eq!(column_data[0].pos, ivec3(column.x, 0, column.y));
-    assert_eq!(column_data[0].chunk, lower);
-    assert_eq!(column_data[1].pos, ivec3(column.x, 3, column.y));
-    assert_eq!(column_data[1].chunk, upper);
+    assert_eq!(column_data.chunks().len(), 2);
+    assert_eq!(column_data.chunks()[0].position, column.chunk(0));
+    assert_eq!(column_data.chunks()[0].chunk, lower);
+    assert_eq!(column_data.chunks()[1].position, column.chunk(3));
+    assert_eq!(column_data.chunks()[1].chunk, upper);
 }
 
 #[test]
 fn sqlite_store_rejects_world_metadata_mismatch() {
     let metadata = WorldMetadata::with_seed(42);
     let store = test_sqlite_store(&metadata);
-    let mut incompatible = metadata.clone();
-    incompatible.height_chunks += 1;
+    let incompatible = metadata
+        .clone()
+        .with_height_chunks(metadata.height_chunks() + 1)
+        .unwrap();
 
     assert!(
         store
@@ -232,6 +246,70 @@ fn sqlite_store_rejects_world_metadata_mismatch() {
             .is_ok()
     );
     assert!(SqliteChunkStore::open(&store.path, &incompatible).is_err());
+}
+
+#[test]
+fn stored_columns_sort_chunks_and_retain_column_metadata() {
+    let column = ChunkColumn::new(-4, 7);
+    let heightmap = ChunkHeightmap {
+        heights: [[23; crate::world::chunk::CHUNK_SIZE]; crate::world::chunk::CHUNK_SIZE],
+    };
+    let lower = chunk_with_block(BlockType::Dirt);
+    let upper = chunk_with_block(BlockType::Stone);
+
+    let stored = StoredColumn::try_new(
+        column,
+        WorldHeight::new(4).unwrap(),
+        heightmap,
+        vec![
+            StoredChunk::new(column.chunk(3), upper.clone()),
+            StoredChunk::new(column.chunk(0), lower.clone()),
+        ],
+    )
+    .unwrap();
+
+    assert_eq!(stored.position(), column);
+    assert_eq!(stored.height(), WorldHeight::new(4).unwrap());
+    assert_eq!(stored.heightmap(), &heightmap);
+    assert_eq!(stored.chunks()[0], StoredChunk::new(column.chunk(0), lower));
+    assert_eq!(stored.chunks()[1], StoredChunk::new(column.chunk(3), upper));
+}
+
+#[test]
+fn stored_columns_reject_invalid_positions() {
+    let column = ChunkColumn::new(2, -3);
+    let chunk = Chunk::default();
+
+    assert!(matches!(
+        StoredColumn::try_new(
+            column,
+            WorldHeight::new(3).unwrap(),
+            ChunkHeightmap::default(),
+            vec![StoredChunk::new(ChunkPos::new(3, 0, -3), chunk.clone())],
+        ),
+        Err(StoredColumnError::WrongColumn { .. })
+    ));
+    assert!(matches!(
+        StoredColumn::try_new(
+            column,
+            WorldHeight::new(3).unwrap(),
+            ChunkHeightmap::default(),
+            vec![StoredChunk::new(column.chunk(3), chunk.clone())],
+        ),
+        Err(StoredColumnError::YOutOfRange { .. })
+    ));
+    assert!(matches!(
+        StoredColumn::try_new(
+            column,
+            WorldHeight::new(3).unwrap(),
+            ChunkHeightmap::default(),
+            vec![
+                StoredChunk::new(column.chunk(1), chunk.clone()),
+                StoredChunk::new(column.chunk(1), chunk),
+            ],
+        ),
+        Err(StoredColumnError::DuplicatePosition(position)) if position == column.chunk(1)
+    ));
 }
 
 #[test]
