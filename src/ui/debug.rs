@@ -336,7 +336,7 @@ fn draw_chunk_borders(
     let Some(dimension) = active_dimension else {
         return;
     };
-    for (position, entity) in dimension.iter_chunks() {
+    for (position, entity) in dimension.iter_published_chunks() {
         let Ok(actual_position) = chunks.get(entity) else {
             continue;
         };
@@ -375,7 +375,7 @@ fn packed_light_at<'a>(
     address: ChunkBlockPos,
     light_for_entity: impl FnOnce(Entity) -> Option<&'a ChunkLight>,
 ) -> Option<u8> {
-    let entity = dimension.chunk_entity(address.chunk())?;
+    let entity = dimension.published_chunk_entity(address.chunk())?;
     light_for_entity(entity).map(|light| light.packed_light(address.local()))
 }
 
@@ -399,7 +399,7 @@ mod tests {
         foreign_light.set_block_light(local, 12);
 
         let mut dimension = Dimension::default();
-        dimension.register_chunk(position, active_entity);
+        dimension.register_published_chunk(position, active_entity);
         let packed = packed_light_at(&dimension, address, |entity| match entity {
             entity if entity == active_entity => Some(&active_light),
             entity if entity == foreign_entity => Some(&foreign_light),

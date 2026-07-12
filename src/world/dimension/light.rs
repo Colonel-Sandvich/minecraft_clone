@@ -25,7 +25,7 @@ pub(crate) fn rebuild_chunk_light(
 
     let dimension = dimension.into_inner();
     let dirty_chunks = dimension
-        .iter_chunks()
+        .iter_published_chunks()
         .filter_map(|(registered_position, entity)| {
             let (_, actual_position) = needs_rebuild.get(entity).ok()?;
             (actual_position.chunk_pos() == registered_position)
@@ -53,7 +53,7 @@ pub(crate) fn rebuild_chunk_light(
 
     for &position in &targets {
         let entity = dimension
-            .chunk_entity(position)
+            .loaded_chunk_entity(position)
             .expect("light rebuild target must belong to the active dimension");
         let (actual_position, chunk, light, heightmap) = all_chunks
             .get(entity)
@@ -67,7 +67,7 @@ pub(crate) fn rebuild_chunk_light(
     }
 
     for position in region.required_boundary_positions() {
-        let Some(entity) = dimension.chunk_entity(position) else {
+        let Some(entity) = dimension.loaded_chunk_entity(position) else {
             continue;
         };
         let (actual_position, _, light, _) = all_chunks
@@ -84,7 +84,7 @@ pub(crate) fn rebuild_chunk_light(
     let mut invalidations = ChunkInvalidationPlan::new();
     for rebuilt in region.rebuild() {
         let entity = dimension
-            .chunk_entity(rebuilt.position)
+            .loaded_chunk_entity(rebuilt.position)
             .expect("rebuilt light target must remain in the active dimension");
         let light_changed = rebuilt.light_changed();
         let heightmap_changed = rebuilt.heightmap_changed();
@@ -117,7 +117,7 @@ fn light_rebuild_targets(
     for column in columns {
         for y in 0..height_chunks as i32 {
             let position = column.chunk(y);
-            if dimension.contains_chunk(position) {
+            if dimension.contains_loaded_chunk(position) {
                 targets.insert(position);
             }
         }
@@ -159,7 +159,7 @@ mod tests {
             .entity_mut(dimension)
             .get_mut::<Dimension>()
             .unwrap()
-            .register_chunk(position, entity);
+            .register_published_chunk(position.into(), entity);
     }
 
     fn solid_chunk(block: BlockType) -> Chunk {
@@ -365,7 +365,7 @@ mod tests {
             ))
             .id();
         let mut foreign_dimension = Dimension::default();
-        foreign_dimension.register_chunk(foreign_position, foreign_entity);
+        foreign_dimension.register_published_chunk(foreign_position.into(), foreign_entity);
         app.world_mut().spawn(foreign_dimension);
 
         app.update();
@@ -383,7 +383,7 @@ mod tests {
         for x in -2..=2 {
             for z in -2..=2 {
                 for y in 0..2 {
-                    dimension.register_chunk(ChunkPos::new(x, y, z), Entity::PLACEHOLDER);
+                    dimension.register_published_chunk(ChunkPos::new(x, y, z), Entity::PLACEHOLDER);
                 }
             }
         }
@@ -410,7 +410,7 @@ mod tests {
         let column = ChunkColumn::new(-8, 13);
         let mut dimension = Dimension::default();
         for y in [0, 2, 4] {
-            dimension.register_chunk(column.chunk(y), Entity::PLACEHOLDER);
+            dimension.register_published_chunk(column.chunk(y), Entity::PLACEHOLDER);
         }
 
         let targets = light_rebuild_targets(

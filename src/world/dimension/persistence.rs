@@ -210,7 +210,7 @@ pub(crate) fn finish_chunk_save_tasks(
                 let Ok(dimension) = dimensions.get(handle.owner) else {
                     continue;
                 };
-                if dimension.chunk_entity(handle.position) != Some(handle.entity) {
+                if dimension.loaded_chunk_entity(handle.position) != Some(handle.entity) {
                     continue;
                 }
                 let Ok((position, chunk, heightmap, Some(_))) = chunks.get(handle.entity) else {
@@ -265,7 +265,7 @@ pub(crate) fn start_chunk_save_tasks(
     dimension.assert_stream_owner(owner);
 
     let mut candidates = Vec::new();
-    for (registered_position, entity) in dimension.iter_chunks() {
+    for (registered_position, entity) in dimension.iter_loaded_chunks() {
         let Ok((position, chunk, _, Some(_))) = chunks.get(entity) else {
             continue;
         };
@@ -339,7 +339,7 @@ fn save_handle_is_current(
     let Ok(dimension) = dimensions.get(handle.owner) else {
         return false;
     };
-    if dimension.chunk_entity(handle.position) != Some(handle.entity) {
+    if dimension.loaded_chunk_entity(handle.position) != Some(handle.entity) {
         return false;
     }
     matches!(

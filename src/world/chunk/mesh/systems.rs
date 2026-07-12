@@ -58,7 +58,7 @@ pub(super) fn rebuild_chunk_meshes(
     };
     let dimension = dimension.into_inner();
     let active_dirty = dimension
-        .iter_chunks()
+        .iter_published_chunks()
         .filter_map(|(registered, entity)| {
             let (actual, _) = dirty_chunks_q.get(entity).ok()?;
             (actual.chunk_pos() == registered).then_some((entity, registered))
@@ -69,7 +69,7 @@ pub(super) fn rebuild_chunk_meshes(
     }
 
     let mut chunks_by_pos = HashMap::with_capacity(dimension.loaded_chunk_count());
-    for (registered, entity) in dimension.iter_chunks() {
+    for (registered, entity) in dimension.iter_loaded_chunks() {
         let Ok((actual, chunk)) = all_chunks_q.get(entity) else {
             continue;
         };
@@ -80,7 +80,7 @@ pub(super) fn rebuild_chunk_meshes(
 
     let mut lights_by_pos: HashMap<ChunkPos, &ChunkLight> =
         HashMap::with_capacity(dimension.loaded_chunk_count());
-    for (registered, entity) in dimension.iter_chunks() {
+    for (registered, entity) in dimension.iter_loaded_chunks() {
         let Ok((actual, light)) = light_q.get(entity) else {
             continue;
         };
@@ -251,7 +251,7 @@ pub(super) fn upload_chunk_lights(
     };
     let dimension = dimension.into_inner();
     let dirty_chunks = dimension
-        .iter_chunks()
+        .iter_published_chunks()
         .filter_map(|(registered, entity)| {
             let (actual, _) = dirty_chunks_q.get(entity).ok()?;
             (actual.chunk_pos() == registered).then_some((registered, entity))
@@ -264,7 +264,7 @@ pub(super) fn upload_chunk_lights(
 
     let mut lights_by_pos: HashMap<ChunkPos, &ChunkLight> =
         HashMap::with_capacity(dimension.loaded_chunk_count());
-    for (registered, entity) in dimension.iter_chunks() {
+    for (registered, entity) in dimension.iter_loaded_chunks() {
         let Ok((actual, light)) = light_q.get(entity) else {
             continue;
         };

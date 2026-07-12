@@ -17,6 +17,9 @@ use crate::world::dimension::{
     Active, ChunkTaskPool, DesiredColumnView, Dimension, ViewDistance, apply_chunk_invalidations,
 };
 
+#[derive(Component)]
+struct LoadedColumnRoot;
+
 pub(crate) fn refresh_desired_column_view(
     maybe_player: Option<Single<&Transform, With<Player>>>,
     metadata: Res<WorldMetadata>,
@@ -58,7 +61,7 @@ pub(crate) fn maintain_column_residency(
     let mut invalidations = ChunkInvalidationPlan::new();
     for ticket in eviction_tickets {
         let entities = dimension
-            .complete_column(ticket.column())
+            .complete_loaded_column(ticket.column())
             .expect("resident column must contain every configured Y chunk");
         if entities
             .iter()
@@ -70,10 +73,10 @@ pub(crate) fn maintain_column_residency(
         let removed = dimension
             .evict_column(ticket)
             .expect("current clean eviction ticket must commit");
-        for (position, entity) in removed {
+        for (position, _) in removed.chunks {
             invalidations.record_chunk_unloaded(position);
-            commands.entity(entity).despawn();
         }
+        commands.entity(removed.incarnation).despawn();
     }
 
     apply_chunk_invalidations(&mut commands, &dimension, &invalidations);
@@ -127,13 +130,21 @@ pub(crate) fn finish_column_loads(
         }
 
         let heightmap = loaded.heightmap;
+        let incarnation = commands
+            .spawn((
+                ChildOf(owner),
+                LoadedColumnRoot,
+                Transform::default(),
+                Visibility::default(),
+            ))
+            .id();
         let mut entities = Vec::with_capacity(loaded.height.chunks());
         for loaded_chunk in loaded.into_chunks() {
             let position = loaded_chunk.position;
             let counts = loaded_chunk.chunk.compute_content_counts();
             let entity = commands
                 .spawn((
-                    ChildOf(owner),
+                    ChildOf(incarnation),
                     ChunkPosition::from(position),
                     loaded_chunk.chunk,
                     ChunkLight::default(),
@@ -147,7 +158,8 @@ pub(crate) fn finish_column_loads(
             invalidations.record_chunk_loaded(position, counts);
         }
 
-        dimension.publish_accepted_column(ticket, entities);
+        dimension.install_accepted_column(ticket, incarnation, entities);
+        assert!(dimension.publish_column(ticket.column()));
     }
 
     apply_chunk_invalidations(&mut commands, &dimension, &invalidations);
@@ -174,7 +186,7 @@ pub(crate) fn start_column_loads(
         if started >= available {
             break;
         }
-        if dimension.has_any_chunk_in_column(column) {
+        if dimension.has_any_loaded_chunk_in_column(column) {
             continue;
         }
 

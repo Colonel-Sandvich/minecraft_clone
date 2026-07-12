@@ -170,7 +170,7 @@ fn apply_block_interaction_requests(
     for request in requests.read().copied() {
         let pos = request.block_pos();
 
-        let Some(chunk_entity) = dimension.chunk_entity(pos.chunk()) else {
+        let Some(chunk_entity) = dimension.published_chunk_entity(pos.chunk()) else {
             warn!("Interacted with missing chunk");
             continue;
         };

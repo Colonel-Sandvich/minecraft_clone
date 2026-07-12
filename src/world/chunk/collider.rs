@@ -68,7 +68,7 @@ fn rebuild_chunk_colliders(
         return;
     };
     for (position, chunk, meta, chunk_entity, children) in &chunks_q {
-        if dimension.chunk_entity(position.chunk_pos()) != Some(chunk_entity) {
+        if dimension.published_chunk_entity(position.chunk_pos()) != Some(chunk_entity) {
             continue;
         }
 
@@ -118,7 +118,7 @@ mod tests {
             .entity_mut(dimension)
             .get_mut::<Dimension>()
             .unwrap()
-            .register_chunk(position, chunk);
+            .register_published_chunk(position, chunk);
     }
 
     fn collider_child_count(world: &World, chunk: Entity) -> usize {

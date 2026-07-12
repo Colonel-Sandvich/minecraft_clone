@@ -415,7 +415,7 @@ fn build_light_rebuild_world(dirty_columns: usize, with_active_dimension: bool) 
         {
             let mut dimension = world.get_mut::<Dimension>(owner).unwrap();
             for (position, entity) in loaded_chunks {
-                dimension.register_chunk(position, entity);
+                dimension.register_published_chunk(ChunkPos::from_ivec3(position), entity);
             }
         }
         world.entity_mut(owner).insert(Active);
@@ -739,7 +739,7 @@ fn rebuild_chunk_light_iter_system(
 
     let fallback_loaded_chunks;
     let loaded_chunks = if let Some(dimension) = dimension.as_ref() {
-        dimension.chunk_entities()
+        dimension.loaded_chunk_entities()
     } else {
         fallback_loaded_chunks = all_chunks
             .iter()
@@ -781,7 +781,7 @@ fn rebuild_chunk_light_contiguous_system(
 
     let fallback_loaded_chunks;
     let loaded_chunks = if let Some(dimension) = dimension.as_ref() {
-        dimension.chunk_entities()
+        dimension.loaded_chunk_entities()
     } else {
         fallback_loaded_chunks = build_loaded_chunk_map_contiguous(&all_chunks);
         &fallback_loaded_chunks

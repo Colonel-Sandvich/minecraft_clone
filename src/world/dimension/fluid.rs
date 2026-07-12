@@ -71,7 +71,7 @@ fn step_chunk_fluids(
 
     let dimension = dimension.into_inner();
     let chunks_by_pos = dimension
-        .iter_chunks()
+        .iter_published_chunks()
         .map(|(position, entity)| (position.as_ivec3(), entity))
         .collect::<HashMap<_, _>>();
     let mut active_source_chunks = Vec::new();
@@ -212,7 +212,7 @@ mod tests {
             .entity_mut(dimension)
             .get_mut::<Dimension>()
             .unwrap()
-            .register_chunk(position, entity);
+            .register_published_chunk(position.into(), entity);
     }
 
     #[test]

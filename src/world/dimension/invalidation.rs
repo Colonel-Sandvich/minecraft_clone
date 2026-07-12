@@ -14,7 +14,7 @@ pub(crate) fn apply_chunk_invalidations(
     plan: &ChunkInvalidationPlan,
 ) {
     for (position, effects) in plan.chunks() {
-        let Some(entity) = dimension.chunk_entity(position) else {
+        let Some(entity) = dimension.published_chunk_entity(position) else {
             continue;
         };
         let mut entity = commands.entity(entity);
@@ -44,7 +44,7 @@ pub(crate) fn apply_chunk_invalidations(
         return;
     }
 
-    for (position, entity) in dimension.iter_chunks() {
+    for (position, entity) in dimension.iter_published_chunks() {
         if dirty_columns.contains(&ChunkColumn::from(position)) {
             commands.entity(entity).insert(ChunkNeedsLightRebuild);
         }
@@ -86,13 +86,13 @@ mod tests {
         let foreign_same_position = app.world_mut().spawn_empty().id();
 
         let mut dimension = Dimension::default();
-        dimension.register_chunk(origin, own);
-        dimension.register_chunk(origin.offset(IVec3::Y), upper);
-        dimension.register_chunk(origin.offset(IVec3::X), adjacent_column);
+        dimension.register_published_chunk(origin, own);
+        dimension.register_published_chunk(origin.offset(IVec3::Y), upper);
+        dimension.register_published_chunk(origin.offset(IVec3::X), adjacent_column);
         app.world_mut().spawn((dimension, Active));
 
         let mut other_dimension = Dimension::default();
-        other_dimension.register_chunk(origin, foreign_same_position);
+        other_dimension.register_published_chunk(origin, foreign_same_position);
         app.world_mut().spawn(other_dimension);
 
         let mut plan = ChunkInvalidationPlan::new();

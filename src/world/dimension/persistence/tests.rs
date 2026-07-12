@@ -80,7 +80,7 @@ fn spawn_dirty_chunk(
         app.world_mut()
             .get_mut::<Dimension>(owner)
             .unwrap()
-            .register_chunk(position, entity),
+            .register_published_chunk(position, entity),
         None
     );
     entity

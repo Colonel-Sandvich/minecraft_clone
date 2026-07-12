@@ -73,7 +73,7 @@ fn update_until(app: &mut App, mut predicate: impl FnMut(&World) -> bool) {
 fn loaded_in_column(world: &World, dimension: Entity, column: ChunkColumn) -> usize {
     let dimension = world.get::<Dimension>(dimension).unwrap();
     (0..dimension.height().chunks_i32())
-        .filter(|&y| dimension.contains_chunk(column.chunk(y)))
+        .filter(|&y| dimension.contains_loaded_chunk(column.chunk(y)))
         .count()
 }
 
@@ -99,7 +99,7 @@ fn activation_publishes_a_complete_column_in_one_update() {
     let world = app.world();
     let dimension_ref = world.get::<Dimension>(dimension).unwrap();
     assert_eq!(loaded_in_column(world, dimension, center), height_chunks);
-    for (_, entity) in dimension_ref.complete_column(center).unwrap() {
+    for (_, entity) in dimension_ref.complete_loaded_column(center).unwrap() {
         assert!(world.get::<ChunkNeedsLightRebuild>(entity).is_some());
     }
 }
@@ -156,7 +156,7 @@ fn one_dirty_chunk_blocks_eviction_of_the_whole_column() {
         .world()
         .get::<Dimension>(dimension)
         .unwrap()
-        .chunk_entity(center.chunk(1))
+        .loaded_chunk_entity(center.chunk(1))
         .unwrap();
     app.world_mut().entity_mut(dirty).insert(ChunkNeedsSave);
     app.world_mut()

@@ -812,7 +812,7 @@ fn register_dimension_chunk(app: &mut App, dimension: Entity, position: ChunkPos
         .entity_mut(dimension)
         .get_mut::<Dimension>()
         .unwrap()
-        .register_chunk(position, chunk);
+        .register_published_chunk(position, chunk);
 }
 
 fn empty_light_data() -> Arc<[u32]> {

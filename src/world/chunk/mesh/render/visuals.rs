@@ -184,7 +184,7 @@ fn chunk_cell_at_world(
 ) -> Option<ChunkCell> {
     let address = WorldBlockPos::from_ivec3(world_pos).split();
     chunks
-        .get(dimension.chunk_entity(address.chunk().as_ivec3())?)
+        .get(dimension.published_chunk_entity(address.chunk())?)
         .ok()
         .map(|chunk| chunk.get_cell(address.local().as_uvec3()))
 }

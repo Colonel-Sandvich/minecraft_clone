@@ -284,7 +284,7 @@ fn update_memory_snapshot(
     let target_chunks = desired_view.resident_chunk_count();
     let dimension_maps = dimensions_q
         .iter()
-        .map(|dimension| dimension.chunk_map_capacity() * size_of::<(ChunkPos, Entity)>())
+        .map(|dimension| dimension.chunk_registry_capacity() * size_of::<(ChunkPos, Entity)>())
         .sum::<usize>();
 
     let load_stats = dimensions_q.iter().map(Dimension::load_task_stats).fold(

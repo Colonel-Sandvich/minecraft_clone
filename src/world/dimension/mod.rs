@@ -6,7 +6,7 @@ mod streaming;
 mod view;
 
 use bevy::{
-    platform::collections::HashMap,
+    platform::collections::{HashMap, HashSet},
     prelude::*,
     tasks::{AsyncComputeTaskPool, Task},
 };
@@ -75,9 +75,21 @@ impl ChunkTaskPool {
 
 #[derive(Component)]
 pub struct Dimension {
-    chunks: HashMap<ChunkPos, Entity>,
+    loaded_chunks: HashMap<ChunkPos, Entity>,
+    published_chunks: HashSet<ChunkPos>,
+    loaded_columns: HashMap<ChunkColumn, LoadedColumnHandle>,
     height: WorldHeight,
     stream: DimensionStreamState,
+}
+
+#[derive(Debug)]
+struct LoadedColumnHandle {
+    incarnation: Entity,
+}
+
+pub(crate) struct EvictedColumn {
+    pub(crate) incarnation: Entity,
+    pub(crate) chunks: Vec<(ChunkPos, Entity)>,
 }
 
 #[cfg(test)]
@@ -90,7 +102,9 @@ impl Default for Dimension {
 impl Dimension {
     pub(crate) fn new(owner: Entity, height: WorldHeight) -> Self {
         Self {
-            chunks: HashMap::default(),
+            loaded_chunks: HashMap::default(),
+            published_chunks: HashSet::default(),
+            loaded_columns: HashMap::default(),
             height,
             stream: DimensionStreamState::new(owner),
         }
@@ -106,46 +120,102 @@ impl Dimension {
         self.height
     }
 
-    pub fn chunk_entity(&self, pos: impl Into<ChunkPos>) -> Option<Entity> {
-        self.chunks.get(&pos.into()).copied()
+    pub fn loaded_chunk_entity(&self, position: ChunkPos) -> Option<Entity> {
+        self.loaded_chunks.get(&position).copied()
     }
 
-    pub fn contains_chunk(&self, pos: impl Into<ChunkPos>) -> bool {
-        self.chunks.contains_key(&pos.into())
+    pub fn published_chunk_entity(&self, position: ChunkPos) -> Option<Entity> {
+        self.published_chunks
+            .contains(&position)
+            .then(|| self.loaded_chunk_entity(position))
+            .flatten()
     }
 
-    pub fn register_chunk(&mut self, pos: impl Into<ChunkPos>, entity: Entity) -> Option<Entity> {
-        let pos = pos.into();
+    pub fn contains_loaded_chunk(&self, position: ChunkPos) -> bool {
+        self.loaded_chunks.contains_key(&position)
+    }
+
+    pub fn contains_published_chunk(&self, position: ChunkPos) -> bool {
+        self.published_chunks.contains(&position)
+    }
+
+    /// Registers an independently constructed chunk as both loaded and
+    /// published. Streaming uses the full-column transition methods instead.
+    pub fn register_published_chunk(
+        &mut self,
+        position: ChunkPos,
+        entity: Entity,
+    ) -> Option<Entity> {
         assert!(
-            self.height.contains_chunk(pos),
+            self.height.contains_chunk(position),
             "registered chunk must be within the dimension height"
         );
-        self.chunks.insert(pos, entity)
+        assert!(
+            !self.loaded_columns.contains_key(&position.column()),
+            "independent chunk registration cannot alter a streamed column"
+        );
+        let previous = self.loaded_chunks.get(&position).copied();
+        let previous_published = self.published_chunks.contains(&position);
+        assert_eq!(
+            previous.is_some(),
+            previous_published,
+            "loaded and published test registrations must remain aligned"
+        );
+        self.loaded_chunks.insert(position, entity);
+        self.published_chunks.insert(position);
+        previous
     }
 
-    pub fn unregister_chunk(&mut self, pos: impl Into<ChunkPos>) -> Option<Entity> {
-        let pos = pos.into();
+    pub fn unregister_published_chunk(&mut self, position: ChunkPos) -> Option<Entity> {
         assert!(
-            self.height.contains_chunk(pos),
+            self.height.contains_chunk(position),
             "unregistered chunk must be within the dimension height"
         );
-        self.chunks.remove(&pos)
+        assert!(
+            !self.loaded_columns.contains_key(&position.column()),
+            "independent chunk unregistration cannot alter a streamed column"
+        );
+        let loaded = self.loaded_chunks.get(&position).copied();
+        let published = self.published_chunks.contains(&position);
+        assert_eq!(
+            loaded.is_some(),
+            published,
+            "loaded and published test registrations must remain aligned"
+        );
+        self.loaded_chunks.remove(&position);
+        self.published_chunks.remove(&position);
+        loaded
     }
 
-    pub fn iter_chunks(&self) -> impl ExactSizeIterator<Item = (ChunkPos, Entity)> + '_ {
-        self.chunks.iter().map(|(&pos, &entity)| (pos, entity))
+    pub fn iter_loaded_chunks(&self) -> impl ExactSizeIterator<Item = (ChunkPos, Entity)> + '_ {
+        self.loaded_chunks
+            .iter()
+            .map(|(&position, &entity)| (position, entity))
     }
 
-    pub fn chunk_entities(&self) -> &HashMap<ChunkPos, Entity> {
-        &self.chunks
+    pub fn iter_published_chunks(&self) -> impl ExactSizeIterator<Item = (ChunkPos, Entity)> + '_ {
+        self.published_chunks.iter().map(|&position| {
+            let entity = self
+                .loaded_chunk_entity(position)
+                .expect("published chunk must remain loaded");
+            (position, entity)
+        })
+    }
+
+    pub fn loaded_chunk_entities(&self) -> &HashMap<ChunkPos, Entity> {
+        &self.loaded_chunks
     }
 
     pub fn loaded_chunk_count(&self) -> usize {
-        self.chunks.len()
+        self.loaded_chunks.len()
     }
 
-    pub fn chunk_map_capacity(&self) -> usize {
-        self.chunks.capacity()
+    pub fn published_chunk_count(&self) -> usize {
+        self.published_chunks.len()
+    }
+
+    pub fn chunk_registry_capacity(&self) -> usize {
+        self.loaded_chunks.capacity() + self.published_chunks.capacity()
     }
 
     pub(crate) const fn stream(&self) -> &DimensionStreamState {
@@ -168,53 +238,97 @@ impl Dimension {
         );
     }
 
-    pub(crate) fn has_any_chunk_in_column(&self, column: ChunkColumn) -> bool {
-        (0..self.height.chunks_i32()).any(|y| self.contains_chunk(column.chunk(y)))
+    pub(crate) fn has_any_loaded_chunk_in_column(&self, column: ChunkColumn) -> bool {
+        (0..self.height.chunks_i32()).any(|y| self.contains_loaded_chunk(column.chunk(y)))
     }
 
-    pub(crate) fn complete_column(&self, column: ChunkColumn) -> Option<Vec<(ChunkPos, Entity)>> {
+    pub(crate) fn complete_loaded_column(
+        &self,
+        column: ChunkColumn,
+    ) -> Option<Vec<(ChunkPos, Entity)>> {
         (0..self.height.chunks_i32())
             .map(|y| {
                 let position = column.chunk(y);
-                self.chunk_entity(position).map(|entity| (position, entity))
+                self.loaded_chunk_entity(position)
+                    .map(|entity| (position, entity))
             })
             .collect()
     }
 
-    pub(crate) fn publish_accepted_column(
+    pub(crate) fn install_accepted_column(
         &mut self,
         ticket: ColumnLoadTicket,
+        incarnation: Entity,
         entities: Vec<Entity>,
     ) {
         assert_eq!(entities.len(), self.height.chunks());
         assert_eq!(ticket.owner(), self.stream.owner());
         assert!(
-            (0..self.height.chunks_i32()).all(|y| !self.contains_chunk(ticket.column().chunk(y))),
+            (0..self.height.chunks_i32())
+                .all(|y| !self.contains_loaded_chunk(ticket.column().chunk(y))),
             "loaded column must not overlap registered chunks"
         );
-
-        for (y, entity) in entities.into_iter().enumerate() {
-            self.chunks.insert(ticket.column().chunk(y as i32), entity);
-        }
+        assert!(
+            !self.loaded_columns.contains_key(&ticket.column()),
+            "loaded column incarnation must be unique"
+        );
         assert!(
             self.stream.activate_load(ticket),
-            "accepted column load must still be current when published"
+            "accepted column load must still be current when installed"
         );
+
+        for (y, &entity) in entities.iter().enumerate() {
+            let previous = self
+                .loaded_chunks
+                .insert(ticket.column().chunk(y as i32), entity);
+            debug_assert!(previous.is_none());
+        }
+        self.loaded_columns
+            .insert(ticket.column(), LoadedColumnHandle { incarnation });
     }
 
-    pub(crate) fn evict_column(
-        &mut self,
-        ticket: ColumnEvictionTicket,
-    ) -> Option<Vec<(ChunkPos, Entity)>> {
+    pub(crate) fn publish_column(&mut self, column: ChunkColumn) -> bool {
+        if !self.loaded_columns.contains_key(&column) {
+            return false;
+        }
+        let chunks = self
+            .complete_loaded_column(column)
+            .expect("loaded column must contain every configured Y chunk");
+        for (position, _) in chunks {
+            self.published_chunks.insert(position);
+        }
+        true
+    }
+
+    pub(crate) fn unpublish_column(&mut self, column: ChunkColumn) -> bool {
+        if !self.loaded_columns.contains_key(&column) {
+            return false;
+        }
+        let mut changed = false;
+        for y in 0..self.height.chunks_i32() {
+            changed |= self.published_chunks.remove(&column.chunk(y));
+        }
+        changed
+    }
+
+    pub(crate) fn evict_column(&mut self, ticket: ColumnEvictionTicket) -> Option<EvictedColumn> {
         assert_eq!(ticket.owner(), self.stream.owner());
-        let entities = self.complete_column(ticket.column())?;
+        let chunks = self.complete_loaded_column(ticket.column())?;
         if !self.stream.commit_eviction(ticket) {
             return None;
         }
-        for (position, _) in &entities {
-            self.chunks.remove(position);
+        for (position, entity) in &chunks {
+            self.published_chunks.remove(position);
+            assert_eq!(self.loaded_chunks.remove(position), Some(*entity));
         }
-        Some(entities)
+        let handle = self
+            .loaded_columns
+            .remove(&ticket.column())
+            .expect("resident column must retain its incarnation until eviction");
+        Some(EvictedColumn {
+            incarnation: handle.incarnation,
+            chunks,
+        })
     }
 }
 
@@ -302,19 +416,20 @@ mod tests {
         let entity = Entity::PLACEHOLDER;
         let mut dimension = Dimension::default();
 
-        assert_eq!(dimension.register_chunk(position, entity), None);
-        assert_eq!(dimension.chunk_entity(position), Some(entity));
-        assert_eq!(dimension.chunk_entity(position.as_ivec3()), Some(entity));
-        assert!(dimension.chunk_entities().contains_key(&position));
+        assert_eq!(dimension.register_published_chunk(position, entity), None);
+        assert_eq!(dimension.loaded_chunk_entity(position), Some(entity));
+        assert_eq!(dimension.published_chunk_entity(position), Some(entity));
         assert_eq!(
-            dimension.iter_chunks().collect::<Vec<_>>(),
+            dimension.iter_loaded_chunks().collect::<Vec<_>>(),
             vec![(position, entity)]
         );
         assert_eq!(
-            dimension.unregister_chunk(position.as_ivec3()),
-            Some(entity)
+            dimension.iter_published_chunks().collect::<Vec<_>>(),
+            vec![(position, entity)]
         );
-        assert!(!dimension.contains_chunk(position));
+        assert_eq!(dimension.unregister_published_chunk(position), Some(entity));
+        assert!(!dimension.contains_loaded_chunk(position));
+        assert!(!dimension.contains_published_chunk(position));
     }
 
     #[test]
@@ -322,9 +437,47 @@ mod tests {
     fn dimension_registry_rejects_out_of_range_chunk_positions() {
         let mut dimension = Dimension::default();
 
-        dimension.register_chunk(
+        dimension.register_published_chunk(
             ChunkPos::new(0, dimension.height().chunks_i32(), 0),
             Entity::PLACEHOLDER,
         );
+    }
+
+    #[test]
+    fn streamed_column_publication_is_a_view_over_loaded_entities() {
+        let height = WorldHeight::new(2).unwrap();
+        let column = ChunkColumn::new(-4, 7);
+        let entities = [Entity::from_bits(11), Entity::from_bits(12)];
+        let mut dimension = Dimension::new(Entity::PLACEHOLDER, height);
+        dimension.loaded_columns.insert(
+            column,
+            LoadedColumnHandle {
+                incarnation: Entity::from_bits(10),
+            },
+        );
+        for (y, entity) in entities.into_iter().enumerate() {
+            dimension
+                .loaded_chunks
+                .insert(column.chunk(y as i32), entity);
+        }
+
+        assert_eq!(dimension.loaded_chunk_count(), height.chunks());
+        assert_eq!(dimension.published_chunk_count(), 0);
+        assert!(dimension.publish_column(column));
+        for (y, entity) in entities.into_iter().enumerate() {
+            let position = column.chunk(y as i32);
+            assert_eq!(dimension.loaded_chunk_entity(position), Some(entity));
+            assert_eq!(dimension.published_chunk_entity(position), Some(entity));
+        }
+
+        assert!(dimension.unpublish_column(column));
+        assert_eq!(dimension.loaded_chunk_count(), height.chunks());
+        assert_eq!(dimension.published_chunk_count(), 0);
+        assert!(!dimension.unpublish_column(column));
+        for y in 0..height.chunks_i32() {
+            let position = column.chunk(y);
+            assert!(dimension.contains_loaded_chunk(position));
+            assert!(!dimension.contains_published_chunk(position));
+        }
     }
 }
