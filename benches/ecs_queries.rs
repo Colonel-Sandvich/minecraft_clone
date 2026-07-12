@@ -383,6 +383,7 @@ fn build_light_rebuild_world(dirty_columns: usize, with_active_dimension: bool) 
     let metadata = WorldMetadata::with_seed(1)
         .with_height_chunks(LIGHT_REBUILD_HEIGHT as usize)
         .unwrap();
+    let height = metadata.height();
     world.insert_resource(metadata);
     world.insert_resource(LightRebuildBenchStats::default());
 
@@ -410,11 +411,14 @@ fn build_light_rebuild_world(dirty_columns: usize, with_active_dimension: bool) 
     }
 
     if with_active_dimension {
-        let mut dimension = Dimension::default();
-        for (position, entity) in loaded_chunks {
-            dimension.register_chunk(position, entity);
+        let owner = Dimension::spawn_in_world(&mut world, height);
+        {
+            let mut dimension = world.get_mut::<Dimension>(owner).unwrap();
+            for (position, entity) in loaded_chunks {
+                dimension.register_chunk(position, entity);
+            }
         }
-        world.spawn((dimension, Active));
+        world.entity_mut(owner).insert(Active);
     }
 
     world

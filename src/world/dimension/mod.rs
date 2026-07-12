@@ -80,6 +80,7 @@ pub struct Dimension {
     stream: DimensionStreamState,
 }
 
+#[cfg(test)]
 impl Default for Dimension {
     fn default() -> Self {
         Self::new(Entity::PLACEHOLDER, WorldHeight::default())
@@ -93,6 +94,12 @@ impl Dimension {
             height,
             stream: DimensionStreamState::new(owner),
         }
+    }
+
+    pub fn spawn_in_world(world: &mut World, height: WorldHeight) -> Entity {
+        let owner = world.spawn_empty().id();
+        world.entity_mut(owner).insert(Self::new(owner, height));
+        owner
     }
 
     pub const fn height(&self) -> WorldHeight {
@@ -266,6 +273,18 @@ pub struct Active;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn immediate_spawn_binds_streaming_state_to_the_allocated_entity() {
+        let mut world = World::new();
+
+        let owner = Dimension::spawn_in_world(&mut world, WorldHeight::default());
+
+        world
+            .get::<Dimension>(owner)
+            .unwrap()
+            .assert_stream_owner(owner);
+    }
 
     #[test]
     fn dimension_registry_retains_typed_chunk_positions() {
