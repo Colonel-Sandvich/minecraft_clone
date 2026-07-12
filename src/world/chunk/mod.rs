@@ -27,7 +27,7 @@ pub use coords::{
     CHUNK_ISIZE, CHUNK_SIZE, CHUNK_VOLUME, ChunkBlockPos, ChunkColumn, ChunkIndex, ChunkPos,
     InvalidLocalBlockPos, LocalBlockPos, WorldBlockPos, chunk_linear_index,
 };
-pub use data::{CellStorage, Chunk, ChunkCellIter, ChunkPalette, PaletteEntry};
+pub use data::{CellStorage, Chunk, ChunkCellIter, ChunkPalette, ChunkRevision, PaletteEntry};
 pub use fluid_sim::FluidStepResult;
 pub(crate) use fluid_sim::{FluidSnapshot, simulate_fluid_step};
 pub use invalidation::{ChunkInvalidationEffects, ChunkInvalidationPlan, classify_cell_delta};

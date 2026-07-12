@@ -143,10 +143,30 @@ impl CellStorage {
     }
 }
 
+#[repr(transparent)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ChunkRevision(u64);
+
+impl ChunkRevision {
+    pub const INITIAL: Self = Self(0);
+
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+
+    fn advance(&mut self) {
+        self.0 = self
+            .0
+            .checked_add(1)
+            .expect("chunk content revision overflowed");
+    }
+}
+
 #[derive(Component, Debug, Clone)]
 pub struct Chunk {
     palette: ChunkPalette,
     cells: CellStorage,
+    content_revision: ChunkRevision,
 }
 
 impl PartialEq for Chunk {
@@ -162,6 +182,7 @@ impl Default for Chunk {
         Self {
             palette: ChunkPalette::default(),
             cells: CellStorage::default(),
+            content_revision: ChunkRevision::INITIAL,
         }
     }
 }
@@ -169,7 +190,7 @@ impl Default for Chunk {
 impl Chunk {
     pub fn filled(cell: ChunkCell) -> Self {
         let mut chunk = Self::default();
-        chunk.fill(cell);
+        chunk.fill_untracked(cell);
         chunk
     }
 
@@ -192,6 +213,10 @@ impl Chunk {
 
     pub fn cell_storage(&self) -> &CellStorage {
         &self.cells
+    }
+
+    pub const fn content_revision(&self) -> ChunkRevision {
+        self.content_revision
     }
 
     #[inline(always)]
@@ -275,7 +300,11 @@ impl Chunk {
 
     pub fn set_cell_linear(&mut self, index: usize, cell: ChunkCell) -> CellDelta {
         let old = self.cell_linear(index);
-        let new = self.write_cell_linear(index, cell);
+        if old != cell {
+            self.write_cell_linear(index, cell);
+            self.content_revision.advance();
+        }
+        let new = cell;
         CellDelta { old, new }
     }
 
@@ -308,6 +337,15 @@ impl Chunk {
     }
 
     pub fn fill(&mut self, cell: ChunkCell) {
+        if (0..CHUNK_VOLUME).all(|index| self.cell_linear(index) == cell) {
+            return;
+        }
+
+        self.fill_untracked(cell);
+        self.content_revision.advance();
+    }
+
+    fn fill_untracked(&mut self, cell: ChunkCell) {
         let palette_index = self.palette.get_or_insert_cell(cell);
         self.cells.fill(palette_index);
     }

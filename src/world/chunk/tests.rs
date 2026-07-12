@@ -5,6 +5,108 @@ use crate::block::BlockType;
 use super::*;
 
 #[test]
+fn semantic_no_op_writes_do_not_advance_content_revision() {
+    let mut chunk = Chunk::default();
+
+    assert_eq!(chunk.content_revision(), ChunkRevision::INITIAL);
+    assert_eq!(
+        chunk.set_cell(UVec3::ZERO, ChunkCell::EMPTY),
+        CellDelta {
+            old: ChunkCell::EMPTY,
+            new: ChunkCell::EMPTY,
+        }
+    );
+    assert_eq!(chunk.content_revision(), ChunkRevision::INITIAL);
+
+    chunk.set_cell(UVec3::ZERO, BlockType::Stone.into());
+    let changed = chunk.content_revision();
+    chunk.set_cell(UVec3::ZERO, BlockType::Stone.into());
+
+    assert_eq!(chunk.content_revision(), changed);
+}
+
+#[test]
+fn semantic_writes_advance_content_revision_once_each() {
+    let mut chunk = Chunk::default();
+
+    chunk.set_cell(UVec3::ZERO, BlockType::Stone.into());
+    assert_eq!(chunk.content_revision().get(), 1);
+
+    chunk.set_cell(UVec3::ZERO, BlockType::Dirt.into());
+    assert_eq!(chunk.content_revision().get(), 2);
+}
+
+#[test]
+fn fill_advances_once_only_when_contents_change() {
+    let mut chunk = Chunk::default();
+
+    chunk.fill(ChunkCell::EMPTY);
+    assert_eq!(chunk.content_revision(), ChunkRevision::INITIAL);
+
+    chunk.fill(BlockType::Stone.into());
+    assert_eq!(chunk.content_revision().get(), 1);
+
+    chunk.fill(BlockType::Stone.into());
+    assert_eq!(chunk.content_revision().get(), 1);
+
+    chunk.fill(BlockType::Dirt.into());
+    assert_eq!(chunk.content_revision().get(), 2);
+}
+
+#[test]
+fn raw_constructors_start_at_the_initial_content_revision() {
+    let filled = Chunk::filled(BlockType::Stone.into());
+    let generated = Chunk::from_cell_fn(|x, _, _| {
+        if x == 0 {
+            BlockType::Stone.into()
+        } else {
+            ChunkCell::EMPTY
+        }
+    });
+
+    assert_eq!(filled.content_revision(), ChunkRevision::INITIAL);
+    assert_eq!(generated.content_revision(), ChunkRevision::INITIAL);
+}
+
+#[test]
+fn clone_preserves_revision_without_coupling_future_mutations() {
+    let mut original = Chunk::default();
+    original.set_cell(UVec3::ZERO, BlockType::Stone.into());
+
+    let mut cloned = original.clone();
+    assert_eq!(cloned.content_revision(), original.content_revision());
+
+    cloned.set_cell(UVec3::X, BlockType::Dirt.into());
+    assert_eq!(cloned.content_revision().get(), 2);
+    assert_eq!(original.content_revision().get(), 1);
+}
+
+#[test]
+fn codec_roundtrip_resets_revision_but_preserves_semantic_equality() {
+    let mut chunk = Chunk::default();
+    chunk.set_cell(UVec3::ZERO, BlockType::Stone.into());
+
+    let decoded = Chunk::try_from_storage_bytes(&chunk.to_storage_bytes()).unwrap();
+
+    assert_eq!(decoded, chunk);
+    assert_eq!(decoded.content_revision(), ChunkRevision::INITIAL);
+    assert_ne!(decoded.content_revision(), chunk.content_revision());
+}
+
+#[test]
+fn chunk_equality_ignores_content_revision_history() {
+    let mut mutated_back_to_air = Chunk::default();
+    mutated_back_to_air.set_cell(UVec3::ZERO, BlockType::Stone.into());
+    mutated_back_to_air.set_cell(UVec3::ZERO, ChunkCell::EMPTY);
+
+    assert_eq!(mutated_back_to_air, Chunk::default());
+    assert_ne!(
+        mutated_back_to_air.content_revision(),
+        ChunkRevision::INITIAL
+    );
+}
+
+#[test]
 fn chunk_storage_bytes_roundtrip_in_iteration_order() {
     let mut chunk = Chunk::default();
     chunk.set_cell_xyz(0, 0, 0, BlockType::Grass.into());
