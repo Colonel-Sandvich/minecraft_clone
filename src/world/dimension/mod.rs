@@ -2,6 +2,7 @@ mod fluid;
 mod invalidation;
 mod light;
 mod light_patch;
+mod light_task;
 mod persistence;
 mod streaming;
 mod view;
@@ -20,12 +21,13 @@ use core::future::Future;
 
 use self::{
     fluid::DimensionFluidPlugin,
-    light::rebuild_chunk_light,
+    light::{cancel_inactive_dimension_light_tasks, rebuild_chunk_light},
+    light_task::DimensionLightTasks,
     persistence::{ChunkSaveBudget, finish_chunk_save_tasks, start_chunk_save_tasks},
     streaming::{
         ColumnExposure, ColumnLightRevision, ColumnLighting, DimensionStreamState,
-        ResidentColumnState, finish_column_loads, maintain_column_residency, publish_lit_columns,
-        refresh_desired_column_view, start_column_loads,
+        LightPatchTicket, ResidentColumnState, finish_column_loads, maintain_column_residency,
+        publish_lit_columns, refresh_desired_column_view, start_column_loads,
     },
 };
 use super::{
@@ -83,6 +85,7 @@ pub struct Dimension {
     loaded_columns: HashMap<ChunkColumn, LoadedColumnHandle>,
     height: WorldHeight,
     stream: DimensionStreamState,
+    light_tasks: DimensionLightTasks,
 }
 
 #[derive(Debug)]
@@ -109,6 +112,7 @@ impl Dimension {
             loaded_columns: HashMap::default(),
             height,
             stream: DimensionStreamState::new(owner),
+            light_tasks: DimensionLightTasks::default(),
         }
     }
 
@@ -232,6 +236,14 @@ impl Dimension {
         &mut self.stream
     }
 
+    pub(crate) const fn light_tasks(&self) -> &DimensionLightTasks {
+        &self.light_tasks
+    }
+
+    pub(crate) fn light_tasks_mut(&mut self) -> &mut DimensionLightTasks {
+        &mut self.light_tasks
+    }
+
     pub(crate) fn assert_stream_owner(&self, owner: Entity) {
         assert_eq!(
             self.stream.owner(),
@@ -343,21 +355,43 @@ impl Dimension {
     }
 
     pub(crate) fn mark_column_light_pending(&mut self, column: ChunkColumn) -> bool {
-        self.stream.mark_light_pending(column)
+        let active = self.stream.light_patch_ticket(column);
+        let changed = self.stream.mark_light_pending(column);
+        if let Some(ticket) = active {
+            self.light_tasks.cancel(ticket);
+        }
+        changed
     }
 
-    pub(crate) fn finish_column_lighting(
+    pub(crate) fn begin_column_light_patch(
         &mut self,
-        column: ChunkColumn,
-    ) -> Option<ColumnLightRevision> {
-        let revision = self.stream.finish_lighting(column)?;
-        debug_assert_eq!(
-            self.stream
-                .resident_state(column)
-                .map(ResidentColumnState::light_revision),
-            Some(revision)
-        );
-        Some(revision)
+        commit_columns: &[ChunkColumn],
+    ) -> Option<LightPatchTicket> {
+        self.stream.begin_light_patch(commit_columns)
+    }
+
+    pub(crate) fn finish_column_light_patch(
+        &mut self,
+        ticket: LightPatchTicket,
+    ) -> Option<Vec<(ChunkColumn, ColumnLightRevision)>> {
+        self.stream.finish_light_patch(ticket)
+    }
+
+    pub(crate) fn cancel_column_light_patch(&mut self, ticket: LightPatchTicket) -> bool {
+        let task_cancelled = self.light_tasks.cancel(ticket);
+        let claim_cancelled = self.stream.cancel_light_patch(ticket);
+        task_cancelled || claim_cancelled
+    }
+
+    pub(crate) fn cancel_light_task_depending_on(&mut self, column: ChunkColumn) -> bool {
+        if !self.light_tasks.active_depends_on(column) {
+            return false;
+        }
+        let ticket = self
+            .light_tasks
+            .active_ticket()
+            .expect("dependent light task must have an active ticket");
+        self.cancel_column_light_patch(ticket)
     }
 
     pub(crate) fn publish_lit_column(&mut self, column: ChunkColumn) -> bool {
@@ -456,6 +490,7 @@ impl Plugin for DimensionPlugin {
         app.add_systems(
             Update,
             (
+                cancel_inactive_dimension_light_tasks,
                 refresh_desired_column_view,
                 maintain_column_residency,
                 finish_column_loads,

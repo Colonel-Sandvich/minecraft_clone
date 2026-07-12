@@ -1,4 +1,7 @@
-use bevy::{platform::collections::HashMap, prelude::Entity};
+use bevy::{
+    platform::collections::{HashMap, HashSet},
+    prelude::Entity,
+};
 
 use crate::world::{chunk::ChunkColumn, loading::ChunkLoadError};
 
@@ -39,6 +42,28 @@ pub(crate) struct ColumnEvictionTicket {
     version: u64,
 }
 
+/// Owner-bound authority for one exact, potentially multi-column light patch.
+///
+/// Every commit column stores the same ticket while the patch is calculating.
+/// The ledger retains the exact membership so completion and cancellation can
+/// transition the whole patch atomically.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct LightPatchTicket {
+    owner: Entity,
+    version: u64,
+}
+
+impl LightPatchTicket {
+    pub(crate) const fn owner(self) -> Entity {
+        self.owner
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn version(self) -> u64 {
+        self.version
+    }
+}
+
 impl ColumnEvictionTicket {
     pub(crate) const fn owner(self) -> Entity {
         self.owner
@@ -73,6 +98,7 @@ pub(crate) enum ColumnResidency {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ColumnLighting {
     Pending,
+    Calculating(LightPatchTicket),
     Lit,
 }
 
@@ -135,6 +161,13 @@ impl ResidentColumnState {
         matches!(self.lighting, ColumnLighting::Lit)
     }
 
+    pub(crate) const fn light_patch_ticket(self) -> Option<LightPatchTicket> {
+        match self.lighting {
+            ColumnLighting::Calculating(ticket) => Some(ticket),
+            ColumnLighting::Pending | ColumnLighting::Lit => None,
+        }
+    }
+
     pub(crate) const fn is_staged(self) -> bool {
         matches!(self.exposure, ColumnExposure::Staged)
     }
@@ -143,16 +176,8 @@ impl ResidentColumnState {
         matches!(self.exposure, ColumnExposure::Published)
     }
 
-    fn mark_light_pending(&mut self) -> bool {
-        if self.is_light_pending() {
-            return false;
-        }
-        self.lighting = ColumnLighting::Pending;
-        true
-    }
-
-    fn finish_lighting(&mut self) -> Option<ColumnLightRevision> {
-        if !self.is_light_pending() {
+    fn finish_lighting(&mut self, ticket: LightPatchTicket) -> Option<ColumnLightRevision> {
+        if self.light_patch_ticket() != Some(ticket) {
             return None;
         }
         self.light_revision = self.light_revision.advance();
@@ -225,6 +250,7 @@ pub(crate) struct ColumnResidencyLedger {
     owner: Entity,
     next_version: u64,
     states: HashMap<ChunkColumn, ColumnResidency>,
+    light_patches: HashMap<LightPatchTicket, Box<[ChunkColumn]>>,
 }
 
 impl ColumnResidencyLedger {
@@ -233,6 +259,7 @@ impl ColumnResidencyLedger {
             owner,
             next_version: 1,
             states: HashMap::new(),
+            light_patches: HashMap::new(),
         }
     }
 
@@ -255,6 +282,13 @@ impl ColumnResidencyLedger {
     /// Marks a column unwanted. Loads and failures are discarded immediately;
     /// resident columns receive an owner/version-bound eviction ticket.
     pub(crate) fn mark_undesired(&mut self, column: ChunkColumn) -> Option<ColumnEvictionTicket> {
+        if let Some(ticket) = self.light_patch_ticket(column) {
+            assert!(
+                self.cancel_light_patch(ticket),
+                "calculating column must belong to an active light patch"
+            );
+        }
+
         match self.states.remove(&column) {
             Some(ColumnResidency::Resident(resident)) => {
                 let ticket = self.issue_eviction_ticket(column);
@@ -349,21 +383,143 @@ impl ColumnResidencyLedger {
         true
     }
 
-    /// Invalidates derived light while preserving whether the column is
-    /// currently staged or published.
+    /// Invalidates derived light while preserving exposure and revision.
+    /// Invalidating any calculating member cancels its entire patch.
     pub(crate) fn mark_light_pending(&mut self, column: ChunkColumn) -> bool {
-        let Some(ColumnResidency::Resident(resident)) = self.states.get_mut(&column) else {
+        let Some(ColumnResidency::Resident(resident)) = self.states.get(&column) else {
             return false;
         };
-        resident.mark_light_pending()
+        match resident.lighting() {
+            ColumnLighting::Pending => false,
+            ColumnLighting::Lit => {
+                let Some(ColumnResidency::Resident(resident)) = self.states.get_mut(&column) else {
+                    unreachable!("resident state was just observed")
+                };
+                resident.lighting = ColumnLighting::Pending;
+                true
+            }
+            ColumnLighting::Calculating(ticket) => {
+                assert!(
+                    self.cancel_light_patch(ticket),
+                    "calculating column must belong to an active light patch"
+                );
+                true
+            }
+        }
     }
 
-    /// Records an exact lighting result for a currently pending resident.
-    pub(crate) fn finish_lighting(&mut self, column: ChunkColumn) -> Option<ColumnLightRevision> {
-        let Some(ColumnResidency::Resident(resident)) = self.states.get_mut(&column) else {
+    /// Atomically claims an exact set of pending resident commit columns.
+    ///
+    /// Empty, duplicate, non-resident, or non-pending sets are rejected without
+    /// changing any column state.
+    pub(crate) fn begin_light_patch(
+        &mut self,
+        commit_columns: &[ChunkColumn],
+    ) -> Option<LightPatchTicket> {
+        if commit_columns.is_empty() {
             return None;
+        }
+
+        let mut unique = HashSet::new();
+        if !commit_columns.iter().all(|&column| unique.insert(column))
+            || !commit_columns.iter().all(|column| {
+                matches!(
+                    self.states.get(column),
+                    Some(ColumnResidency::Resident(resident))
+                        if resident.is_light_pending()
+                )
+            })
+        {
+            return None;
+        }
+
+        let ticket = self.issue_light_patch_ticket();
+        for column in commit_columns {
+            let Some(ColumnResidency::Resident(resident)) = self.states.get_mut(column) else {
+                unreachable!("light patch commit set was prevalidated")
+            };
+            resident.lighting = ColumnLighting::Calculating(ticket);
+        }
+        let previous = self
+            .light_patches
+            .insert(ticket, commit_columns.to_vec().into_boxed_slice());
+        debug_assert!(previous.is_none());
+        Some(ticket)
+    }
+
+    /// Commits one exact active patch only while every member is still a
+    /// resident calculating under the supplied ticket.
+    pub(crate) fn finish_light_patch(
+        &mut self,
+        ticket: LightPatchTicket,
+    ) -> Option<Vec<(ChunkColumn, ColumnLightRevision)>> {
+        if ticket.owner != self.owner {
+            return None;
+        }
+        let columns = self.light_patches.get(&ticket)?;
+        if !columns.iter().all(|column| {
+            matches!(
+                self.states.get(column),
+                Some(ColumnResidency::Resident(resident))
+                    if resident.light_patch_ticket() == Some(ticket)
+            )
+        }) {
+            return None;
+        }
+
+        let columns = self
+            .light_patches
+            .remove(&ticket)
+            .expect("prevalidated light patch must remain active");
+        let mut revisions = Vec::with_capacity(columns.len());
+        for column in columns {
+            let Some(ColumnResidency::Resident(resident)) = self.states.get_mut(&column) else {
+                unreachable!("light patch members were prevalidated")
+            };
+            let revision = resident
+                .finish_lighting(ticket)
+                .expect("light patch ticket must match every prevalidated member");
+            revisions.push((column, revision));
+        }
+        Some(revisions)
+    }
+
+    /// Cancels one exact active patch and returns every matching calculating
+    /// member to pending without changing exposure or authoritative revision.
+    pub(crate) fn cancel_light_patch(&mut self, ticket: LightPatchTicket) -> bool {
+        if ticket.owner != self.owner {
+            return false;
+        }
+        let Some(columns) = self.light_patches.get(&ticket) else {
+            return false;
         };
-        resident.finish_lighting()
+        if !columns.iter().all(|column| {
+            matches!(
+                self.states.get(column),
+                Some(ColumnResidency::Resident(resident))
+                    if resident.light_patch_ticket() == Some(ticket)
+            ) || matches!(
+                self.states.get(column),
+                Some(ColumnResidency::Evicting { resident, .. })
+                    if resident.light_patch_ticket() == Some(ticket)
+            )
+        }) {
+            return false;
+        }
+
+        let columns = self
+            .light_patches
+            .remove(&ticket)
+            .expect("prevalidated light patch must remain active");
+        for column in columns {
+            let resident = match self.states.get_mut(&column) {
+                Some(ColumnResidency::Resident(resident))
+                | Some(ColumnResidency::Evicting { resident, .. }) => resident,
+                _ => unreachable!("light patch members were prevalidated"),
+            };
+            resident.lighting = ColumnLighting::Pending;
+        }
+        true
     }
 
     /// Publishes a staged resident only after exact lighting is available.
@@ -439,10 +595,17 @@ impl ColumnResidencyLedger {
                 ticket: active, ..
             }) if *active == ticket
         );
-        if matches {
-            self.states.remove(&ticket.column);
+        if !matches {
+            return false;
         }
-        matches
+        if let Some(light_ticket) = self.light_patch_ticket(ticket.column) {
+            assert!(
+                self.cancel_light_patch(light_ticket),
+                "evicting calculating column must belong to an active light patch"
+            );
+        }
+        self.states.remove(&ticket.column);
+        true
     }
 
     pub(crate) fn tick_backoffs(&mut self) {
@@ -474,6 +637,21 @@ impl ColumnResidencyLedger {
             Some(ColumnResidency::Resident(resident)) => Some(*resident),
             _ => None,
         }
+    }
+
+    pub(crate) fn light_patch_ticket(&self, column: ChunkColumn) -> Option<LightPatchTicket> {
+        match self.states.get(&column) {
+            Some(ColumnResidency::Resident(resident))
+            | Some(ColumnResidency::Evicting { resident, .. }) => resident.light_patch_ticket(),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn light_patch_columns(&self, ticket: LightPatchTicket) -> Option<&[ChunkColumn]> {
+        if ticket.owner != self.owner {
+            return None;
+        }
+        self.light_patches.get(&ticket).map(Box::as_ref)
     }
 
     #[cfg(test)]
@@ -526,6 +704,13 @@ impl ColumnResidencyLedger {
         }
     }
 
+    fn issue_light_patch_ticket(&mut self) -> LightPatchTicket {
+        LightPatchTicket {
+            owner: self.owner,
+            version: self.take_version(),
+        }
+    }
+
     fn take_version(&mut self) -> u64 {
         let version = self.next_version;
         self.next_version = self
@@ -573,6 +758,17 @@ mod tests {
         assert!(ledger.accept_load(ticket));
         assert!(ledger.activate_load(ticket));
         ticket
+    }
+
+    fn finish_column(
+        ledger: &mut ColumnResidencyLedger,
+        column: ChunkColumn,
+    ) -> ColumnLightRevision {
+        let ticket = ledger.begin_light_patch(&[column]).unwrap();
+        let revisions = ledger.finish_light_patch(ticket).unwrap();
+        assert_eq!(revisions.len(), 1);
+        assert_eq!(revisions[0].0, column);
+        revisions[0].1
     }
 
     #[test]
@@ -682,7 +878,7 @@ mod tests {
         let column = ChunkColumn::new(6, -2);
         let mut ledger = ColumnResidencyLedger::new(Entity::PLACEHOLDER);
         let load = load_resident(&mut ledger, column, 1);
-        assert_eq!(ledger.finish_lighting(column), Some(ColumnLightRevision(1)));
+        assert_eq!(finish_column(&mut ledger, column), ColumnLightRevision(1));
         assert!(ledger.publish(column));
         let resident = ledger.resident_state(column).unwrap();
         let first = ledger.mark_undesired(column).unwrap();
@@ -726,6 +922,124 @@ mod tests {
     }
 
     #[test]
+    fn light_patch_claim_and_finish_are_atomic_across_the_exact_commit_set() {
+        let owner = Entity::from_bits(1 << 32 | 12);
+        let first = ChunkColumn::new(-2, 4);
+        let second = ChunkColumn::new(-1, 4);
+        let missing = ChunkColumn::new(0, 4);
+        let mut ledger = ColumnResidencyLedger::new(owner);
+        load_resident(&mut ledger, first, 1);
+        load_resident(&mut ledger, second, 1);
+
+        assert!(ledger.begin_light_patch(&[]).is_none());
+        assert!(ledger.begin_light_patch(&[first, first]).is_none());
+        assert!(ledger.begin_light_patch(&[first, missing]).is_none());
+        assert!(ledger.resident_state(first).unwrap().is_light_pending());
+        assert!(ledger.resident_state(second).unwrap().is_light_pending());
+
+        let ticket = ledger.begin_light_patch(&[first, second]).unwrap();
+        assert_eq!(ticket.owner(), owner);
+        assert_eq!(
+            ledger.light_patch_columns(ticket),
+            Some(&[first, second][..])
+        );
+        assert_eq!(ledger.light_patch_ticket(first), Some(ticket));
+        assert_eq!(ledger.light_patch_ticket(second), Some(ticket));
+        assert_eq!(
+            ledger.resident_state(first).unwrap().lighting(),
+            ColumnLighting::Calculating(ticket)
+        );
+        assert!(ledger.begin_light_patch(&[second]).is_none());
+
+        let foreign = LightPatchTicket {
+            owner: Entity::from_bits(1 << 32 | 13),
+            version: ticket.version(),
+        };
+        assert_eq!(ledger.finish_light_patch(foreign), None);
+        assert_eq!(ledger.light_patch_ticket(first), Some(ticket));
+
+        assert_eq!(
+            ledger.finish_light_patch(ticket),
+            Some(vec![
+                (first, ColumnLightRevision(1)),
+                (second, ColumnLightRevision(1)),
+            ])
+        );
+        assert!(ledger.resident_state(first).unwrap().is_lit());
+        assert!(ledger.resident_state(second).unwrap().is_lit());
+        assert_eq!(ledger.light_patch_columns(ticket), None);
+        assert_eq!(ledger.finish_light_patch(ticket), None);
+        assert!(!ledger.cancel_light_patch(ticket));
+    }
+
+    #[test]
+    fn cancelling_or_invalidating_one_member_restores_the_whole_patch() {
+        let published = ChunkColumn::new(5, -8);
+        let staged = ChunkColumn::new(6, -8);
+        let mut ledger = ColumnResidencyLedger::new(Entity::PLACEHOLDER);
+        load_resident(&mut ledger, published, 1);
+        load_resident(&mut ledger, staged, 1);
+        assert_eq!(
+            finish_column(&mut ledger, published),
+            ColumnLightRevision(1)
+        );
+        assert_eq!(finish_column(&mut ledger, staged), ColumnLightRevision(1));
+        assert!(ledger.publish(published));
+        assert!(ledger.mark_light_pending(published));
+        assert!(ledger.mark_light_pending(staged));
+
+        let cancelled = ledger.begin_light_patch(&[published, staged]).unwrap();
+        assert!(ledger.cancel_light_patch(cancelled));
+        for column in [published, staged] {
+            let resident = ledger.resident_state(column).unwrap();
+            assert!(resident.is_light_pending());
+            assert_eq!(resident.light_revision(), ColumnLightRevision(1));
+        }
+        assert!(ledger.resident_state(published).unwrap().is_published());
+        assert!(ledger.resident_state(staged).unwrap().is_staged());
+
+        let invalidated = ledger.begin_light_patch(&[published, staged]).unwrap();
+        assert!(invalidated.version() > cancelled.version());
+        assert!(!ledger.cancel_light_patch(cancelled));
+        assert_eq!(ledger.light_patch_ticket(published), Some(invalidated));
+        assert_eq!(ledger.light_patch_ticket(staged), Some(invalidated));
+        assert!(ledger.mark_light_pending(staged));
+        assert!(!ledger.mark_light_pending(staged));
+        assert!(ledger.resident_state(published).unwrap().is_light_pending());
+        assert_eq!(ledger.light_patch_ticket(published), None);
+        assert_eq!(ledger.finish_light_patch(invalidated), None);
+    }
+
+    #[test]
+    fn evicting_a_calculating_member_cancels_without_losing_resident_state() {
+        let evicted = ChunkColumn::new(10, 2);
+        let retained = ChunkColumn::new(11, 2);
+        let mut ledger = ColumnResidencyLedger::new(Entity::PLACEHOLDER);
+        load_resident(&mut ledger, evicted, 1);
+        load_resident(&mut ledger, retained, 1);
+        let patch = ledger.begin_light_patch(&[evicted, retained]).unwrap();
+
+        let eviction = ledger.mark_undesired(evicted).unwrap();
+        let Some(ColumnResidency::Evicting { resident, .. }) = ledger.state(evicted) else {
+            panic!("unwanted calculating column must enter eviction");
+        };
+        assert!(resident.is_light_pending());
+        assert_eq!(resident.light_revision(), ColumnLightRevision::INITIAL);
+        assert!(ledger.resident_state(retained).unwrap().is_light_pending());
+        assert_eq!(ledger.light_patch_columns(patch), None);
+        assert_eq!(ledger.finish_light_patch(patch), None);
+
+        assert!(ledger.mark_desired(evicted));
+        assert!(ledger.resident_state(evicted).unwrap().is_light_pending());
+        assert!(!ledger.commit_eviction(eviction));
+        let replacement = ledger.begin_light_patch(&[evicted, retained]).unwrap();
+        assert!(replacement.version() > patch.version());
+        assert!(!ledger.commit_eviction(eviction));
+        assert_eq!(ledger.light_patch_ticket(evicted), Some(replacement));
+        assert_eq!(ledger.light_patch_ticket(retained), Some(replacement));
+    }
+
+    #[test]
     fn lighting_and_exposure_transition_independently() {
         let column = ChunkColumn::new(-7, 12);
         let mut ledger = ColumnResidencyLedger::new(Entity::PLACEHOLDER);
@@ -741,14 +1055,14 @@ mod tests {
         assert!(!ledger.publish(column));
         assert!(!ledger.mark_light_pending(column));
 
-        let first_revision = ledger.finish_lighting(column).unwrap();
+        let first_revision = finish_column(&mut ledger, column);
         assert_eq!(first_revision, ColumnLightRevision(1));
         let staged_lit = ledger.resident_state(column).unwrap();
         assert_eq!(staged_lit.lighting(), ColumnLighting::Lit);
         assert_eq!(staged_lit.light_revision(), first_revision);
         assert!(staged_lit.is_lit());
         assert!(staged_lit.is_staged());
-        assert_eq!(ledger.finish_lighting(column), None);
+        assert!(ledger.begin_light_patch(&[column]).is_none());
 
         assert!(ledger.publish(column));
         let published_lit = ledger.resident_state(column).unwrap();
@@ -762,7 +1076,7 @@ mod tests {
         assert!(published_pending.is_light_pending());
         assert_eq!(published_pending.light_revision(), first_revision);
 
-        let second_revision = ledger.finish_lighting(column).unwrap();
+        let second_revision = finish_column(&mut ledger, column);
         assert_eq!(second_revision, ColumnLightRevision(2));
         assert!(ledger.resident_state(column).unwrap().is_published());
         assert!(ledger.unpublish(column));
@@ -777,13 +1091,13 @@ mod tests {
         let column = ChunkColumn::new(8, 3);
         let mut ledger = ColumnResidencyLedger::new(Entity::PLACEHOLDER);
         load_resident(&mut ledger, column, 2);
-        assert!(ledger.finish_lighting(column).is_some());
+        finish_column(&mut ledger, column);
         let resident = ledger.resident_state(column).unwrap();
         let ticket = ledger.mark_undesired(column).unwrap();
 
         assert_eq!(ledger.resident_state(column), None);
         assert!(!ledger.mark_light_pending(column));
-        assert_eq!(ledger.finish_lighting(column), None);
+        assert!(ledger.begin_light_patch(&[column]).is_none());
         assert!(!ledger.publish(column));
         assert!(!ledger.unpublish(column));
         assert_eq!(

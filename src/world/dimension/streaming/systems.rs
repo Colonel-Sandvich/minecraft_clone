@@ -95,6 +95,7 @@ pub(crate) fn maintain_column_residency(
     let tracked_columns = dimension.stream().columns().collect::<Vec<_>>();
     for column in tracked_columns {
         if !desired_view.contains_resident_column(column) {
+            dimension.cancel_light_task_depending_on(column);
             dimension.stream_mut().mark_undesired(column);
         }
     }

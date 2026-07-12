@@ -16,7 +16,7 @@ use crate::world::{chunk::ChunkColumn, loading::ColumnLoadResult};
 
 pub(crate) use state::{
     ColumnEvictionTicket, ColumnExposure, ColumnLightRevision, ColumnLighting, ColumnLoadTicket,
-    ColumnResidency, ColumnResidencyLedger, ResidentColumnState,
+    ColumnResidency, ColumnResidencyLedger, LightPatchTicket, ResidentColumnState,
 };
 pub(crate) use systems::{
     finish_column_loads, maintain_column_residency, publish_lit_columns,
@@ -120,8 +120,30 @@ impl DimensionStreamState {
         self.ledger.mark_light_pending(column)
     }
 
-    pub(crate) fn finish_lighting(&mut self, column: ChunkColumn) -> Option<ColumnLightRevision> {
-        self.ledger.finish_lighting(column)
+    pub(crate) fn begin_light_patch(
+        &mut self,
+        commit_columns: &[ChunkColumn],
+    ) -> Option<LightPatchTicket> {
+        self.ledger.begin_light_patch(commit_columns)
+    }
+
+    pub(crate) fn finish_light_patch(
+        &mut self,
+        ticket: LightPatchTicket,
+    ) -> Option<Vec<(ChunkColumn, ColumnLightRevision)>> {
+        self.ledger.finish_light_patch(ticket)
+    }
+
+    pub(crate) fn cancel_light_patch(&mut self, ticket: LightPatchTicket) -> bool {
+        self.ledger.cancel_light_patch(ticket)
+    }
+
+    pub(crate) fn light_patch_ticket(&self, column: ChunkColumn) -> Option<LightPatchTicket> {
+        self.ledger.light_patch_ticket(column)
+    }
+
+    pub(crate) fn light_patch_columns(&self, ticket: LightPatchTicket) -> Option<&[ChunkColumn]> {
+        self.ledger.light_patch_columns(ticket)
     }
 
     pub(crate) fn publish(&mut self, column: ChunkColumn) -> bool {
@@ -193,5 +215,60 @@ impl DimensionStreamState {
                     + size_of::<ColumnLoadResult>(),
             ),
         }
+    }
+}
+
+#[cfg(test)]
+mod light_patch_authority_tests {
+    use super::*;
+
+    fn activate(stream: &mut DimensionStreamState, column: ChunkColumn) {
+        let ticket = stream.ledger.begin_load(column, 1).unwrap();
+        assert!(stream.accept_load(ticket));
+        assert!(stream.activate_load(ticket));
+    }
+
+    #[test]
+    fn stream_state_exposes_shared_light_patch_authority() {
+        let first = ChunkColumn::new(1, 2);
+        let second = ChunkColumn::new(2, 2);
+        let mut stream = DimensionStreamState::new(Entity::PLACEHOLDER);
+        activate(&mut stream, first);
+        activate(&mut stream, second);
+
+        let ticket = stream.begin_light_patch(&[first, second]).unwrap();
+        assert_eq!(stream.light_patch_ticket(first), Some(ticket));
+        assert_eq!(stream.light_patch_ticket(second), Some(ticket));
+        assert_eq!(
+            stream.light_patch_columns(ticket),
+            Some(&[first, second][..])
+        );
+        let revisions = stream.finish_light_patch(ticket).unwrap();
+        assert_eq!(
+            revisions
+                .iter()
+                .map(|(column, _)| *column)
+                .collect::<Vec<_>>(),
+            vec![first, second]
+        );
+        for (column, revision) in revisions {
+            assert!(revision > ColumnLightRevision::INITIAL);
+            assert_eq!(
+                stream
+                    .resident_state(column)
+                    .map(|state| state.light_revision()),
+                Some(revision)
+            );
+        }
+
+        assert!(stream.mark_light_pending(first));
+        assert!(stream.mark_light_pending(second));
+        let cancelled = stream.begin_light_patch(&[first, second]).unwrap();
+        assert!(stream.cancel_light_patch(cancelled));
+        assert_eq!(stream.column_lighting(first), Some(ColumnLighting::Pending));
+        assert_eq!(
+            stream.column_lighting(second),
+            Some(ColumnLighting::Pending)
+        );
     }
 }

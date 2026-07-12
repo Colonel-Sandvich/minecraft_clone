@@ -172,7 +172,8 @@ fn log_frame_perf(
         dirty_light_rebuild_sample = %dirty_light_rebuild_sample,
         mesh_rebuilds_5s = chunk_perf.mesh_rebuilds,
         light_rebuild_targets_5s = chunk_perf.light_rebuild_targets,
-        light_patch_runs_5s = chunk_perf.light_patch_runs,
+        light_patch_submitted_5s = chunk_perf.light_patch_runs,
+        light_patch_accepted_5s = chunk_perf.light_patch_accepted_results,
         light_patch_calculation_chunks_5s = chunk_perf.light_patch_calculation_chunks,
         light_patch_max_calculation_chunks_5s = chunk_perf.light_patch_max_calculation_chunks,
         light_patch_scratch_chunks_5s = chunk_perf.light_patch_scratch_chunks,
@@ -193,6 +194,56 @@ fn log_frame_perf(
             "{:.3}",
             chunk_perf.light_patch_prepare_elapsed.as_secs_f64() * 1_000.0
         ),
+        light_patch_plan_ms_5s = format_args!(
+            "{:.3}",
+            chunk_perf.light_patch_plan_elapsed.as_secs_f64() * 1_000.0
+        ),
+        light_patch_max_plan_ms_5s = format_args!(
+            "{:.3}",
+            chunk_perf.light_patch_max_plan_elapsed.as_secs_f64() * 1_000.0
+        ),
+        light_patch_snapshot_ms_5s = format_args!(
+            "{:.3}",
+            chunk_perf.light_patch_snapshot_elapsed.as_secs_f64() * 1_000.0
+        ),
+        light_patch_max_snapshot_ms_5s = format_args!(
+            "{:.3}",
+            chunk_perf.light_patch_max_snapshot_elapsed.as_secs_f64() * 1_000.0
+        ),
+        light_patch_collect_ms_5s = format_args!(
+            "{:.3}",
+            chunk_perf.light_patch_collect_elapsed.as_secs_f64() * 1_000.0
+        ),
+        light_patch_max_collect_ms_5s = format_args!(
+            "{:.3}",
+            chunk_perf.light_patch_max_collect_elapsed.as_secs_f64() * 1_000.0
+        ),
+        light_patch_queue_ms_5s = format_args!(
+            "{:.3}",
+            chunk_perf.light_patch_queue_elapsed.as_secs_f64() * 1_000.0
+        ),
+        light_patch_max_queue_ms_5s = format_args!(
+            "{:.3}",
+            chunk_perf.light_patch_max_queue_elapsed.as_secs_f64() * 1_000.0
+        ),
+        light_patch_pickup_lag_ms_5s = format_args!(
+            "{:.3}",
+            chunk_perf.light_patch_pickup_lag.as_secs_f64() * 1_000.0
+        ),
+        light_patch_max_pickup_lag_ms_5s = format_args!(
+            "{:.3}",
+            chunk_perf.light_patch_max_pickup_lag.as_secs_f64() * 1_000.0
+        ),
+        light_patch_latency_ms_5s = format_args!(
+            "{:.3}",
+            chunk_perf.light_patch_latency.as_secs_f64() * 1_000.0
+        ),
+        light_patch_max_latency_ms_5s = format_args!(
+            "{:.3}",
+            chunk_perf.light_patch_max_latency.as_secs_f64() * 1_000.0
+        ),
+        light_patch_stale_results_5s = chunk_perf.light_patch_stale_results,
+        light_patch_cancelled_5s = chunk_perf.light_patch_cancelled,
         light_uploads_5s = chunk_perf.light_uploads,
         mesh_layers,
         mesh_faces,

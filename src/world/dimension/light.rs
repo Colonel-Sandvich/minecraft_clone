@@ -1,24 +1,25 @@
-use std::{sync::Arc, time::Instant};
+use std::time::{Duration, Instant};
 
-use bevy::{
-    platform::collections::{HashMap, HashSet},
-    prelude::*,
-};
+use bevy::{platform::collections::HashSet, prelude::*};
 
 use crate::world::{
     chunk::{
         Chunk, ChunkColumn, ChunkHeightmap, ChunkInvalidationPlan, ChunkLight,
         ChunkNeedsLightRebuild, ChunkNeedsRenderLightUpload, ChunkPerfCounters, ChunkPos,
-        ChunkPosition,
-        light::ChunkLightRegion,
-        mesh::{ChunkMeshLight, PreparedChunkMeshLight},
+        ChunkPosition, light::ChunkLightRegion, mesh::PreparedChunkMeshLight,
     },
     generation::WorldMetadata,
 };
 
 use super::{
-    Active, ColumnLightBudget, DesiredColumnView, Dimension, apply_chunk_invalidations,
-    light_patch::LightPatchPlan, streaming::ColumnLighting,
+    Active, ChunkTaskPool, ColumnLightBudget, DesiredColumnView, Dimension,
+    apply_chunk_invalidations,
+    light_patch::{InitialLightColumnState, LightPatchPlan},
+    light_task::{
+        FinishedLightPatchTask, LightChunkInputStamp, LightColumnInputStamp, LightCommitBaseline,
+        LightPatchTaskRequest, OwnedLightCalculationChunk, OwnedLightPatchInput,
+    },
+    streaming::{ColumnExposure, ColumnLighting},
 };
 
 #[allow(clippy::too_many_arguments)]
@@ -31,10 +32,11 @@ pub(crate) fn rebuild_chunk_light(
     metadata: Res<WorldMetadata>,
     desired_view: Option<Res<DesiredColumnView>>,
     patch_budget: Option<Res<ColumnLightBudget>>,
+    task_pool: Option<Res<ChunkTaskPool>>,
 ) {
     let mut dimension = dimension.into_inner();
-    if let Some(desired_view) = desired_view {
-        rebuild_pending_column_light(
+    if let (Some(desired_view), Some(task_pool)) = (desired_view, task_pool) {
+        process_streamed_column_light(
             &mut commands,
             perf.as_deref_mut(),
             &mut dimension,
@@ -43,6 +45,7 @@ pub(crate) fn rebuild_chunk_light(
             patch_budget
                 .as_deref()
                 .map_or(usize::MAX, |budget| budget.0),
+            &task_pool,
         );
     }
 
@@ -139,31 +142,188 @@ pub(crate) fn rebuild_chunk_light(
     apply_chunk_invalidations(&mut commands, &mut dimension, &invalidations);
 }
 
-fn rebuild_pending_column_light(
+pub(crate) fn cancel_inactive_dimension_light_tasks(
+    mut dimensions: Query<&mut Dimension, Without<Active>>,
+    mut perf: Option<ResMut<ChunkPerfCounters>>,
+) {
+    for mut dimension in &mut dimensions {
+        if let Some(ticket) = dimension.light_tasks().active_ticket() {
+            dimension.cancel_column_light_patch(ticket);
+        }
+        record_cancelled_light_tasks(&mut dimension, perf.as_deref_mut());
+        if let Some(finished) = dimension.light_tasks_mut().take_ready() {
+            let collect_started = Instant::now();
+            debug_assert!(finished.cancel_requested);
+            record_finished_light_patch_perf(
+                perf.as_deref_mut(),
+                &finished,
+                FinishedLightPatchDisposition::Cancelled,
+            );
+            record_light_patch_collect_perf(perf.as_deref_mut(), collect_started.elapsed());
+        }
+    }
+}
+
+fn process_streamed_column_light(
     commands: &mut Commands,
-    perf: Option<&mut ChunkPerfCounters>,
+    mut perf: Option<&mut ChunkPerfCounters>,
     dimension: &mut Dimension,
     all_chunks: &Query<(&ChunkPosition, &Chunk, &ChunkLight, &ChunkHeightmap)>,
     desired_view: &DesiredColumnView,
     target_budget: usize,
+    task_pool: &ChunkTaskPool,
 ) {
-    let patch_started = Instant::now();
+    cancel_unclaimed_light_task(dimension, perf.as_deref_mut());
+    if let Some(finished) = dimension.light_tasks_mut().take_ready() {
+        let collect_started = Instant::now();
+        if finished.cancel_requested {
+            record_finished_light_patch_perf(
+                perf.as_deref_mut(),
+                &finished,
+                FinishedLightPatchDisposition::Cancelled,
+            );
+        } else {
+            apply_finished_light_patch(
+                commands,
+                perf.as_deref_mut(),
+                dimension,
+                all_chunks,
+                finished,
+            );
+        }
+        record_light_patch_collect_perf(perf.as_deref_mut(), collect_started.elapsed());
+    }
+
+    if target_budget == 0 || !dimension.light_tasks().is_idle() {
+        return;
+    }
+
     let height_chunks = dimension.height().chunks();
-    let plan = LightPatchPlan::build(
+    let plan_started = Instant::now();
+    let plan = next_light_patch_plan(dimension, desired_view, height_chunks, target_budget);
+    if let Some(perf) = perf.as_deref_mut() {
+        let elapsed = plan_started.elapsed();
+        perf.light_patch_plan_elapsed += elapsed;
+        perf.light_patch_max_plan_elapsed = perf.light_patch_max_plan_elapsed.max(elapsed);
+    }
+    if plan.is_empty() {
+        return;
+    }
+    start_light_patch(perf, dimension, all_chunks, task_pool, plan, height_chunks);
+}
+
+fn cancel_unclaimed_light_task(
+    dimension: &mut Dimension,
+    mut perf: Option<&mut ChunkPerfCounters>,
+) {
+    record_cancelled_light_tasks(dimension, perf.as_deref_mut());
+    let Some(ticket) = dimension.light_tasks().active_ticket() else {
+        return;
+    };
+    if dimension.stream().light_patch_columns(ticket).is_some() {
+        return;
+    }
+    dimension.light_tasks_mut().cancel(ticket);
+    record_cancelled_light_tasks(dimension, perf);
+}
+
+fn record_cancelled_light_tasks(dimension: &mut Dimension, perf: Option<&mut ChunkPerfCounters>) {
+    let cancelled = dimension.light_tasks_mut().take_cancelled_count();
+    if let Some(perf) = perf {
+        perf.light_patch_cancelled += cancelled;
+    }
+}
+
+fn next_light_patch_plan(
+    dimension: &Dimension,
+    desired_view: &DesiredColumnView,
+    height_chunks: usize,
+    target_budget: usize,
+) -> LightPatchPlan {
+    let runtime = LightPatchPlan::build(
         desired_view.visible_columns(),
         height_chunks,
         target_budget,
         |column| {
             dimension.column_lighting(column) == Some(ColumnLighting::Pending)
+                && dimension.column_exposure(column) == Some(ColumnExposure::Published)
                 && dimension.has_complete_resident_light_neighborhood(column)
         },
     );
-    if plan.is_empty() {
-        return;
+    if !runtime.is_empty() {
+        return runtime;
     }
 
-    let mut region = ChunkLightRegion::new(height_chunks);
+    let Some(center) = desired_view.center() else {
+        return LightPatchPlan::default();
+    };
+    let initial =
+        LightPatchPlan::build_initial_tile(desired_view.visible_columns(), center, |column| {
+            classify_initial_light_column(dimension, column)
+        });
+    if !initial.is_empty() {
+        return initial;
+    }
+
+    if dimension.stream().loading_count() != 0 {
+        return LightPatchPlan::default();
+    }
+
+    // A failed or deliberately paused load must not strand unrelated ready
+    // cores behind its tile. Once loading is quiescent, make bounded progress.
+    LightPatchPlan::build(
+        desired_view.visible_columns(),
+        height_chunks,
+        target_budget,
+        |column| {
+            dimension.column_lighting(column) == Some(ColumnLighting::Pending)
+                && dimension.column_exposure(column) == Some(ColumnExposure::Staged)
+                && dimension.has_complete_resident_light_neighborhood(column)
+        },
+    )
+}
+
+fn classify_initial_light_column(
+    dimension: &Dimension,
+    column: ChunkColumn,
+) -> InitialLightColumnState {
+    let Some(state) = dimension.resident_column_state(column) else {
+        return InitialLightColumnState::Waiting;
+    };
+    if state.exposure() != ColumnExposure::Staged || !state.is_light_pending() {
+        return InitialLightColumnState::Excluded;
+    }
+    if dimension.has_complete_resident_light_neighborhood(column) {
+        InitialLightColumnState::Ready
+    } else {
+        InitialLightColumnState::Waiting
+    }
+}
+
+fn start_light_patch(
+    perf: Option<&mut ChunkPerfCounters>,
+    dimension: &mut Dimension,
+    all_chunks: &Query<(&ChunkPosition, &Chunk, &ChunkLight, &ChunkHeightmap)>,
+    task_pool: &ChunkTaskPool,
+    plan: LightPatchPlan,
+    height_chunks: usize,
+) {
+    let snapshot_started = Instant::now();
+    let mut column_inputs = Vec::with_capacity(plan.calculation_columns().len());
+    let mut chunk_inputs = Vec::with_capacity(plan.calculation_chunk_count(height_chunks));
+    let mut owned_chunks = Vec::with_capacity(plan.calculation_chunk_count(height_chunks));
     for &column in plan.calculation_columns() {
+        let state = dimension
+            .resident_column_state(column)
+            .expect("lighting calculation column must remain resident");
+        column_inputs.push(LightColumnInputStamp {
+            column,
+            incarnation: dimension
+                .column_incarnation(column)
+                .expect("lighting calculation column must retain its incarnation"),
+            commit_light_revision: plan.commits(column).then(|| state.light_revision()),
+        });
+
         for y in 0..height_chunks as i32 {
             let position = column.chunk(y);
             let entity = dimension
@@ -177,76 +337,223 @@ fn rebuild_pending_column_light(
                 position,
                 "loaded lighting dependency position must match its registry key"
             );
-            region.insert_calculation_chunk(position, chunk);
-            if plan.commits(column) {
-                region.mark_commit_target(position, light, heightmap);
-            }
+            chunk_inputs.push(LightChunkInputStamp {
+                position,
+                entity,
+                content_revision: chunk.content_revision(),
+            });
+            owned_chunks.push(OwnedLightCalculationChunk {
+                position,
+                chunk: chunk.clone(),
+                commit_baseline: plan.commits(column).then(|| LightCommitBaseline {
+                    light: light.clone(),
+                    heightmap: *heightmap,
+                }),
+            });
         }
     }
 
-    let solve_started = Instant::now();
-    let solved = region.solve();
-    let solve_elapsed = solve_started.elapsed();
-    let prepare_started = Instant::now();
-    let prepared_lights = {
-        let solved_lights = solved.lights().collect::<HashMap<_, _>>();
-        plan.commit_columns()
-            .iter()
-            .flat_map(|column| (0..height_chunks as i32).map(move |y| column.chunk(y)))
-            .map(|position| {
-                let data = Arc::from(ChunkMeshLight::build_padded_data(position, &solved_lights));
-                (position, PreparedChunkMeshLight::new(data))
-            })
-            .collect::<Vec<_>>()
-    };
-    let prepare_elapsed = prepare_started.elapsed();
-    for (position, prepared) in prepared_lights {
-        let entity = dimension
-            .loaded_chunk_entity(position)
-            .expect("prepared render-light target must remain loaded");
-        let mut entity_commands = commands.entity(entity);
-        entity_commands.insert(prepared);
-        if dimension.contains_published_chunk(position) {
-            entity_commands.insert(ChunkNeedsRenderLightUpload);
-        }
-    }
-
-    for rebuilt in solved.into_committed() {
-        let entity = dimension
-            .loaded_chunk_entity(rebuilt.position)
-            .expect("committed lighting target must remain loaded");
-        let light_changed = rebuilt.light_changed();
-        let heightmap_changed = rebuilt.heightmap_changed();
-        if light_changed {
-            commands.entity(entity).insert(rebuilt.light);
-        }
-        if heightmap_changed {
-            commands.entity(entity).insert(rebuilt.heightmap);
-        }
-        commands.entity(entity).remove::<ChunkNeedsLightRebuild>();
-    }
-
-    for &column in plan.commit_columns() {
-        dimension
-            .finish_column_lighting(column)
-            .expect("lighting commit must finish a pending resident column");
-    }
-
+    let snapshot_elapsed = snapshot_started.elapsed();
+    let commit_columns = plan.commit_columns().to_vec();
+    let calculation_chunks = plan.calculation_chunk_count(height_chunks);
+    let scratch_chunks = plan.scratch_chunk_count(height_chunks);
+    let ticket = dimension
+        .begin_column_light_patch(&commit_columns)
+        .expect("prevalidated pending light cores must be claimable atomically");
+    dimension.light_tasks_mut().start(
+        task_pool,
+        LightPatchTaskRequest {
+            ticket,
+            commit_columns,
+            column_inputs,
+            chunk_inputs,
+            input: OwnedLightPatchInput::new(height_chunks, owned_chunks),
+        },
+    );
     if let Some(perf) = perf {
-        let elapsed = patch_started.elapsed();
-        let calculation_chunks = plan.calculation_chunk_count(height_chunks);
         perf.light_patch_runs += 1;
         perf.light_patch_calculation_chunks += calculation_chunks;
         perf.light_patch_max_calculation_chunks = perf
             .light_patch_max_calculation_chunks
             .max(calculation_chunks);
-        perf.light_patch_scratch_chunks += plan.scratch_chunk_count(height_chunks);
-        perf.light_patch_committed_columns += plan.commit_columns().len();
-        perf.light_patch_elapsed += elapsed;
-        perf.light_patch_max_elapsed = perf.light_patch_max_elapsed.max(elapsed);
-        perf.light_patch_solve_elapsed += solve_elapsed;
-        perf.light_patch_prepare_elapsed += prepare_elapsed;
+        perf.light_patch_scratch_chunks += scratch_chunks;
+        perf.light_patch_snapshot_elapsed += snapshot_elapsed;
+        perf.light_patch_max_snapshot_elapsed =
+            perf.light_patch_max_snapshot_elapsed.max(snapshot_elapsed);
     }
+}
+
+fn apply_finished_light_patch(
+    commands: &mut Commands,
+    perf: Option<&mut ChunkPerfCounters>,
+    dimension: &mut Dimension,
+    all_chunks: &Query<(&ChunkPosition, &Chunk, &ChunkLight, &ChunkHeightmap)>,
+    finished: FinishedLightPatchTask,
+) {
+    let current = light_patch_inputs_are_current(dimension, all_chunks, &finished);
+    if !current {
+        dimension.cancel_column_light_patch(finished.ticket);
+        record_finished_light_patch_perf(perf, &finished, FinishedLightPatchDisposition::Stale);
+        return;
+    }
+
+    let committed = dimension
+        .finish_column_light_patch(finished.ticket)
+        .expect("validated light patch authority must commit atomically");
+    assert_eq!(
+        committed
+            .iter()
+            .map(|(column, _)| *column)
+            .collect::<Vec<_>>(),
+        finished.commit_columns,
+        "lighting authority must preserve the planned commit set"
+    );
+    record_finished_light_patch_perf(perf, &finished, FinishedLightPatchDisposition::Accepted);
+
+    for prepared in finished.result.prepared {
+        let entity = dimension
+            .loaded_chunk_entity(prepared.position)
+            .expect("validated prepared-light target must remain loaded");
+        let mut entity_commands = commands.entity(entity);
+        entity_commands.insert(PreparedChunkMeshLight::new(prepared.data));
+        if dimension.contains_published_chunk(prepared.position) {
+            entity_commands.insert(ChunkNeedsRenderLightUpload);
+        }
+    }
+
+    for rebuilt in finished.result.rebuilt {
+        let entity = dimension
+            .loaded_chunk_entity(rebuilt.position)
+            .expect("validated light commit target must remain loaded");
+        let light_changed = rebuilt.light_changed();
+        let heightmap_changed = rebuilt.heightmap_changed();
+        let mut entity_commands = commands.entity(entity);
+        if light_changed {
+            entity_commands.insert(rebuilt.light);
+        }
+        if heightmap_changed {
+            entity_commands.insert(rebuilt.heightmap);
+        }
+        entity_commands.remove::<ChunkNeedsLightRebuild>();
+    }
+}
+
+fn light_patch_inputs_are_current(
+    dimension: &Dimension,
+    all_chunks: &Query<(&ChunkPosition, &Chunk, &ChunkLight, &ChunkHeightmap)>,
+    finished: &FinishedLightPatchTask,
+) -> bool {
+    if finished.ticket.owner() != dimension.stream().owner()
+        || dimension.stream().light_patch_columns(finished.ticket)
+            != Some(finished.commit_columns.as_slice())
+    {
+        return false;
+    }
+
+    for input in &finished.column_inputs {
+        let Some(state) = dimension.resident_column_state(input.column) else {
+            return false;
+        };
+        if dimension.column_incarnation(input.column) != Some(input.incarnation) {
+            return false;
+        }
+        if let Some(revision) = input.commit_light_revision
+            && (state.light_revision() != revision
+                || state.light_patch_ticket() != Some(finished.ticket))
+        {
+            return false;
+        }
+    }
+
+    for input in &finished.chunk_inputs {
+        if dimension.loaded_chunk_entity(input.position) != Some(input.entity) {
+            return false;
+        }
+        let Ok((actual, chunk, _, _)) = all_chunks.get(input.entity) else {
+            return false;
+        };
+        if actual.chunk_pos() != input.position
+            || chunk.content_revision() != input.content_revision
+        {
+            return false;
+        }
+    }
+
+    let expected_chunks = finished.commit_columns.len() * dimension.height().chunks();
+    if finished.result.rebuilt.len() != expected_chunks
+        || finished.result.prepared.len() != expected_chunks
+    {
+        return false;
+    }
+    let expected_positions = finished
+        .commit_columns
+        .iter()
+        .flat_map(|column| (0..dimension.height().chunks_i32()).map(move |y| column.chunk(y)))
+        .collect::<HashSet<_>>();
+    let rebuilt = finished
+        .result
+        .rebuilt
+        .iter()
+        .map(|chunk| chunk.position)
+        .collect::<HashSet<_>>();
+    let prepared = finished
+        .result
+        .prepared
+        .iter()
+        .map(|chunk| chunk.position)
+        .collect::<HashSet<_>>();
+    rebuilt.len() == expected_chunks
+        && prepared.len() == expected_chunks
+        && rebuilt == prepared
+        && rebuilt == expected_positions
+}
+
+fn record_finished_light_patch_perf(
+    perf: Option<&mut ChunkPerfCounters>,
+    finished: &FinishedLightPatchTask,
+    disposition: FinishedLightPatchDisposition,
+) {
+    let Some(perf) = perf else {
+        return;
+    };
+    perf.light_patch_elapsed += finished.result.elapsed;
+    perf.light_patch_max_elapsed = perf.light_patch_max_elapsed.max(finished.result.elapsed);
+    perf.light_patch_solve_elapsed += finished.result.solve_elapsed;
+    perf.light_patch_prepare_elapsed += finished.result.prepare_elapsed;
+    perf.light_patch_queue_elapsed += finished.result.queue_elapsed;
+    perf.light_patch_max_queue_elapsed = perf
+        .light_patch_max_queue_elapsed
+        .max(finished.result.queue_elapsed);
+    let pickup_lag = finished
+        .latency
+        .saturating_sub(finished.result.queue_elapsed + finished.result.elapsed);
+    perf.light_patch_pickup_lag += pickup_lag;
+    perf.light_patch_max_pickup_lag = perf.light_patch_max_pickup_lag.max(pickup_lag);
+    perf.light_patch_latency += finished.latency;
+    perf.light_patch_max_latency = perf.light_patch_max_latency.max(finished.latency);
+    match disposition {
+        FinishedLightPatchDisposition::Accepted => {
+            perf.light_patch_accepted_results += 1;
+            perf.light_patch_committed_columns += finished.commit_columns.len();
+        }
+        FinishedLightPatchDisposition::Stale => perf.light_patch_stale_results += 1,
+        FinishedLightPatchDisposition::Cancelled => {}
+    }
+}
+
+fn record_light_patch_collect_perf(perf: Option<&mut ChunkPerfCounters>, elapsed: Duration) {
+    let Some(perf) = perf else {
+        return;
+    };
+    perf.light_patch_collect_elapsed += elapsed;
+    perf.light_patch_max_collect_elapsed = perf.light_patch_max_collect_elapsed.max(elapsed);
+}
+
+#[derive(Clone, Copy)]
+enum FinishedLightPatchDisposition {
+    Accepted,
+    Stale,
+    Cancelled,
 }
 
 fn light_rebuild_targets(

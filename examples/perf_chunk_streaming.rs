@@ -2,12 +2,13 @@
 //!
 //! The arguments are view radius, world height in chunks, lighting subchunk
 //! budget, timeout in seconds, load budget, staging budget, and activation
-//! budget. Defaults match production except for the smaller radius, which keeps
-//! quick runs short.
+//! budget, followed by the simulated frame interval in microseconds. Defaults
+//! match production except for the smaller radius, which keeps quick runs
+//! short. Pass a zero frame interval for an unpaced CPU-throughput profile.
 //!
 //! ```text
 //! cargo run --release --example perf_chunk_streaming -- 8 5 80 120
-//! perf stat -d target/release/examples/perf_chunk_streaming 24 5 80 120 4 8 8
+//! perf stat -d target/release/examples/perf_chunk_streaming 24 5 80 120 4 8 8 0
 //! ```
 
 use std::time::{Duration, Instant};
@@ -33,6 +34,7 @@ const DEFAULT_TIMEOUT_SECONDS: u64 = 120;
 const DEFAULT_LOAD_BUDGET: usize = 4;
 const DEFAULT_STAGING_BUDGET: usize = 8;
 const DEFAULT_ACTIVATION_BUDGET: usize = 8;
+const DEFAULT_FRAME_INTERVAL_MICROS: u64 = 16_667;
 
 fn main() {
     let radius = argument(1, DEFAULT_RADIUS);
@@ -42,6 +44,7 @@ fn main() {
     let load_budget = argument(5, DEFAULT_LOAD_BUDGET);
     let staging_budget = argument(6, DEFAULT_STAGING_BUDGET);
     let activation_budget = argument(7, DEFAULT_ACTIVATION_BUDGET);
+    let frame_interval = Duration::from_micros(argument(8, DEFAULT_FRAME_INTERVAL_MICROS));
     let metadata = WorldMetadata::default()
         .with_height_chunks(height_chunks)
         .expect("profile world height must be valid");
@@ -65,9 +68,9 @@ fn main() {
     let started = Instant::now();
     let mut update_times = Vec::new();
     let (visible_chunks, resident_chunks, loaded_chunks, published_chunks) = loop {
-        let update_started = Instant::now();
+        let frame_started = Instant::now();
         app.update();
-        update_times.push(update_started.elapsed());
+        update_times.push(frame_started.elapsed());
 
         let desired = app.world().resource::<DesiredColumnView>();
         let visible_chunks = desired.visible_chunk_count();
@@ -87,7 +90,12 @@ fn main() {
              {published_chunks}/{visible_chunks} visible chunks published, \
              {loaded_chunks}/{resident_chunks} resident chunks loaded"
         );
-        std::thread::yield_now();
+        let remaining = frame_interval.saturating_sub(frame_started.elapsed());
+        if remaining.is_zero() {
+            std::thread::yield_now();
+        } else {
+            std::thread::sleep(remaining);
+        }
     };
     update_times.sort_unstable();
     let perf = app.world().resource::<ChunkPerfCounters>();
@@ -104,7 +112,9 @@ fn main() {
     println!("streaming profile complete");
     println!(
         "view radius={radius}, height={height_chunks}, light={light_budget} subchunks, \
-         load={load_budget}, staging={staging_budget}, activation={activation_budget} columns"
+         load={load_budget}, staging={staging_budget}, activation={activation_budget} columns, \
+         frame_interval={:.3}ms",
+        millis(frame_interval),
     );
     println!(
         "world visible={visible_chunks}, resident={resident_chunks}, loaded={loaded_chunks}, \
@@ -120,9 +130,11 @@ fn main() {
         millis(*update_times.last().unwrap_or(&Duration::ZERO)),
     );
     println!(
-        "lighting patches={} committed_columns={} calculated_chunks={} scratch_chunks={} \
+        "lighting submitted={} accepted={} committed_columns={} calculated_chunks={} \
+         scratch_chunks={} \
          amplification={amplification:.3}x scratch={scratch_percent:.1}%",
         perf.light_patch_runs,
+        perf.light_patch_accepted_results,
         perf.light_patch_committed_columns,
         perf.light_patch_calculation_chunks,
         perf.light_patch_scratch_chunks,
@@ -134,6 +146,28 @@ fn main() {
         millis(perf.light_patch_max_elapsed),
         millis(perf.light_patch_solve_elapsed),
         millis(perf.light_patch_prepare_elapsed),
+    );
+    println!(
+        "main plan={:.3}ms max_plan={:.3}ms snapshot={:.3}ms max_snapshot={:.3}ms \
+         collect={:.3}ms max_collect={:.3}ms",
+        millis(perf.light_patch_plan_elapsed),
+        millis(perf.light_patch_max_plan_elapsed),
+        millis(perf.light_patch_snapshot_elapsed),
+        millis(perf.light_patch_max_snapshot_elapsed),
+        millis(perf.light_patch_collect_elapsed),
+        millis(perf.light_patch_max_collect_elapsed),
+    );
+    println!(
+        "task queue={:.3}ms max_queue={:.3}ms pickup_lag={:.3}ms max_pickup_lag={:.3}ms \
+         latency={:.3}ms max_latency={:.3}ms stale={} cancelled={}",
+        millis(perf.light_patch_queue_elapsed),
+        millis(perf.light_patch_max_queue_elapsed),
+        millis(perf.light_patch_pickup_lag),
+        millis(perf.light_patch_max_pickup_lag),
+        millis(perf.light_patch_latency),
+        millis(perf.light_patch_max_latency),
+        perf.light_patch_stale_results,
+        perf.light_patch_cancelled,
     );
 }
 
