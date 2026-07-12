@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 
 use crate::world::{
-    chunk::{Chunk, ChunkColumn, ChunkHeightmap, ChunkPos},
+    chunk::{Chunk, ChunkColumn, ChunkContentCounts, ChunkHeightmap, ChunkPos},
     generation::{WorldHeight, generate_chunk},
     storage::{ChunkRepository, ChunkStoreError},
 };
@@ -66,6 +66,7 @@ pub enum ChunkLoadSource {
 pub struct LoadedColumnChunk {
     pub position: ChunkPos,
     pub chunk: Chunk,
+    pub contents: ChunkContentCounts,
     pub source: ChunkLoadSource,
 }
 
@@ -145,9 +146,11 @@ pub fn load_or_generate_column(
                 ChunkLoadSource::Generated,
             ),
         };
+        let contents = chunk.compute_content_counts();
         chunks.push(LoadedColumnChunk {
             position: chunk_position,
             chunk,
+            contents,
             source,
         });
     }
@@ -256,6 +259,7 @@ mod tests {
         assert_eq!(loaded.chunks().len(), 3);
         for (y, chunk) in loaded.chunks().iter().enumerate() {
             assert_eq!(chunk.position, position.chunk(y as i32));
+            assert_eq!(chunk.contents, chunk.chunk.compute_content_counts());
         }
         assert_eq!(loaded.chunks()[0].source, ChunkLoadSource::Generated);
         assert_eq!(loaded.chunks()[1].source, ChunkLoadSource::Stored);

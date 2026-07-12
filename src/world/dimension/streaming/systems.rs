@@ -141,7 +141,7 @@ pub(crate) fn finish_column_loads(
         let mut entities = Vec::with_capacity(loaded.height.chunks());
         for loaded_chunk in loaded.into_chunks() {
             let position = loaded_chunk.position;
-            let counts = loaded_chunk.chunk.compute_content_counts();
+            let counts = loaded_chunk.contents;
             let entity = commands
                 .spawn((
                     ChildOf(incarnation),
