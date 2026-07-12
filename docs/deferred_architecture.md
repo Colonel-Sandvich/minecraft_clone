@@ -1,8 +1,19 @@
 # Deferred Architecture Work
 
-The current architecture work is focused on making an XZ chunk column the
-dimension-owned unit of streaming residency. The items below are deliberately
-deferred until that ownership boundary is stable.
+XZ chunk columns are now the dimension-owned unit of streaming residency.
+Visible columns are published only after dependency-complete lighting, while a
+resident support halo remains available to derived systems. The items below are
+the next architecture targets rather than requirements for that foundation.
+
+## Lighting execution
+
+Initial lighting now batches connected commit columns and calculates their
+shared support halo once, but the solver still runs synchronously. Profile the
+`light_patch_*` counters and patch wall time before moving it off-thread. If it
+remains a frame-time hotspot, make patch jobs capture the dimension owner,
+column incarnation entities, chunk content revisions, column light revisions,
+and a unique attempt version; reject the entire result if any input is stale.
+Keep calculation and commit sets separate across the async boundary.
 
 ## Fluid simulation
 
@@ -17,20 +28,19 @@ apply every result through `ChunkEditor`.
 
 Mesh, collider, lighting, render-light, and fluid work is represented by a
 family of ECS marker components. Consumers repeatedly scan broad queries and
-reconstruct dimension membership. Once residency is dimension-owned, move
-one-shot derived work into coalescing queues owned by that dimension. Queue
-entries must retain the expected chunk entity so stale work cannot affect a
-replacement at the same position. Save state remains a durable content
-revision, not another transient work bit.
+reconstruct dimension membership. Move one-shot derived work into coalescing
+queues owned by that dimension. Each entry must retain the expected chunk
+entity so stale work cannot affect a replacement at the same position. Save
+state remains a durable content revision, not another transient work bit.
 
 ## Render ownership
 
-Chunk origin and padded light data are currently duplicated across material
-layer children, while GPU sharing is inferred from allocation identity. Move
-shared render context to the chunk and leave material identity plus immutable
-face geometry on each layer. The render world should prepare one chunk context
-and independent layer buffers, use extracted transforms as the origin, and
-eventually make camera uniforms and pipeline specialization view-specific.
+Authoritative padded light data is now prepared on the chunk, but material
+layer children still mirror shared render state and GPU sharing is inferred
+from allocation identity. Make chunk render context an explicit extracted
+resource and leave material identity plus immutable face geometry on each
+layer. Use extracted transforms as the origin and eventually make camera
+uniforms and pipeline specialization view-specific.
 
 ## World generation
 
@@ -50,10 +60,20 @@ load/save operations. Track the last durable content revision per column so
 eviction can verify persisted state directly instead of trusting only dirty
 markers.
 
+## Dimension activation
+
+Production currently assumes one active dimension. If runtime switching is
+introduced, treat activation as an exposure transition: hide published roots
+and disable colliders for the old dimension, refresh the new owner's desired
+view, and reveal only its already-published columns. Add lifecycle tests before
+allowing more than one resident dimension to switch at runtime.
+
 ## Intended order
 
-1. Finish column residency, owner-bound loading, and revision-aware persistence.
+1. Profile staged lighting and make patch execution asynchronous only if needed.
 2. Replace derived-work markers with dimension-owned queues.
 3. Rebuild fluids around typed borrowed regions and fair scheduling.
 4. Consolidate chunk render ownership and multi-view preparation.
 5. Split generation behind stable, versioned output tests.
+6. Add stable dimension identity, atomic column persistence, and activation
+   lifecycle support.
