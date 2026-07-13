@@ -19,6 +19,7 @@ pub(crate) enum ChunkDerivedWorkKind {
 }
 
 impl ChunkDerivedWorkKind {
+    const COUNT: usize = 5;
     const ALL: [Self; 5] = [
         Self::MeshRebuild,
         Self::ColliderRebuild,
@@ -29,6 +30,16 @@ impl ChunkDerivedWorkKind {
 
     const fn bit(self) -> u8 {
         self as u8
+    }
+
+    const fn index(self) -> usize {
+        match self {
+            Self::MeshRebuild => 0,
+            Self::ColliderRebuild => 1,
+            Self::LightRebuild => 2,
+            Self::FluidStep => 3,
+            Self::RenderLightUpload => 4,
+        }
     }
 }
 
@@ -62,6 +73,10 @@ impl ChunkDerivedEffects {
 
     const fn intersection(self, other: Self) -> Self {
         Self(self.0 & other.0)
+    }
+
+    const fn difference(self, other: Self) -> Self {
+        Self(self.0 & !other.0)
     }
 
     fn insert(&mut self, effects: Self) {
@@ -125,26 +140,32 @@ impl ChunkDerivedWork {
 
 /// Dimension-owned, coalescing work for disposable chunk derivatives.
 ///
-/// Positions retain FIFO admission order. Re-recording work for the same
-/// entity merges effects in place. Recording a different entity at the same
-/// position discards the stale incarnation's effects and admits the replacement
-/// at the back of the queue.
+/// Each effect retains its own FIFO admission order. Re-recording work for the
+/// same entity merges effects, admitting only newly added effects at their
+/// ledgers' backs. Recording a different entity at the same position discards
+/// the stale incarnation's effects and admits the replacement at the back.
 #[derive(Debug, Default)]
 pub(crate) struct DimensionDerivedWork {
     entries: HashMap<ChunkPos, DerivedWorkEntry>,
-    order: VecDeque<AdmissionToken>,
-    next_sequence: u64,
-    tombstones: usize,
+    ledgers: [WorkLedger; ChunkDerivedWorkKind::COUNT],
 }
 
 #[derive(Debug, Clone, Copy)]
 struct DerivedWorkEntry {
     expected_entity: Entity,
     effects: ChunkDerivedEffects,
-    sequence: u64,
+    admissions: [Option<u64>; ChunkDerivedWorkKind::COUNT],
 }
 
 impl DerivedWorkEntry {
+    const fn new(expected_entity: Entity) -> Self {
+        Self {
+            expected_entity,
+            effects: ChunkDerivedEffects::NONE,
+            admissions: [None; ChunkDerivedWorkKind::COUNT],
+        }
+    }
+
     const fn as_work(self, position: ChunkPos) -> ChunkDerivedWork {
         ChunkDerivedWork {
             position,
@@ -160,9 +181,83 @@ struct AdmissionToken {
     sequence: u64,
 }
 
-impl DimensionDerivedWork {
+#[derive(Debug, Default)]
+struct WorkLedger {
+    order: VecDeque<AdmissionToken>,
+    next_sequence: u64,
+    pending: usize,
+    tombstones: usize,
+}
+
+impl WorkLedger {
     const MIN_TOMBSTONES_TO_COMPACT: usize = 32;
 
+    fn admit(&mut self, position: ChunkPos) -> u64 {
+        let sequence = self.next_sequence;
+        self.next_sequence = self
+            .next_sequence
+            .checked_add(1)
+            .expect("derived-work admission sequence exhausted");
+        self.order.push_back(AdmissionToken { position, sequence });
+        self.pending += 1;
+        sequence
+    }
+
+    fn invalidate(&mut self) {
+        self.pending = self
+            .pending
+            .checked_sub(1)
+            .expect("invalidated derived work must still be pending");
+        self.tombstones += 1;
+    }
+
+    fn discard_popped_tombstone(&mut self) {
+        self.tombstones = self
+            .tombstones
+            .checked_sub(1)
+            .expect("stale admission token must be counted as a tombstone");
+    }
+
+    fn consume_popped_work(&mut self) {
+        self.pending = self
+            .pending
+            .checked_sub(1)
+            .expect("consumed derived work must still be pending");
+    }
+
+    fn clear(&mut self) {
+        self.order.clear();
+        self.next_sequence = 0;
+        self.pending = 0;
+        self.tombstones = 0;
+    }
+
+    fn compact_if_needed(
+        &mut self,
+        kind: ChunkDerivedWorkKind,
+        entries: &HashMap<ChunkPos, DerivedWorkEntry>,
+    ) {
+        debug_assert_eq!(self.order.len(), self.pending + self.tombstones);
+        if self.pending == 0 {
+            self.order.clear();
+            self.tombstones = 0;
+            return;
+        }
+        if self.tombstones < Self::MIN_TOMBSTONES_TO_COMPACT || self.tombstones < self.pending {
+            return;
+        }
+
+        self.order.retain(|token| {
+            entries
+                .get(&token.position)
+                .is_some_and(|entry| entry.admissions[kind.index()] == Some(token.sequence))
+        });
+        self.tombstones = 0;
+        debug_assert_eq!(self.order.len(), self.pending);
+    }
+}
+
+impl DimensionDerivedWork {
     pub(crate) fn new() -> Self {
         Self::default()
     }
@@ -176,10 +271,7 @@ impl DimensionDerivedWork {
     }
 
     pub(crate) fn effect_count(&self, kind: ChunkDerivedWorkKind) -> usize {
-        self.entries
-            .values()
-            .filter(|entry| entry.effects.contains(kind))
-            .count()
+        self.ledgers[kind.index()].pending
     }
 
     pub(crate) fn get(&self, position: ChunkPos) -> Option<ChunkDerivedWork> {
@@ -190,17 +282,26 @@ impl DimensionDerivedWork {
     }
 
     pub(crate) fn iter(&self) -> impl Iterator<Item = ChunkDerivedWork> + '_ {
-        self.order.iter().filter_map(|token| {
-            let entry = self.entries.get(&token.position)?;
-            (entry.sequence == token.sequence).then(|| entry.as_work(token.position))
-        })
+        self.entries
+            .iter()
+            .map(|(&position, &entry)| entry.as_work(position))
     }
 
     pub(crate) fn pending(
         &self,
         kind: ChunkDerivedWorkKind,
     ) -> impl Iterator<Item = ChunkDerivedWork> + '_ {
-        self.iter().filter(move |work| work.effects.contains(kind))
+        self.ledgers[kind.index()]
+            .order
+            .iter()
+            .filter_map(move |token| {
+                let entry = self.entries.get(&token.position)?;
+                (entry.admissions[kind.index()] == Some(token.sequence)).then(|| ChunkDerivedWork {
+                    position: token.position,
+                    expected_entity: entry.expected_entity,
+                    effects: kind.into(),
+                })
+            })
     }
 
     /// Records work and reports whether the pending state changed.
@@ -210,27 +311,37 @@ impl DimensionDerivedWork {
         expected_entity: Entity,
         effects: ChunkDerivedEffects,
     ) -> bool {
-        let Some(existing) = self.entries.get_mut(&position) else {
-            if effects.is_empty() {
-                return false;
+        match self.entries.get(&position).copied() {
+            None => {
+                if effects.is_empty() {
+                    return false;
+                }
+                let mut entry = DerivedWorkEntry::new(expected_entity);
+                self.admit_effects(position, &mut entry, effects);
+                self.entries.insert(position, entry);
+                true
             }
-            self.admit(position, expected_entity, effects);
-            return true;
-        };
-
-        if existing.expected_entity == expected_entity {
-            let previous = existing.effects;
-            existing.effects.insert(effects);
-            return existing.effects != previous;
+            Some(mut entry) if entry.expected_entity == expected_entity => {
+                let added = effects.difference(entry.effects);
+                if added.is_empty() {
+                    return false;
+                }
+                self.admit_effects(position, &mut entry, added);
+                self.entries.insert(position, entry);
+                true
+            }
+            Some(stale) => {
+                self.entries.remove(&position);
+                self.invalidate_effects(stale.effects);
+                if !effects.is_empty() {
+                    let mut entry = DerivedWorkEntry::new(expected_entity);
+                    self.admit_effects(position, &mut entry, effects);
+                    self.entries.insert(position, entry);
+                }
+                self.compact_effects(stale.effects);
+                true
+            }
         }
-
-        self.entries.remove(&position);
-        self.tombstones += 1;
-        if !effects.is_empty() {
-            self.admit(position, expected_entity, effects);
-        }
-        self.compact_if_needed();
-        true
     }
 
     pub(crate) fn record_invalidations(
@@ -252,18 +363,7 @@ impl DimensionDerivedWork {
         expected_entity: Entity,
         requested: ChunkDerivedEffects,
     ) -> Option<ChunkDerivedWork> {
-        let work = self.take_without_compacting(position, expected_entity, requested);
-        self.compact_if_needed();
-        work
-    }
-
-    fn take_without_compacting(
-        &mut self,
-        position: ChunkPos,
-        expected_entity: Entity,
-        requested: ChunkDerivedEffects,
-    ) -> Option<ChunkDerivedWork> {
-        let entry = self.entries.get_mut(&position)?;
+        let mut entry = self.entries.get(&position).copied()?;
         if entry.expected_entity != expected_entity {
             return None;
         }
@@ -272,18 +372,28 @@ impl DimensionDerivedWork {
         if taken.is_empty() {
             return None;
         }
-        entry.effects.remove(taken);
+        for kind in ChunkDerivedWorkKind::ALL {
+            if !taken.contains(kind) {
+                continue;
+            }
+            entry.effects.remove(kind.into());
+            entry.admissions[kind.index()]
+                .take()
+                .expect("pending effect must retain its admission token");
+            self.ledgers[kind.index()].invalidate();
+        }
+        if entry.effects.is_empty() {
+            self.entries.remove(&position);
+        } else {
+            self.entries.insert(position, entry);
+        }
+        self.compact_effects(taken);
 
-        let work = ChunkDerivedWork {
+        Some(ChunkDerivedWork {
             position,
             expected_entity,
             effects: taken,
-        };
-        if entry.effects.is_empty() {
-            self.entries.remove(&position);
-            self.tombstones += 1;
-        }
-        Some(work)
+        })
     }
 
     /// Takes at most `limit` pending chunks for one consumer in FIFO order.
@@ -292,17 +402,43 @@ impl DimensionDerivedWork {
         kind: ChunkDerivedWorkKind,
         limit: usize,
     ) -> Vec<ChunkDerivedWork> {
-        let selected = self.pending(kind).take(limit).collect::<Vec<_>>();
-        let requested = ChunkDerivedEffects::only(kind);
+        if limit == 0 {
+            return Vec::new();
+        }
+        let index = kind.index();
+        let capacity = limit.min(self.ledgers[index].pending);
+        let mut taken = Vec::with_capacity(capacity);
 
-        let taken = selected
-            .into_iter()
-            .map(|work| {
-                self.take_without_compacting(work.position, work.expected_entity, requested)
-                    .expect("selected derived work must remain pending until it is taken")
-            })
-            .collect();
-        self.compact_if_needed();
+        while taken.len() < limit {
+            let Some(token) = self.ledgers[index].order.pop_front() else {
+                break;
+            };
+            let Some(mut entry) = self.entries.get(&token.position).copied() else {
+                self.ledgers[index].discard_popped_tombstone();
+                continue;
+            };
+            if entry.admissions[index] != Some(token.sequence) {
+                self.ledgers[index].discard_popped_tombstone();
+                continue;
+            }
+
+            debug_assert!(entry.effects.contains(kind));
+            self.ledgers[index].consume_popped_work();
+            entry.effects.remove(kind.into());
+            entry.admissions[index] = None;
+            if entry.effects.is_empty() {
+                self.entries.remove(&token.position);
+            } else {
+                self.entries.insert(token.position, entry);
+            }
+            taken.push(ChunkDerivedWork {
+                position: token.position,
+                expected_entity: entry.expected_entity,
+                effects: kind.into(),
+            });
+        }
+
+        self.compact_kind(kind);
         taken
     }
 
@@ -314,50 +450,46 @@ impl DimensionDerivedWork {
 
     pub(crate) fn clear(&mut self) {
         self.entries.clear();
-        self.order.clear();
-        self.next_sequence = 0;
-        self.tombstones = 0;
+        for ledger in &mut self.ledgers {
+            ledger.clear();
+        }
     }
 
-    fn admit(&mut self, position: ChunkPos, expected_entity: Entity, effects: ChunkDerivedEffects) {
-        debug_assert!(!effects.is_empty());
-        let sequence = self.next_sequence;
-        self.next_sequence = self
-            .next_sequence
-            .checked_add(1)
-            .expect("derived-work admission sequence exhausted");
-        let previous = self.entries.insert(
-            position,
-            DerivedWorkEntry {
-                expected_entity,
-                effects,
-                sequence,
-            },
-        );
-        debug_assert!(previous.is_none());
-        self.order.push_back(AdmissionToken { position, sequence });
+    fn admit_effects(
+        &mut self,
+        position: ChunkPos,
+        entry: &mut DerivedWorkEntry,
+        effects: ChunkDerivedEffects,
+    ) {
+        for kind in ChunkDerivedWorkKind::ALL {
+            if !effects.contains(kind) {
+                continue;
+            }
+            debug_assert!(!entry.effects.contains(kind));
+            let sequence = self.ledgers[kind.index()].admit(position);
+            entry.effects.insert(kind.into());
+            entry.admissions[kind.index()] = Some(sequence);
+        }
     }
 
-    fn compact_if_needed(&mut self) {
-        debug_assert_eq!(self.order.len(), self.entries.len() + self.tombstones);
-        if self.entries.is_empty() {
-            self.order.clear();
-            self.tombstones = 0;
-            return;
+    fn invalidate_effects(&mut self, effects: ChunkDerivedEffects) {
+        for kind in ChunkDerivedWorkKind::ALL {
+            if effects.contains(kind) {
+                self.ledgers[kind.index()].invalidate();
+            }
         }
+    }
 
-        let live_tokens = self.order.len() - self.tombstones;
-        if self.tombstones < Self::MIN_TOMBSTONES_TO_COMPACT || self.tombstones < live_tokens {
-            return;
+    fn compact_effects(&mut self, effects: ChunkDerivedEffects) {
+        for kind in ChunkDerivedWorkKind::ALL {
+            if effects.contains(kind) {
+                self.compact_kind(kind);
+            }
         }
+    }
 
-        self.order.retain(|token| {
-            self.entries
-                .get(&token.position)
-                .is_some_and(|entry| entry.sequence == token.sequence)
-        });
-        self.tombstones = 0;
-        debug_assert_eq!(self.order.len(), self.entries.len());
+    fn compact_kind(&mut self, kind: ChunkDerivedWorkKind) {
+        self.ledgers[kind.index()].compact_if_needed(kind, &self.entries);
     }
 }
 
@@ -459,11 +591,11 @@ mod tests {
         let old = entity(9);
         let replacement = entity((1_u64 << 32) | 9);
 
-        queue.record(replaced_position, old, MESH.into());
-        queue.record(other_position, entity(10), LIGHT.into());
+        queue.record(replaced_position, old, effects(&[MESH, COLLIDER]));
+        queue.record(other_position, entity(10), COLLIDER.into());
         queue.record(replaced_position, replacement, COLLIDER.into());
 
-        let work = queue.iter().collect::<Vec<_>>();
+        let work = queue.pending(COLLIDER).collect::<Vec<_>>();
         assert_eq!(work[0].position(), other_position);
         assert_eq!(work[1].position(), replaced_position);
         assert_eq!(work[1].expected_entity(), replacement);
@@ -530,6 +662,8 @@ mod tests {
         queue.record(positions[1], entity(21), COLLIDER.into());
         queue.record(positions[2], entity(22), MESH.into());
         queue.record(positions[3], entity(23), MESH.into());
+        assert_eq!(queue.ledgers[MESH.index()].order.len(), 3);
+        assert_eq!(queue.ledgers[COLLIDER.index()].order.len(), 2);
 
         let taken = queue.take_up_to(MESH, 2);
 
@@ -550,6 +684,54 @@ mod tests {
     }
 
     #[test]
+    fn readded_effect_is_admitted_behind_work_that_arrived_after_it_was_consumed() {
+        let mut queue = DimensionDerivedWork::new();
+        let first = ChunkPos::new(0, 0, 0);
+        let second = ChunkPos::new(1, 0, 0);
+        let first_entity = entity(45);
+        let second_entity = entity(46);
+        queue.record(first, first_entity, effects(&[MESH, FLUID]));
+
+        assert_eq!(
+            queue
+                .take(first, first_entity, MESH.into())
+                .unwrap()
+                .effects(),
+            MESH.into()
+        );
+        queue.record(second, second_entity, MESH.into());
+        queue.record(first, first_entity, MESH.into());
+
+        assert_eq!(
+            queue
+                .take_up_to(MESH, usize::MAX)
+                .into_iter()
+                .map(|work| work.position())
+                .collect::<Vec<_>>(),
+            vec![second, first]
+        );
+        assert_eq!(queue.get(first).unwrap().effects(), FLUID.into());
+    }
+
+    #[test]
+    fn bounded_take_skips_tombstones_left_by_random_take() {
+        let mut queue = DimensionDerivedWork::new();
+        let removed = ChunkPos::new(0, 0, 0);
+        let waiting = ChunkPos::new(1, 0, 0);
+        let removed_entity = entity(47);
+        queue.record(removed, removed_entity, MESH.into());
+        queue.record(waiting, entity(48), MESH.into());
+
+        queue.take(removed, removed_entity, MESH.into()).unwrap();
+        assert_eq!(queue.ledgers[MESH.index()].tombstones, 1);
+
+        assert_eq!(queue.take_up_to(MESH, 1)[0].position(), waiting);
+        assert_eq!(queue.effect_count(MESH), 0);
+        assert!(queue.ledgers[MESH.index()].order.is_empty());
+        assert_eq!(queue.ledgers[MESH.index()].tombstones, 0);
+    }
+
+    #[test]
     fn replacement_churn_preserves_fifo_and_compacts_tombstones_amortized() {
         let mut queue = DimensionDerivedWork::new();
         let replaced = ChunkPos::new(0, 0, 0);
@@ -565,12 +747,15 @@ mod tests {
         }
 
         assert_eq!(
-            queue.iter().map(|work| work.position()).collect::<Vec<_>>(),
+            queue
+                .pending(MESH)
+                .map(|work| work.position())
+                .collect::<Vec<_>>(),
             vec![waiting, replaced]
         );
+        let mesh_ledger = &queue.ledgers[MESH.index()];
         assert!(
-            queue.order.len()
-                < queue.entries.len() + DimensionDerivedWork::MIN_TOMBSTONES_TO_COMPACT
+            mesh_ledger.order.len() < mesh_ledger.pending + WorkLedger::MIN_TOMBSTONES_TO_COMPACT
         );
 
         assert_eq!(queue.take_up_to(MESH, 1)[0].position(), waiting);
