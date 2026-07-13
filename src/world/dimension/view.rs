@@ -122,6 +122,13 @@ impl DesiredColumnView {
         self.key.map(|key| key.center)
     }
 
+    /// Exact resident-data dependency closure needed to light the view center.
+    pub fn center_light_dependencies(&self) -> impl Iterator<Item = ChunkColumn> + '_ {
+        self.center()
+            .into_iter()
+            .flat_map(|center| center.chebyshev_neighborhood(1))
+    }
+
     pub fn height(&self) -> Option<WorldHeight> {
         self.key.map(|key| key.height)
     }
@@ -350,6 +357,16 @@ mod tests {
         assert_eq!(view.visible_column_count(), 5);
         assert_eq!(view.resident_column_count(), 21);
         assert_eq!(view.support_columns().count(), 16);
+        let center_dependencies = view.center_light_dependencies().collect::<HashSet<_>>();
+        assert_eq!(
+            center_dependencies,
+            center.chebyshev_neighborhood(1).collect::<HashSet<_>>()
+        );
+        assert!(
+            center_dependencies
+                .iter()
+                .all(|&column| view.contains_resident_column(column))
+        );
 
         for &visible in view.visible_columns() {
             for dependency in visible.chebyshev_neighborhood(1) {

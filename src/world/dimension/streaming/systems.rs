@@ -257,6 +257,28 @@ pub(crate) fn start_column_loads(
 ) {
     let (mut dimension, owner) = dimension.into_inner();
     dimension.assert_stream_owner(owner);
+    if load_budget.0 == 0 {
+        return;
+    }
+
+    // The center cannot begin lighting until this exact H1 closure is resident.
+    // Admit it as one dependency group instead of serializing it over several
+    // steady-state load windows.
+    let bootstrap_columns = desired_view
+        .center()
+        .filter(|&center| !dimension.has_complete_resident_light_neighborhood(center))
+        .map(|_| desired_view.center_light_dependencies().collect::<Vec<_>>())
+        .unwrap_or_default();
+    for &column in &bootstrap_columns {
+        try_start_column_load(
+            &mut dimension,
+            column,
+            desired_view.revision(),
+            &repository,
+            &task_pool,
+        );
+    }
+
     let available = load_budget
         .0
         .saturating_sub(dimension.stream().loading_count());
@@ -269,34 +291,52 @@ pub(crate) fn start_column_loads(
         if started >= available {
             break;
         }
-        if dimension.has_any_loaded_chunk_in_column(column) {
+        if bootstrap_columns.contains(&column) || dimension.has_any_loaded_chunk_in_column(column) {
             continue;
         }
 
-        let repository = repository.clone();
-        if dimension
-            .stream_mut()
-            .start_load(column, desired_view.revision(), || {
-                let submitted_at = Instant::now();
-                task_pool.spawn(async move {
-                    let queue_elapsed = submitted_at.elapsed();
-                    let worker_started = Instant::now();
-                    let result = load_or_generate_column(column, repository);
-                    let completed_at = Instant::now();
-                    CompletedColumnLoad {
-                        result,
-                        submitted_at,
-                        completed_at,
-                        queue_elapsed,
-                        worker_elapsed: completed_at.duration_since(worker_started),
-                    }
-                })
-            })
-            .is_some()
-        {
+        if try_start_column_load(
+            &mut dimension,
+            column,
+            desired_view.revision(),
+            &repository,
+            &task_pool,
+        ) {
             started += 1;
         }
     }
+}
+
+fn try_start_column_load(
+    dimension: &mut Dimension,
+    column: ChunkColumn,
+    view_revision: u64,
+    repository: &ChunkRepository,
+    task_pool: &ChunkTaskPool,
+) -> bool {
+    if dimension.has_any_loaded_chunk_in_column(column) {
+        return false;
+    }
+    dimension
+        .stream_mut()
+        .start_load(column, view_revision, || {
+            let repository = repository.clone();
+            let submitted_at = Instant::now();
+            task_pool.spawn(async move {
+                let queue_elapsed = submitted_at.elapsed();
+                let worker_started = Instant::now();
+                let result = load_or_generate_column(column, repository);
+                let completed_at = Instant::now();
+                CompletedColumnLoad {
+                    result,
+                    submitted_at,
+                    completed_at,
+                    queue_elapsed,
+                    worker_elapsed: completed_at.duration_since(worker_started),
+                }
+            })
+        })
+        .is_some()
 }
 
 fn record_column_load_perf(perf: Option<&mut ChunkPerfCounters>, completed: &CompletedColumnLoad) {

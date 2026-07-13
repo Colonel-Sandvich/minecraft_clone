@@ -172,7 +172,7 @@ fn load_completion_remains_bound_to_the_dimension_that_started_it() {
             .unwrap()
             .stream()
             .loading_count(),
-        1
+        9
     );
 
     app.world_mut().entity_mut(first).remove::<Active>();
@@ -262,15 +262,22 @@ fn one_dirty_chunk_blocks_eviction_of_the_whole_column() {
 }
 
 #[test]
-fn column_budgets_count_columns_not_subchunks() {
+fn initial_center_dependencies_are_admitted_as_one_column_group() {
     let height_chunks = 4;
+    let center = ChunkColumn::new(0, 0);
     let (mut app, dimension, _) = streaming_app(height_chunks);
 
     app.update();
 
     let dimension = app.world().get::<Dimension>(dimension).unwrap();
-    assert_eq!(dimension.stream().loading_count(), 1);
+    assert_eq!(dimension.stream().loading_count(), 9);
     assert_eq!(dimension.loaded_chunk_count(), 0);
+    for dependency in center.chebyshev_neighborhood(1) {
+        assert!(matches!(
+            dimension.stream().state(dependency),
+            Some(ColumnResidency::Loading { .. })
+        ));
+    }
 }
 
 #[test]

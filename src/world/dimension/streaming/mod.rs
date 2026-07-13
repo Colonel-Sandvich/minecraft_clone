@@ -26,6 +26,10 @@ pub(crate) use systems::{
     refresh_desired_column_view, start_column_loads,
 };
 
+/// Steady-state maximum number of in-flight column loads.
+///
+/// Zero pauses admission. A nonzero budget admits the view center's complete
+/// nine-column lighting dependency group as one indivisible bootstrap unit.
 #[derive(Resource, Debug, Clone, Copy)]
 pub struct ColumnLoadBudget(pub usize);
 
@@ -35,12 +39,14 @@ impl Default for ColumnLoadBudget {
     }
 }
 
+/// Hard limit on completed columns installed into ECS during one update.
 #[derive(Resource, Debug, Clone, Copy)]
 pub struct ColumnStagingBudget(pub usize);
 
 impl Default for ColumnStagingBudget {
     fn default() -> Self {
-        Self(8)
+        // One complete center-light dependency closure.
+        Self(9)
     }
 }
 
