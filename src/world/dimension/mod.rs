@@ -1,3 +1,12 @@
+// The queue is populated by follow-up, behavior-changing consumer migrations.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "consumer migration follows in the next atomic change"
+    )
+)]
+mod derived_work;
 mod fluid;
 mod invalidation;
 mod light;
@@ -20,6 +29,7 @@ use crate::game_state::{GameState, Playing};
 use core::future::Future;
 
 use self::{
+    derived_work::DimensionDerivedWork,
     fluid::DimensionFluidPlugin,
     light::{cancel_inactive_dimension_light_tasks, rebuild_chunk_light},
     light_task::DimensionLightTasks,
@@ -93,6 +103,11 @@ pub struct Dimension {
     height: WorldHeight,
     stream: DimensionStreamState,
     light_tasks: DimensionLightTasks,
+    #[expect(
+        dead_code,
+        reason = "consumer migration follows in the next atomic change"
+    )]
+    derived_work: DimensionDerivedWork,
 }
 
 #[derive(Debug)]
@@ -120,6 +135,7 @@ impl Dimension {
             height,
             stream: DimensionStreamState::new(owner),
             light_tasks: DimensionLightTasks::default(),
+            derived_work: DimensionDerivedWork::new(),
         }
     }
 
@@ -249,6 +265,22 @@ impl Dimension {
 
     pub(crate) fn light_tasks_mut(&mut self) -> &mut DimensionLightTasks {
         &mut self.light_tasks
+    }
+
+    #[expect(
+        dead_code,
+        reason = "consumer migration follows in the next atomic change"
+    )]
+    pub(crate) const fn derived_work(&self) -> &DimensionDerivedWork {
+        &self.derived_work
+    }
+
+    #[expect(
+        dead_code,
+        reason = "consumer migration follows in the next atomic change"
+    )]
+    pub(crate) fn derived_work_mut(&mut self) -> &mut DimensionDerivedWork {
+        &mut self.derived_work
     }
 
     pub(crate) fn assert_stream_owner(&self, owner: Entity) {
