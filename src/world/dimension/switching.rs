@@ -6,6 +6,7 @@ use crate::{
     mob::controller::{CharacterController, Grounded, Velocity},
     player::{
         Player, PlayerDimension,
+        cam::gameplay_input_active,
         control::KeyBindings,
         interaction::{BlockInteractionRequest, BlockInteractionSystems, CurrentBlockTarget},
     },
@@ -25,7 +26,8 @@ pub(super) fn install(app: &mut App) {
         PreUpdate,
         begin_dimension_switch
             .after(InputSystems)
-            .run_if(in_state(GameState::Playing)),
+            .run_if(in_state(GameState::Playing))
+            .run_if(gameplay_input_active),
     )
     .add_systems(
         FixedUpdate,

@@ -1,16 +1,25 @@
 use std::collections::HashMap;
 
 use bevy::{
-    asset::RenderAssetUsages, input::mouse::MouseWheel, prelude::*, render::render_resource::*,
+    asset::RenderAssetUsages,
+    input::mouse::MouseWheel,
+    prelude::*,
+    render::render_resource::*,
+    window::{CursorOptions, PrimaryWindow},
 };
 use image::{Rgba, RgbaImage, imageops::FilterType};
 use strum::IntoEnumIterator;
 
-use crate::block::{
-    BlockType, WATER_RENDER_ID, render_id_for_block, render_id_to_colour, render_id_to_texture_path,
-};
 use crate::quad::Direction;
 use crate::world::chunk::ChunkCell;
+use crate::{
+    block::{
+        BlockType, WATER_RENDER_ID, render_id_for_block, render_id_to_colour,
+        render_id_to_texture_path,
+    },
+    game_state::GameState,
+    player::cam::{MouseState, gameplay_input_is_active},
+};
 
 pub struct HotbarPlugin;
 
@@ -388,7 +397,29 @@ fn handle_hotbar_input(
     mut hotbar: ResMut<Hotbar>,
     keyboard: Res<ButtonInput<KeyCode>>,
     mut mouse_wheel: MessageReader<MouseWheel>,
+    game_state: Res<State<GameState>>,
+    mouse_state: Res<State<MouseState>>,
+    primary_windows: Query<(&Window, &CursorOptions), With<PrimaryWindow>>,
 ) {
+    let input_active = primary_windows
+        .single()
+        .is_ok_and(|(window, cursor_options)| {
+            gameplay_input_is_active(
+                *game_state.get(),
+                *mouse_state.get(),
+                window.focused,
+                cursor_options.grab_mode,
+                keyboard.just_pressed(KeyCode::Escape),
+            )
+        });
+
+    if !input_active {
+        // Advance the reader so scroll input generated over the pause menu
+        // cannot select a different slot immediately after resuming.
+        mouse_wheel.read().for_each(drop);
+        return;
+    }
+
     for i in 0..HOTBAR_SLOTS {
         let key = match i {
             0 => KeyCode::Digit1,

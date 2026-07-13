@@ -146,3 +146,27 @@ fn interaction_request_uses_action_specific_block_position() {
         target.adjacent_block
     );
 }
+
+#[test]
+fn clearing_interaction_state_discards_target_and_pending_requests() {
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins)
+        .insert_resource(CurrentBlockTarget(Some(target())))
+        .add_message::<BlockInteractionRequest>()
+        .add_systems(Update, clear_block_interaction_state);
+    app.world_mut()
+        .resource_mut::<Messages<BlockInteractionRequest>>()
+        .write(BlockInteractionRequest {
+            kind: BlockInteractionKind::Break,
+            target: target(),
+        });
+
+    app.update();
+
+    assert_eq!(app.world().resource::<CurrentBlockTarget>().0, None);
+    assert!(
+        app.world()
+            .resource::<Messages<BlockInteractionRequest>>()
+            .is_empty()
+    );
+}

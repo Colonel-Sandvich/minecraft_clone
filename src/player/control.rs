@@ -6,7 +6,7 @@ use crate::{
 
 use super::{
     GameMode, Player, PlayerDimension,
-    cam::{MouseCam, MouseState},
+    cam::{MouseCam, gameplay_input_active},
     spawn::make_player_collider,
 };
 use avian3d::prelude::*;
@@ -19,11 +19,17 @@ impl Plugin for ControlPlayerPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<KeyBindings>();
 
-        app.add_systems(PreUpdate, change_gamemode);
-        app.add_systems(PreUpdate, toggle_fly);
-        app.add_systems(PreUpdate, debug_reset_character);
-        app.add_systems(PreUpdate, adjust_view_distance);
-        app.add_systems(PreUpdate, toggle_grab_cursor);
+        app.add_systems(
+            PreUpdate,
+            (
+                change_gamemode,
+                toggle_fly,
+                debug_reset_character,
+                adjust_view_distance,
+            )
+                .run_if(gameplay_input_active)
+                .after(bevy::input::InputSystems),
+        );
     }
 }
 
@@ -37,7 +43,6 @@ pub struct KeyBindings {
     pub move_descend: KeyCode,
     pub jump: KeyCode,
     pub sprint: KeyCode,
-    pub toggle_grab_cursor: KeyCode,
     pub change_gamemode: KeyCode,
     pub switch_dimension: KeyCode,
     pub debug_reset_character: KeyCode,
@@ -101,7 +106,6 @@ impl Default for KeyBindings {
             move_descend: KeyCode::ControlLeft,
             jump: KeyCode::Space,
             sprint: KeyCode::ShiftLeft,
-            toggle_grab_cursor: KeyCode::Escape,
             change_gamemode: KeyCode::F4,
             switch_dimension: KeyCode::F6,
             debug_reset_character: KeyCode::KeyR,
@@ -203,23 +207,5 @@ fn adjust_view_distance(
     }
     if changed {
         commands.queue(SaveSettingsDeferred::default());
-    }
-}
-
-fn toggle_grab_cursor(
-    pressed_keys: Res<ButtonInput<KeyCode>>,
-    key_bindings: Res<KeyBindings>,
-    mouse_state: ResMut<State<MouseState>>,
-    mut next_mouse_state: ResMut<NextState<MouseState>>,
-) {
-    if pressed_keys.just_pressed(key_bindings.toggle_grab_cursor) {
-        match mouse_state.get() {
-            MouseState::Free => {
-                next_mouse_state.set(MouseState::Grabbed);
-            }
-            MouseState::Grabbed => {
-                next_mouse_state.set(MouseState::Free);
-            }
-        };
     }
 }

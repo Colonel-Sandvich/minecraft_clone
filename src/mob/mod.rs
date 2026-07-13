@@ -1,7 +1,7 @@
 pub mod collide_and_slide;
 pub mod controller;
 
-use crate::player::cam::MouseState;
+use crate::player::cam::gameplay_input_active;
 use avian3d::physics_transform::PhysicsTransformSystems;
 use avian3d::prelude::PhysicsSystems;
 use bevy::prelude::*;
@@ -45,7 +45,7 @@ impl Plugin for MobControllerPlugin {
         app.add_systems(
             FixedUpdate,
             (apply_flight_vertical_input, apply_player_movement_input)
-                .distributive_run_if(in_state(MouseState::Grabbed))
+                .distributive_run_if(gameplay_input_active)
                 .after(MobPhysicsSystems::HorizontalDrag)
                 .before(PhysicsSystems::StepSimulation),
         );

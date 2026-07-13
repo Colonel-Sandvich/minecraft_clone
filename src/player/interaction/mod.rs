@@ -5,6 +5,7 @@ use avian3d::{
 use bevy::{color::palettes::basic, input::InputSystems, prelude::*};
 
 use crate::{
+    game_state::GameState,
     ui::Hotbar,
     world::{
         ACTOR_LAYER, WORLD_LAYER,
@@ -16,7 +17,7 @@ use crate::{
     },
 };
 
-use super::cam::MouseCam;
+use super::cam::{MouseCam, MouseState, gameplay_input_active};
 
 pub struct BlockInteractionPlugin;
 
@@ -24,7 +25,15 @@ impl Plugin for BlockInteractionPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<CurrentBlockTarget>()
             .add_message::<BlockInteractionRequest>()
-            .add_systems(PreUpdate, update_block_target.after(InputSystems))
+            .add_systems(
+                PreUpdate,
+                update_block_target
+                    .run_if(gameplay_input_active)
+                    .after(InputSystems),
+            )
+            .add_systems(OnEnter(GameState::Paused), clear_block_interaction_state)
+            .add_systems(OnEnter(GameState::Playing), clear_block_interaction_state)
+            .add_systems(OnEnter(MouseState::Free), clear_block_interaction_state)
             .add_systems(
                 FixedUpdate,
                 (
@@ -32,7 +41,8 @@ impl Plugin for BlockInteractionPlugin {
                     apply_block_interaction_requests
                         .after(BlockInteractionSystems::EmitRequests)
                         .in_set(crate::world::ChunkSimulationSet::ExternalMutation),
-                ),
+                )
+                    .run_if(gameplay_input_active),
             );
     }
 }
@@ -74,6 +84,16 @@ impl BlockInteractionRequest {
 }
 
 pub const PLAYER_REACH: f32 = 5.0;
+
+fn clear_block_interaction_state(
+    mut current_target: ResMut<CurrentBlockTarget>,
+    requests: Option<ResMut<Messages<BlockInteractionRequest>>>,
+) {
+    current_target.0 = None;
+    if let Some(mut requests) = requests {
+        requests.clear();
+    }
+}
 
 fn update_block_target(
     camera: Single<(&ChildOf, &GlobalTransform), With<MouseCam>>,
