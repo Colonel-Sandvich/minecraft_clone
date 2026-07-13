@@ -1,6 +1,6 @@
 use crate::{
     block::BlockType,
-    world::chunk::{ChunkBlockPos, ChunkCell, ChunkPos, LocalBlockPos},
+    world::chunk::{CellDelta, ChunkBlockPos, ChunkCell, ChunkPos, LocalBlockPos},
 };
 
 use super::*;
@@ -144,6 +144,34 @@ fn interaction_request_uses_action_specific_block_position() {
         }
         .block_pos(),
         target.adjacent_block
+    );
+}
+
+#[test]
+fn committed_edit_requires_a_successful_world_delta() {
+    let position = block_pos(uvec3(4, 5, 6));
+    let delta = CellDelta {
+        old: BlockType::Stone.into(),
+        new: ChunkCell::EMPTY,
+    };
+
+    assert_eq!(
+        committed_block_edit(BlockInteractionKind::Break, position, Some(delta)),
+        Some(BlockEditCommitted {
+            kind: BlockEditKind::Break,
+            position,
+            delta,
+        })
+    );
+    assert_eq!(
+        committed_block_edit(BlockInteractionKind::Break, position, None),
+        None,
+        "an input attempt that did not mutate the chunk must stay silent"
+    );
+    assert_eq!(
+        committed_block_edit(BlockInteractionKind::Pick, position, Some(delta)),
+        None,
+        "picking a hotbar cell is not a world edit"
     );
 }
 

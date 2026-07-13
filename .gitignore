@@ -2,6 +2,8 @@
 /assets/*
 !/assets/shaders/
 !/assets/shaders/**
+!/assets/audio/
+!/assets/audio/**
 /saves
 perf.data.old
 flamegraph_reference_full.svg

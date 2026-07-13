@@ -10,7 +10,7 @@ use crate::{
     world::{
         ACTOR_LAYER, WORLD_LAYER,
         chunk::{
-            Chunk, ChunkBlockPos, ChunkCell, ChunkContentCounts, ChunkEditor,
+            CellDelta, Chunk, ChunkBlockPos, ChunkCell, ChunkContentCounts, ChunkEditor,
             ChunkInvalidationPlan, WorldBlockPos,
         },
         dimension::{Active, Dimension, apply_chunk_invalidations},
@@ -25,6 +25,7 @@ impl Plugin for BlockInteractionPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<CurrentBlockTarget>()
             .add_message::<BlockInteractionRequest>()
+            .add_message::<BlockEditCommitted>()
             .add_systems(
                 PreUpdate,
                 update_block_target
@@ -72,6 +73,23 @@ pub enum BlockInteractionKind {
 pub struct BlockInteractionRequest {
     pub kind: BlockInteractionKind,
     pub target: BlockTarget,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BlockEditKind {
+    Break,
+    Place,
+}
+
+/// A player edit that crossed the world's tracked mutation boundary.
+///
+/// Consumers such as audio and particles should react to this message instead
+/// of raw input, because failed placement and no-op edits never produce it.
+#[derive(Message, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BlockEditCommitted {
+    pub kind: BlockEditKind,
+    pub position: ChunkBlockPos,
+    pub delta: CellDelta,
 }
 
 impl BlockInteractionRequest {
@@ -179,6 +197,7 @@ fn emit_block_interaction_requests(
 fn apply_block_interaction_requests(
     mut commands: Commands,
     mut requests: MessageReader<BlockInteractionRequest>,
+    mut committed_edits: MessageWriter<BlockEditCommitted>,
     dimension: Single<&mut Dimension, With<Active>>,
     mut chunks: Query<(&mut Chunk, &mut ChunkContentCounts)>,
     mut hotbar: ResMut<Hotbar>,
@@ -199,16 +218,15 @@ fn apply_block_interaction_requests(
             continue;
         };
 
-        match request.kind {
+        let delta = match request.kind {
             BlockInteractionKind::Pick => {
                 hotbar.set_selected_cell(chunk.cell(pos.local()));
+                None
             }
             BlockInteractionKind::Break => {
                 let mut editor =
                     ChunkEditor::new(pos.chunk(), &mut chunk, &mut counts, &mut invalidations);
-                if editor.break_block(pos.local()).is_none() {
-                    continue;
-                }
+                editor.break_block(pos.local())
             }
             BlockInteractionKind::Place => {
                 let Some(cell) = hotbar.selected_cell() else {
@@ -222,14 +240,34 @@ fn apply_block_interaction_requests(
 
                 let mut editor =
                     ChunkEditor::new(pos.chunk(), &mut chunk, &mut counts, &mut invalidations);
-                if editor.place_cell(pos.local(), cell).is_none() {
-                    continue;
-                }
+                editor.place_cell(pos.local(), cell)
             }
+        };
+
+        if let Some(edit) = committed_block_edit(request.kind, pos, delta) {
+            committed_edits.write(edit);
         }
     }
 
     apply_chunk_invalidations(&mut commands, &mut dimension, &invalidations);
+}
+
+fn committed_block_edit(
+    interaction: BlockInteractionKind,
+    position: ChunkBlockPos,
+    delta: Option<CellDelta>,
+) -> Option<BlockEditCommitted> {
+    let kind = match interaction {
+        BlockInteractionKind::Break => BlockEditKind::Break,
+        BlockInteractionKind::Place => BlockEditKind::Place,
+        BlockInteractionKind::Pick => return None,
+    };
+
+    Some(BlockEditCommitted {
+        kind,
+        position,
+        delta: delta?,
+    })
 }
 
 fn placement_requires_actor_clearance(cell: ChunkCell) -> bool {

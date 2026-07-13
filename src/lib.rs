@@ -1,6 +1,7 @@
 #![feature(const_trait_impl)]
 
 pub mod app;
+pub mod audio;
 pub mod block;
 pub mod game_state;
 pub mod input;

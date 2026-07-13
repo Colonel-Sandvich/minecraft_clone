@@ -16,6 +16,7 @@ use bevy_inspector_egui::{bevy_egui::EguiPlugin, quick::WorldInspectorPlugin};
 use bevy_settings::SettingsPlugin;
 
 use crate::{
+    audio::{GameAudioPlugin, GameAudioSettings},
     game_state::GameStatePlugin,
     light::LightPlugin,
     memory::{MemoryTrackingPlugin, memory_profiler_enabled},
@@ -55,10 +56,12 @@ impl Plugin for AppPlugin {
         )
         .register_type::<ViewDistance>()
         .register_type::<MouseSettings>()
+        .register_type::<GameAudioSettings>()
         .add_plugins(SettingsPlugin::new("io.github.matt.minecraft_clone"))
         .add_plugins(EguiPlugin::default())
         .insert_resource(ClearColor(Srgba::hex("74b3ff").unwrap().into()))
         .add_plugins(GameStatePlugin)
+        .add_plugins(GameAudioPlugin)
         .add_plugins(LightPlugin)
         .add_plugins(MobControllerPlugin)
         .add_plugins(PlayerPlugin)
