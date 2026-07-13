@@ -12,6 +12,15 @@ use super::{
 #[derive(Resource, Debug, Default)]
 pub struct ChunkPerfCounters {
     pub mesh_rebuilds: usize,
+    pub mesh_rebuild_runs: usize,
+    pub mesh_rebuild_elapsed: Duration,
+    pub mesh_rebuild_max_elapsed: Duration,
+    pub mesh_context_elapsed: Duration,
+    pub mesh_context_max_elapsed: Duration,
+    pub mesh_build_elapsed: Duration,
+    pub mesh_build_max_elapsed: Duration,
+    pub mesh_apply_elapsed: Duration,
+    pub mesh_apply_max_elapsed: Duration,
     pub light_rebuild_targets: usize,
     pub light_patch_runs: usize,
     pub light_patch_calculation_chunks: usize,

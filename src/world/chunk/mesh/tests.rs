@@ -2,17 +2,19 @@ use std::sync::Arc;
 
 use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
+use bevy::state::app::StatesPlugin;
 
 use crate::block::{
     BlockMaterialLayer, BlockType, WATER_RENDER_ID, from_render_id, render_id_for_block,
 };
 use crate::quad::Direction;
+use crate::textures::TextureState;
 use crate::world::chunk::mesh::mesher::{build, build_reference};
 use crate::world::chunk::{
     CHUNK_ISIZE, CHUNK_SIZE, Chunk, ChunkCell, ChunkLight, ChunkNeedsMeshRebuild,
     ChunkNeedsRenderLightUpload, ChunkPos, ChunkPosition, LocalBlockPos,
 };
-use crate::world::dimension::{Active, Dimension};
+use crate::world::dimension::{Active, Dimension, DimensionStreamingSet};
 
 use super::{
     ChunkMeshBlocks, ChunkMeshFaces, ChunkMeshLayer, ChunkMeshLight, PreparedChunkMeshLight,
@@ -355,6 +357,68 @@ fn mesh_rebuild_marker_is_removed_after_rebuild() {
         .filter(|child| world.get::<ChunkMeshLayer>(*child).is_some())
         .count();
     assert_eq!(mesh_child_count, 1);
+}
+
+#[derive(Component)]
+struct PublishedThisUpdate;
+
+fn record_test_publication(
+    mut commands: Commands,
+    published: Query<Entity, With<PublishedThisUpdate>>,
+) {
+    for entity in &published {
+        commands
+            .entity(entity)
+            .insert((ChunkNeedsMeshRebuild, ChunkNeedsRenderLightUpload));
+    }
+}
+
+#[test]
+fn publication_markers_are_consumed_by_visual_work_in_the_same_update() {
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins)
+        .add_plugins(StatesPlugin)
+        .init_state::<TextureState>()
+        .add_systems(
+            Update,
+            record_test_publication.in_set(DimensionStreamingSet),
+        );
+    super::systems::install(&mut app);
+    add_active_dimension(&mut app);
+
+    let mut chunk = Chunk::default();
+    chunk.set_cell_xyz(0, 0, 0, block_cell(BlockType::Stone));
+    let chunk_entity = app
+        .world_mut()
+        .spawn((
+            ChunkPosition::from(ChunkPos::ZERO),
+            chunk,
+            ChunkLight::default(),
+            Transform::default(),
+            PublishedThisUpdate,
+        ))
+        .id();
+    register_active_chunk(&mut app, ChunkPos::ZERO, chunk_entity);
+    app.world_mut()
+        .resource_mut::<NextState<TextureState>>()
+        .set(TextureState::Finished);
+
+    app.update();
+
+    let world = app.world();
+    assert!(world.get::<ChunkNeedsMeshRebuild>(chunk_entity).is_none());
+    assert!(
+        world
+            .get::<ChunkNeedsRenderLightUpload>(chunk_entity)
+            .is_none()
+    );
+    let mesh_children = world
+        .get::<Children>(chunk_entity)
+        .unwrap()
+        .iter()
+        .filter(|child| world.get::<ChunkMeshLayer>(*child).is_some())
+        .count();
+    assert_eq!(mesh_children, 1);
 }
 
 #[test]

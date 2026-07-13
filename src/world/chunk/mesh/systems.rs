@@ -1,10 +1,10 @@
-use std::sync::Arc;
+use std::{sync::Arc, time::Instant};
 
 use bevy::{camera::primitives::Aabb, platform::collections::HashMap, prelude::*, utils::Parallel};
 
 use crate::block::BlockMaterialLayer;
 use crate::textures::TextureState;
-use crate::world::dimension::{Active, Dimension};
+use crate::world::dimension::{Active, Dimension, DimensionStreamingSet};
 
 use super::super::{
     CHUNK_SIZE, Chunk, ChunkLight, ChunkNeedsMeshRebuild, ChunkNeedsRenderLightUpload,
@@ -17,9 +17,10 @@ use super::{
 
 pub(super) fn install(app: &mut App) {
     app.add_systems(
-        FixedPreUpdate,
+        Update,
         (rebuild_chunk_meshes, upload_chunk_lights)
             .chain()
+            .after(DimensionStreamingSet)
             .run_if(in_state(TextureState::Finished)),
     )
     .add_systems(PostUpdate, drop_uploaded_faces);
@@ -69,6 +70,8 @@ pub(super) fn rebuild_chunk_meshes(
         return;
     }
 
+    let rebuild_started = Instant::now();
+    let context_started = Instant::now();
     let mut chunks_by_pos = HashMap::with_capacity(dimension.loaded_chunk_count());
     for (registered, entity) in dimension.iter_loaded_chunks() {
         let Ok((actual, chunk)) = all_chunks_q.get(entity) else {
@@ -94,7 +97,9 @@ pub(super) fn rebuild_chunk_meshes(
             }
         }
     }
+    let context_elapsed = context_started.elapsed();
 
+    let build_started = Instant::now();
     let mut build_queue = Parallel::<Vec<ChunkMeshBuild>>::default();
     dirty_chunks_q.par_iter().for_each_init(
         || build_queue.borrow_local_mut(),
@@ -114,7 +119,9 @@ pub(super) fn rebuild_chunk_meshes(
 
     let mut builds = Vec::new();
     build_queue.drain_into(&mut builds);
+    let build_elapsed = build_started.elapsed();
     let rebuilt_count = builds.len();
+    let apply_started = Instant::now();
     for build in builds {
         let origin = chunk_transform_q
             .get(build.entity)
@@ -136,9 +143,20 @@ pub(super) fn rebuild_chunk_meshes(
             .entity(build.entity)
             .remove::<ChunkNeedsMeshRebuild>();
     }
+    let apply_elapsed = apply_started.elapsed();
+    let rebuild_elapsed = rebuild_started.elapsed();
 
     if let Some(perf) = perf.as_deref_mut() {
         perf.mesh_rebuilds += rebuilt_count;
+        perf.mesh_rebuild_runs += 1;
+        perf.mesh_rebuild_elapsed += rebuild_elapsed;
+        perf.mesh_rebuild_max_elapsed = perf.mesh_rebuild_max_elapsed.max(rebuild_elapsed);
+        perf.mesh_context_elapsed += context_elapsed;
+        perf.mesh_context_max_elapsed = perf.mesh_context_max_elapsed.max(context_elapsed);
+        perf.mesh_build_elapsed += build_elapsed;
+        perf.mesh_build_max_elapsed = perf.mesh_build_max_elapsed.max(build_elapsed);
+        perf.mesh_apply_elapsed += apply_elapsed;
+        perf.mesh_apply_max_elapsed = perf.mesh_apply_max_elapsed.max(apply_elapsed);
     }
 }
 
