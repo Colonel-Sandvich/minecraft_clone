@@ -48,10 +48,10 @@ struct MaterialBuffers {
     ao_brightness: Buffer,
 }
 
-type MeshNeedsPreparation = Or<(
+type MeshNeedsPreparation<Prepared = PreparedChunkMesh> = Or<(
     Changed<ChunkMeshLayer>,
-    Changed<ChunkMeshFaces>,
-    Without<PreparedChunkMesh>,
+    With<ChunkMeshFaces>,
+    Without<Prepared>,
 )>;
 
 pub(super) fn extract_changed_meshes(
@@ -493,6 +493,16 @@ mod tests {
         visits.0 += meshes.iter().count();
     }
 
+    #[derive(Component)]
+    struct AlreadyPrepared;
+
+    fn count_pending_face_payloads(
+        meshes: Query<(Entity, &ChunkMeshLayer), MeshNeedsPreparation<AlreadyPrepared>>,
+        mut visits: ResMut<PreparationVisits>,
+    ) {
+        visits.0 += meshes.iter().count();
+    }
+
     #[test]
     fn chunk_origin_uniform_matches_shader_layout() {
         assert_eq!(std::mem::size_of::<ChunkOriginUniform>(), 16);
@@ -510,6 +520,26 @@ mod tests {
             Vec3::ZERO,
             &faces,
         ));
+
+        app.update();
+        app.update();
+
+        assert_eq!(app.world().resource::<PreparationVisits>().0, 2);
+    }
+
+    #[test]
+    fn pending_face_payload_is_retried_for_an_existing_prepared_mesh() {
+        let mut app = App::new();
+        app.init_resource::<PreparationVisits>()
+            .add_systems(Update, count_pending_face_payloads);
+
+        let faces = ChunkMeshFaces::new(Vec::new());
+        let mesh = ChunkMeshLayer::new(
+            crate::block::BlockMaterialLayer::Opaque,
+            Vec3::ZERO,
+            &faces,
+        );
+        app.world_mut().spawn((mesh, faces, AlreadyPrepared));
 
         app.update();
         app.update();
