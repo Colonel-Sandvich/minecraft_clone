@@ -103,6 +103,21 @@ pub(super) fn prepare_gpu_data(
     animation_clock: Option<Res<TerrainAnimationClock>>,
     mut globals: ResMut<Globals>,
 ) {
+    let mut updated_light_buffers = HashSet::new();
+
+    // Existing light buffers remain writable while terrain resources initialize or recover.
+    // Consume their change wakeups before the resource guards below.
+    for (entity, light) in &changed_lights {
+        if let Ok(prepared) = prepared_meshes.get(entity) {
+            write_light_buffer_once(
+                &render_queue,
+                &mut updated_light_buffers,
+                &prepared.light_buffer,
+                &light,
+            );
+        }
+    }
+
     let Some(pipeline) = pipeline else { return };
     let Some(material_state) = material_state else {
         return;
@@ -125,7 +140,6 @@ pub(super) fn prepare_gpu_data(
 
     let mut prepared_this_frame = HashSet::new();
     let mut light_buffers_by_data = HashMap::new();
-    let mut updated_light_buffers = HashSet::new();
 
     // Face payloads are an independent invalidation source. In particular, a topology rebuild may
     // keep the same face count and origin, so preparation must not rely on metadata changing.
@@ -133,7 +147,9 @@ pub(super) fn prepare_gpu_data(
         prepared_this_frame.insert(entity);
 
         if mesh.face_count() == 0 {
-            commands.entity(entity).remove::<PreparedChunkMesh>();
+            commands
+                .entity(entity)
+                .remove::<(PreparedChunkMesh, ChunkMeshFaces)>();
             continue;
         }
 
@@ -176,13 +192,8 @@ pub(super) fn prepare_gpu_data(
             continue;
         }
 
-        if let Ok(prepared) = prepared_meshes.get(entity) {
-            write_light_buffer_once(
-                &render_queue,
-                &mut updated_light_buffers,
-                &prepared.light_buffer,
-                &light,
-            );
+        if prepared_meshes.get(entity).is_ok() {
+            // The buffer was updated before the terrain resource guards.
             continue;
         }
 
@@ -193,7 +204,9 @@ pub(super) fn prepare_gpu_data(
             continue;
         };
         if mesh.face_count() == 0 {
-            commands.entity(entity).remove::<PreparedChunkMesh>();
+            commands
+                .entity(entity)
+                .remove::<(PreparedChunkMesh, ChunkMeshFaces)>();
             continue;
         }
 
