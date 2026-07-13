@@ -78,6 +78,13 @@ pub(crate) fn column_colliders_ready(
     true
 }
 
+pub(crate) fn discard_chunk_collider_work(dimension: Option<Single<&mut Dimension, With<Active>>>) {
+    let Some(mut dimension) = dimension else {
+        return;
+    };
+    dimension.take_collider_rebuilds();
+}
+
 fn rebuild_chunk_colliders(
     mut commands: Commands,
     chunks_q: Query<(
@@ -146,6 +153,14 @@ mod tests {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins)
             .add_systems(Update, rebuild_chunk_colliders);
+        add_test_dimension(&mut app);
+        app
+    }
+
+    fn collider_disabled_app() -> App {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .add_systems(Update, discard_chunk_collider_work);
         add_test_dimension(&mut app);
         app
     }
@@ -250,6 +265,30 @@ mod tests {
             .unwrap();
         assert!(!dimension.has_pending_collider_rebuild(ChunkPos::ZERO));
         assert_eq!(collider_child_count(world, chunk_entity), 1);
+    }
+
+    #[test]
+    fn disabled_runtime_discards_collider_work_without_building_colliders() {
+        let mut app = collider_disabled_app();
+
+        let mut chunk = Chunk::default();
+        chunk.set_cell_xyz(0, 0, 0, BlockType::Stone.into());
+        let meta = chunk.compute_content_counts();
+        let chunk_entity = app
+            .world_mut()
+            .spawn((ChunkPosition::from(ChunkPos::ZERO), chunk, meta))
+            .id();
+        register_active_chunk(&mut app, ChunkPos::ZERO, chunk_entity);
+        enqueue_active_rebuild(&mut app, ChunkPos::ZERO);
+
+        app.update();
+
+        let world = app.world();
+        let dimension = world
+            .get::<Dimension>(world.resource::<TestDimension>().0)
+            .unwrap();
+        assert!(!dimension.has_pending_collider_rebuild(ChunkPos::ZERO));
+        assert_eq!(collider_child_count(world, chunk_entity), 0);
     }
 
     #[test]

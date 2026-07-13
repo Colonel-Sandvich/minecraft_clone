@@ -9,10 +9,25 @@ use bevy::{
 use super::{Active, ChunkTaskPool, DesiredColumnView, Dimension};
 
 use crate::world::{
-    chunk::{Chunk, ChunkHeightmap, ChunkNeedsSave, ChunkPosition, ChunkRevision},
+    chunk::{Chunk, ChunkColumn, ChunkHeightmap, ChunkNeedsSave, ChunkPosition, ChunkRevision},
     definition::ChunkAddress,
     storage::{ChunkRepository, ChunkStoreError, ChunkStoreResult},
 };
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum SaveSnapshotContext<'a> {
+    ResidentView(&'a DesiredColumnView),
+    Detached,
+}
+
+impl SaveSnapshotContext<'_> {
+    fn eviction_priority(self, column: ChunkColumn) -> bool {
+        match self {
+            Self::ResidentView(view) => !view.contains_resident_column(column),
+            Self::Detached => true,
+        }
+    }
+}
 
 const INITIAL_SAVE_RETRY_DELAY_UPDATES: u32 = 60;
 const MAX_SAVE_RETRY_DELAY_UPDATES: u32 = 600;
@@ -371,7 +386,13 @@ pub(crate) fn start_chunk_save_tasks(
 
     if let Some(active_dimension) = active_dimension {
         let (dimension, desired_view, owner) = active_dimension.into_inner();
-        capture_dimension_save_snapshots(&mut save_tasks, dimension, desired_view, owner, &chunks);
+        capture_dimension_save_snapshots(
+            &mut save_tasks,
+            dimension,
+            SaveSnapshotContext::ResidentView(desired_view),
+            owner,
+            &chunks,
+        );
     }
 
     let available_slots = save_budget.0.saturating_sub(save_tasks.in_flight.len());
@@ -420,12 +441,13 @@ pub(crate) fn start_chunk_save_tasks(
 }
 
 /// Transfers every dirty registered chunk in one runtime dimension into the
-/// persistence queue. Switching code must call this before despawning an
-/// outgoing root; capture is independent of `Active` and the I/O budget.
+/// persistence queue. Switching code must call this before despawning the
+/// outgoing column entities; capture is independent of `Active` and the I/O
+/// budget.
 pub(crate) fn capture_dimension_save_snapshots(
     save_tasks: &mut ChunkSaveTasks,
     dimension: &Dimension,
-    desired_view: &DesiredColumnView,
+    context: SaveSnapshotContext<'_>,
     owner: Entity,
     chunks: &Query<(
         &ChunkPosition,
@@ -437,9 +459,14 @@ pub(crate) fn capture_dimension_save_snapshots(
     dimension.assert_stream_owner(owner);
     let mut captured = 0;
     for (registered_position, entity) in dimension.iter_loaded_chunks() {
-        let Ok((position, chunk, heightmap, Some(_))) = chunks.get(entity) else {
+        let (position, chunk, heightmap, needs_save) = chunks.get(entity).unwrap_or_else(|error| {
+            panic!(
+                "loaded chunk {registered_position:?} ({entity:?}) must retain its save components: {error}"
+            )
+        });
+        if needs_save.is_none() {
             continue;
-        };
+        }
         assert_eq!(
             position.chunk_pos(),
             registered_position,
@@ -454,7 +481,7 @@ pub(crate) fn capture_dimension_save_snapshots(
             },
             chunk,
             *heightmap,
-            !desired_view.contains_resident_column(registered_position.into()),
+            context.eviction_priority(registered_position.column()),
         );
         captured += 1;
     }

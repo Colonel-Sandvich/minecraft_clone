@@ -276,7 +276,13 @@ fn capture_all_dimension_save_snapshots(
     )>,
 ) {
     for (dimension, desired_view, owner) in &dimensions {
-        capture_dimension_save_snapshots(&mut save_tasks, dimension, desired_view, owner, &chunks);
+        capture_dimension_save_snapshots(
+            &mut save_tasks,
+            dimension,
+            SaveSnapshotContext::ResidentView(desired_view),
+            owner,
+            &chunks,
+        );
     }
 }
 
@@ -285,6 +291,20 @@ fn candidate(address: ChunkAddress, eviction_priority: bool) -> ChunkSaveCandida
         address,
         eviction_priority,
     }
+}
+
+#[test]
+fn detached_capture_prioritizes_columns_that_were_resident_before_teardown() {
+    let center = ChunkColumn::new(0, 0);
+    let mut view = DesiredColumnView::default();
+    assert!(view.refresh(
+        center,
+        crate::world::dimension::ViewDistance::new(1),
+        WorldMetadata::default().height(),
+    ));
+
+    assert!(!SaveSnapshotContext::ResidentView(&view).eviction_priority(center));
+    assert!(SaveSnapshotContext::Detached.eviction_priority(center));
 }
 
 #[test]

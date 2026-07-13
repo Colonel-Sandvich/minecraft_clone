@@ -14,7 +14,7 @@ mod state;
 
 use bevy::prelude::*;
 
-use collider::ChunkColliderPlugin;
+use collider::{ChunkColliderPlugin, discard_chunk_collider_work};
 use mesh::ChunkMeshPlugin;
 
 pub use codec::ChunkDecodeError;
@@ -41,12 +41,32 @@ pub(crate) use neighborhood::chunk_neighbor_offsets;
 
 pub struct ChunkPlugin;
 
+#[derive(Resource, Debug, Clone, Copy)]
+pub(crate) struct ChunkColliderRuntime {
+    enabled: bool,
+}
+
+impl ChunkColliderRuntime {
+    pub(crate) const fn new(enabled: bool) -> Self {
+        Self { enabled }
+    }
+
+    pub(crate) const fn enabled(self) -> bool {
+        self.enabled
+    }
+}
+
 impl Plugin for ChunkPlugin {
     fn build(&self, app: &mut App) {
+        let colliders_enabled =
+            std::env::var_os("MINECRAFT_CLONE_DISABLE_CHUNK_COLLIDERS").is_none();
         app.init_resource::<ChunkPerfCounters>()
+            .insert_resource(ChunkColliderRuntime::new(colliders_enabled))
             .add_plugins(ChunkMeshPlugin);
-        if std::env::var_os("MINECRAFT_CLONE_DISABLE_CHUNK_COLLIDERS").is_none() {
+        if colliders_enabled {
             app.add_plugins(ChunkColliderPlugin);
+        } else {
+            app.add_systems(FixedPreUpdate, discard_chunk_collider_work);
         }
     }
 }

@@ -13,6 +13,7 @@ mod light_patch;
 mod light_task;
 mod persistence;
 mod streaming;
+mod switching;
 mod view;
 
 use bevy::{
@@ -411,13 +412,6 @@ impl Dimension {
     /// Drops every disposable task owned by this dimension.
     ///
     /// Durable save obligations live outside this queue and are unaffected.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "dimension switching consumes this lifecycle boundary"
-        )
-    )]
     pub(crate) fn clear_disposable_work(&mut self) {
         self.derived_work.clear();
     }
@@ -830,17 +824,22 @@ impl Plugin for DimensionPlugin {
             PostUpdate,
             (finish_chunk_save_tasks, start_chunk_save_tasks).chain(),
         );
+        switching::install(app);
     }
 }
 
 fn setup(mut commands: Commands, catalog: Res<DimensionCatalog>) {
-    let definition = *catalog
-        .get(DimensionId::OVERWORLD)
-        .expect("world catalog must contain the initial dimension");
-    let entity = commands.spawn_empty().id();
-    commands
-        .entity(entity)
-        .insert((Dimension::root_components(entity, definition), Active));
+    for &definition in catalog.definitions() {
+        let entity = commands.spawn_empty().id();
+        let active = definition.id() == DimensionId::OVERWORLD;
+        let mut root = commands.entity(entity);
+        root.insert(Dimension::root_components(entity, definition));
+        if active {
+            root.insert(Active);
+        } else {
+            root.insert(Visibility::Hidden);
+        }
+    }
 }
 
 #[derive(Component)]
@@ -865,6 +864,44 @@ mod tests {
         assert!(world.get::<DesiredColumnView>(owner).is_some());
         assert!(world.get::<Transform>(owner).is_some());
         assert!(world.get::<Visibility>(owner).is_some());
+    }
+
+    #[test]
+    fn setup_spawns_every_catalog_root_but_activates_only_the_overworld() {
+        let catalog = DimensionCatalog::for_world(&crate::world::WorldMetadata::default());
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(catalog.clone())
+            .add_systems(Update, setup);
+
+        app.update();
+
+        let mut roots = app
+            .world_mut()
+            .query::<(Entity, &Dimension, &Visibility, Has<Active>)>();
+        let roots = roots
+            .iter(app.world())
+            .map(|(entity, dimension, visibility, active)| {
+                (entity, dimension.id(), *visibility, active)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(roots.len(), catalog.definitions().len());
+        for definition in catalog.definitions() {
+            let (_, _, visibility, active) = roots
+                .iter()
+                .find(|(_, id, _, _)| *id == definition.id())
+                .copied()
+                .expect("every catalog dimension must have a root");
+            assert_eq!(active, definition.id() == DimensionId::OVERWORLD);
+            assert_eq!(
+                visibility,
+                if active {
+                    Visibility::Inherited
+                } else {
+                    Visibility::Hidden
+                }
+            );
+        }
     }
 
     #[test]
