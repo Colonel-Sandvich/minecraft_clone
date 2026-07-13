@@ -254,6 +254,15 @@ impl DimensionCatalog {
             .iter()
             .find(|definition| definition.id == id)
     }
+
+    /// Returns the next built-in dimension, wrapping at the end of the catalog.
+    pub fn next_id(&self, current: DimensionId) -> Option<DimensionId> {
+        let index = self
+            .definitions
+            .iter()
+            .position(|definition| definition.id == current)?;
+        Some(self.definitions[(index + 1) % self.definitions.len()].id)
+    }
 }
 
 #[cfg(test)]
@@ -283,6 +292,25 @@ mod tests {
             assert_eq!(catalog.get(id).map(|definition| definition.id()), Some(id));
         }
         assert!(catalog.get(DimensionId::new(u32::MAX)).is_none());
+    }
+
+    #[test]
+    fn catalog_cycle_is_stable_and_wraps() {
+        let catalog = DimensionCatalog::for_world(&WorldMetadata::default());
+
+        assert_eq!(
+            catalog.next_id(DimensionId::OVERWORLD),
+            Some(DimensionId::GRASS_FLOOR)
+        );
+        assert_eq!(
+            catalog.next_id(DimensionId::GRASS_FLOOR),
+            Some(DimensionId::CENTER_GLASS_PLATFORM)
+        );
+        assert_eq!(
+            catalog.next_id(DimensionId::CENTER_GLASS_PLATFORM),
+            Some(DimensionId::OVERWORLD)
+        );
+        assert_eq!(catalog.next_id(DimensionId::new(u32::MAX)), None);
     }
 
     #[test]
