@@ -1,6 +1,6 @@
 # Dimension Switching Plan
 
-Status: active architecture work.
+Status: implemented with a cold-switch residency policy.
 
 ## Goal
 
@@ -16,6 +16,25 @@ streaming, and derived work explicitly dimension-owned.
 The first implementation unloads inactive chunk data. That is a residency
 policy, not part of dimension identity, so inactive dimensions can be retained
 or rendered later without replacing the core model.
+
+## Implemented Shape
+
+- The catalog creates persistent ECS roots for all three logical dimensions.
+- Dimension 0 retains the versioned overworld generator, Dimension 1 generates
+  one grass layer at `y = 0`, and Dimension 2 generates one glass layer in the
+  origin chunk only.
+- `F6` cycles the player's primary dimension.
+- Streaming, lighting, visual work, collider work, and persistence are scoped
+  to a dimension root. Durable addresses include `DimensionId`.
+- Switching captures dirty data into owned, eviction-priority save snapshots,
+  drains and despawns outgoing column incarnations, activates the target root,
+  and lets normal streaming publish the target.
+- Player movement and interaction are suspended until the exact target root's
+  arrival column is published and collision-ready. Collider-disabled runs use
+  publication as the readiness boundary and discard unused collider work.
+- A full-cycle integration test switches through all three dimensions and
+  verifies that an overworld mutation survives teardown, persistence, and
+  reload.
 
 ## Identity And Ownership
 
@@ -114,13 +133,15 @@ Avoid these limiting shortcuts:
 - destroying dirty authoritative data before persistence owns a retryable
   snapshot.
 
-## Atomic Implementation Order
+## Deferred Extensions
 
-1. Add stable dimension IDs, definitions, generator profiles, and exact tests.
-2. Qualify storage and load/save requests with dimension identity.
-3. Move desired-view and runtime load context ownership onto each dimension.
-4. Add the dimension-owned derived-work queue and migrate visual/collider work.
-5. Add the switch coordinator, teardown/readiness tests, player membership, and
-   debug keybind.
-6. Migrate runtime lighting and fluid activation, then remove obsolete markers.
-
+- Keep inactive dimensions warm by changing residency policy, without changing
+  logical identity or qualified storage.
+- Replace the debug key with explicit transition requests used by portals,
+  commands, or UI while keeping the same coordinator.
+- Add a loading presentation that waits for a configurable published radius;
+  correctness currently waits only for the arrival column and colliders.
+- Render more than one dimension by separating simulation interest, render
+  interest, and the player's primary `Active` membership.
+- Rebuild fluid scheduling around typed regions and a dimension-owned frontier.
+- Move persistence from ordered subchunk writes to an atomic column commit.
