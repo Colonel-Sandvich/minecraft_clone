@@ -22,6 +22,24 @@ use super::{
     streaming::{ColumnExposure, ColumnLighting},
 };
 
+#[derive(Debug, Clone, Copy)]
+struct StreamedLightAdmission {
+    calculation_chunk_budget: usize,
+    load_admission_paused: bool,
+}
+
+impl StreamedLightAdmission {
+    fn from_budgets(
+        patch_budget: Option<&ColumnLightBudget>,
+        load_budget: Option<&ColumnLoadBudget>,
+    ) -> Self {
+        Self {
+            calculation_chunk_budget: patch_budget.map_or(usize::MAX, |budget| budget.0),
+            load_admission_paused: load_budget.is_none_or(|budget| budget.0 == 0),
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn rebuild_chunk_light(
     mut commands: Commands,
@@ -43,10 +61,7 @@ pub(crate) fn rebuild_chunk_light(
             &mut dimension,
             &all_chunks,
             &desired_view,
-            patch_budget
-                .as_deref()
-                .map_or(usize::MAX, |budget| budget.0),
-            load_budget.as_deref().is_none_or(|budget| budget.0 == 0),
+            StreamedLightAdmission::from_budgets(patch_budget.as_deref(), load_budget.as_deref()),
             &task_pool,
         );
     }
@@ -172,8 +187,7 @@ fn process_streamed_column_light(
     dimension: &mut Dimension,
     all_chunks: &Query<(&ChunkPosition, &Chunk, &ChunkLight, &ChunkHeightmap)>,
     desired_view: &DesiredColumnView,
-    target_budget: usize,
-    load_admission_paused: bool,
+    admission: StreamedLightAdmission,
     task_pool: &ChunkTaskPool,
 ) {
     cancel_unclaimed_light_task(dimension, perf.as_deref_mut());
@@ -197,19 +211,13 @@ fn process_streamed_column_light(
         record_light_patch_collect_perf(perf.as_deref_mut(), collect_started.elapsed());
     }
 
-    if target_budget == 0 || !dimension.light_tasks().is_idle() {
+    if admission.calculation_chunk_budget == 0 || !dimension.light_tasks().is_idle() {
         return;
     }
 
     let height_chunks = dimension.height().chunks();
     let plan_started = Instant::now();
-    let plan = next_light_patch_plan(
-        dimension,
-        desired_view,
-        height_chunks,
-        target_budget,
-        load_admission_paused,
-    );
+    let plan = next_light_patch_plan(dimension, desired_view, height_chunks, admission);
     if let Some(perf) = perf.as_deref_mut() {
         let elapsed = plan_started.elapsed();
         perf.light_patch_plan_elapsed += elapsed;
@@ -247,13 +255,12 @@ fn next_light_patch_plan(
     dimension: &Dimension,
     desired_view: &DesiredColumnView,
     height_chunks: usize,
-    target_budget: usize,
-    load_admission_paused: bool,
+    admission: StreamedLightAdmission,
 ) -> LightPatchPlan {
     let runtime = LightPatchPlan::build(
         desired_view.visible_columns(),
         height_chunks,
-        target_budget,
+        admission.calculation_chunk_budget,
         |column| {
             dimension.column_lighting(column) == Some(ColumnLighting::Pending)
                 && dimension.column_exposure(column) == Some(ColumnExposure::Published)
@@ -279,7 +286,7 @@ fn next_light_patch_plan(
         .resident_columns()
         .iter()
         .any(|&column| dimension.stream().awaits_load_progress(column));
-    if !load_admission_paused && awaiting_resident_data {
+    if !admission.load_admission_paused && awaiting_resident_data {
         return LightPatchPlan::default();
     }
 
@@ -288,7 +295,7 @@ fn next_light_patch_plan(
     LightPatchPlan::build(
         desired_view.visible_columns(),
         height_chunks,
-        target_budget,
+        admission.calculation_chunk_budget,
         |column| {
             dimension.column_lighting(column) == Some(ColumnLighting::Pending)
                 && dimension.column_exposure(column) == Some(ColumnExposure::Staged)
