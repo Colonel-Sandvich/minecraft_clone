@@ -154,11 +154,26 @@ fn ensure_world_resources(app: &mut App) {
         app.insert_resource(config.metadata.clone());
     }
 
+    let catalog = DimensionCatalog::for_world(&config.metadata);
+    if let Some(existing) = app.world().get_resource::<DimensionCatalog>() {
+        assert_eq!(
+            existing, &catalog,
+            "DimensionCatalog resource must match WorldConfig metadata"
+        );
+    } else {
+        app.insert_resource(catalog.clone());
+    }
+
     if let Some(repository) = app.world().get_resource::<ChunkRepository>() {
         assert_eq!(
             repository.metadata(),
             &config.metadata,
             "ChunkRepository metadata must match WorldConfig metadata"
+        );
+        assert_eq!(
+            repository.catalog(),
+            &catalog,
+            "ChunkRepository catalog must match WorldConfig dimensions"
         );
         return;
     }
@@ -291,6 +306,32 @@ mod tests {
         let mut app = App::new();
         app.insert_resource(WorldConfig::in_memory(configured))
             .insert_resource(ChunkRepository::new(InMemoryChunkStore::new(stored)));
+
+        ensure_world_resources(&mut app);
+    }
+
+    #[test]
+    fn world_resources_install_the_catalog_used_by_the_repository() {
+        let metadata = WorldMetadata::with_seed(42);
+        let mut app = App::new();
+        app.insert_resource(WorldConfig::in_memory(metadata.clone()));
+
+        ensure_world_resources(&mut app);
+
+        let catalog = app.world().resource::<DimensionCatalog>();
+        let repository = app.world().resource::<ChunkRepository>();
+        assert_eq!(catalog, repository.catalog());
+        assert_eq!(catalog, &DimensionCatalog::for_world(&metadata));
+    }
+
+    #[test]
+    #[should_panic(expected = "DimensionCatalog resource must match WorldConfig metadata")]
+    fn preinstalled_catalog_must_match_world_config_metadata() {
+        let configured = WorldMetadata::with_seed(42);
+        let stale = WorldMetadata::with_seed(99);
+        let mut app = App::new();
+        app.insert_resource(WorldConfig::in_memory(configured))
+            .insert_resource(DimensionCatalog::for_world(&stale));
 
         ensure_world_resources(&mut app);
     }

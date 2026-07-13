@@ -7,7 +7,7 @@ use crate::{
     world::chunk::mesh::{ChunkMeshFaces, ChunkMeshLayer, ChunkMeshLight, PackedFace},
     world::{
         chunk::{Chunk, ChunkContentCounts, ChunkHeightmap, ChunkLight, ChunkPos, ChunkPosition},
-        dimension::{ChunkSaveTasks, ColumnLoadTaskStats, DesiredColumnView, Dimension},
+        dimension::{Active, ChunkSaveTasks, ColumnLoadTaskStats, DesiredColumnView, Dimension},
     },
 };
 
@@ -202,7 +202,7 @@ fn update_memory_snapshot(
     mesh_faces_q: Query<&ChunkMeshFaces>,
     mesh_light_q: Query<&ChunkMeshLight>,
     dimensions_q: Query<&Dimension>,
-    desired_view: Res<DesiredColumnView>,
+    active_dimension: Option<Single<(&Dimension, &DesiredColumnView), With<Active>>>,
     save_tasks: Option<Res<ChunkSaveTasks>>,
 ) {
     if timer.initialized && !timer.timer.tick(time.delta()).just_finished() {
@@ -281,7 +281,7 @@ fn update_memory_snapshot(
         }
     }
 
-    let target_chunks = desired_view.resident_chunk_count();
+    let target_chunks = active_dimension.map_or(0, |dimension| dimension.1.resident_chunk_count());
     let dimension_maps = dimensions_q
         .iter()
         .map(|dimension| dimension.chunk_registry_capacity() * size_of::<(ChunkPos, Entity)>())

@@ -4,7 +4,7 @@ use avian3d::prelude::Collider;
 use bevy::prelude::*;
 
 use crate::{
-    player::Player,
+    player::{Player, PlayerDimension},
     world::{
         chunk::{
             ChunkColumn, ChunkContentCounts, ChunkInvalidationPlan, ChunkLight,
@@ -12,8 +12,7 @@ use crate::{
             ChunkNeedsRenderLightUpload, ChunkNeedsSave, ChunkPerfCounters, ChunkPos,
             ChunkPosition,
         },
-        definition::{ColumnAddress, DimensionId},
-        generation::WorldMetadata,
+        definition::ColumnAddress,
         loading::load_or_generate_column,
         storage::ChunkRepository,
     },
@@ -31,16 +30,18 @@ use crate::world::dimension::{
 struct LoadedColumnRoot;
 
 pub(crate) fn refresh_desired_column_view(
-    maybe_player: Option<Single<&Transform, With<Player>>>,
-    metadata: Res<WorldMetadata>,
+    maybe_player: Option<Single<(&Transform, &PlayerDimension), With<Player>>>,
     view_distance: Res<ViewDistance>,
-    mut desired_view: ResMut<DesiredColumnView>,
+    dimension: Single<(&Dimension, &mut DesiredColumnView), With<Active>>,
 ) {
-    let translation = maybe_player.map_or(Vec3::ZERO, |player| player.translation);
+    let (dimension, mut desired_view) = dimension.into_inner();
+    let translation = maybe_player
+        .filter(|player| player.1.id() == dimension.id())
+        .map_or(dimension.arrival(), |player| player.0.translation);
     let center = ChunkColumn::from(ChunkPos::containing_translation(translation));
     if desired_view
         .bypass_change_detection()
-        .refresh(center, *view_distance, metadata.height())
+        .refresh(center, *view_distance, dimension.height())
     {
         desired_view.set_changed();
     }
@@ -48,13 +49,12 @@ pub(crate) fn refresh_desired_column_view(
 
 pub(crate) fn maintain_column_residency(
     mut commands: Commands,
-    dimension: Single<(&mut Dimension, Entity), With<Active>>,
-    desired_view: Res<DesiredColumnView>,
+    dimension: Single<(&mut Dimension, &DesiredColumnView, Entity), With<Active>>,
     dirty_chunks: Query<(), With<ChunkNeedsSave>>,
     children: Query<&Children>,
     colliders: Query<(), With<Collider>>,
 ) {
-    let (mut dimension, owner) = dimension.into_inner();
+    let (mut dimension, desired_view, owner) = dimension.into_inner();
     dimension.assert_stream_owner(owner);
     dimension.stream_mut().tick_backoffs();
 
@@ -127,15 +127,14 @@ pub(crate) fn maintain_column_residency(
 pub(crate) fn finish_column_loads(
     mut commands: Commands,
     mut perf: Option<ResMut<ChunkPerfCounters>>,
-    dimension: Single<(&mut Dimension, Entity), With<Active>>,
-    desired_view: Res<DesiredColumnView>,
+    dimension: Single<(&mut Dimension, &DesiredColumnView, Entity), With<Active>>,
     staging_budget: Res<ColumnStagingBudget>,
 ) {
     if staging_budget.0 == 0 {
         return;
     }
 
-    let (mut dimension, owner) = dimension.into_inner();
+    let (mut dimension, desired_view, owner) = dimension.into_inner();
     dimension.assert_stream_owner(owner);
     let mut completed = Vec::new();
     for &column in desired_view.resident_columns() {
@@ -167,9 +166,7 @@ pub(crate) fn finish_column_loads(
         };
 
         assert_eq!(loaded.position(), ticket.column());
-        // Runtime dimension ownership is introduced in the next migration;
-        // until then the sole active root is the overworld root.
-        assert_eq!(loaded.address.dimension(), DimensionId::OVERWORLD);
+        assert_eq!(loaded.address.dimension(), dimension.id());
         assert_eq!(loaded.height, dimension.height());
         if !dimension.stream_mut().accept_load(ticket) {
             continue;
@@ -209,15 +206,14 @@ pub(crate) fn finish_column_loads(
 
 pub(crate) fn publish_lit_columns(
     mut commands: Commands,
-    dimension: Single<&mut Dimension, With<Active>>,
-    desired_view: Res<DesiredColumnView>,
+    dimension: Single<(&mut Dimension, &DesiredColumnView), With<Active>>,
     activation_budget: Res<ColumnActivationBudget>,
     contents: Query<&ChunkContentCounts>,
 ) {
     if activation_budget.0 == 0 {
         return;
     }
-    let mut dimension = dimension.into_inner();
+    let (mut dimension, desired_view) = dimension.into_inner();
     let mut invalidations = ChunkInvalidationPlan::new();
 
     let mut activated = 0;
@@ -253,14 +249,18 @@ pub(crate) fn publish_lit_columns(
 }
 
 pub(crate) fn start_column_loads(
-    dimension: Single<(&mut Dimension, Entity), With<Active>>,
-    desired_view: Res<DesiredColumnView>,
+    dimension: Single<(&mut Dimension, &DesiredColumnView, Entity), With<Active>>,
     repository: Res<ChunkRepository>,
     load_budget: Res<ColumnLoadBudget>,
     task_pool: Res<ChunkTaskPool>,
 ) {
-    let (mut dimension, owner) = dimension.into_inner();
+    let (mut dimension, desired_view, owner) = dimension.into_inner();
     dimension.assert_stream_owner(owner);
+    assert_eq!(
+        repository.catalog().get(dimension.id()).copied(),
+        Some(dimension.definition()),
+        "dimension root definition must match the repository catalog"
+    );
     if load_budget.0 == 0 {
         return;
     }
@@ -321,6 +321,7 @@ fn try_start_column_load(
     if dimension.has_any_loaded_chunk_in_column(column) {
         return false;
     }
+    let address = ColumnAddress::new(dimension.id(), column);
     dimension
         .stream_mut()
         .start_load(column, view_revision, || {
@@ -329,9 +330,6 @@ fn try_start_column_load(
             task_pool.spawn(async move {
                 let queue_elapsed = submitted_at.elapsed();
                 let worker_started = Instant::now();
-                // Runtime dimension ownership is introduced in the next
-                // migration; the sole active root is currently overworld.
-                let address = ColumnAddress::new(DimensionId::OVERWORLD, column);
                 let result = load_or_generate_column(address, repository);
                 let completed_at = Instant::now();
                 CompletedColumnLoad {

@@ -1,7 +1,7 @@
 use std::f32::consts::PI;
 
 use super::{
-    PLAYER_HEIGHT, PLAYER_LENGTH, PLAYER_WIDTH, Player,
+    PLAYER_HEIGHT, PLAYER_LENGTH, PLAYER_WIDTH, Player, PlayerDimension,
     cam::{MouseCam, MouseSettings},
 };
 use avian3d::prelude::{Collider, Position, RigidBody, TransformInterpolation};
@@ -12,9 +12,7 @@ use crate::{
     mob::controller::{CharacterController, FlyController},
     world::{
         ACTOR_COLLISION_LAYERS,
-        chunk::CHUNK_SIZE,
-        dimension::Dimension,
-        generation::{WorldMetadata, terrain_height},
+        dimension::{Active, Dimension},
     },
 };
 
@@ -28,16 +26,12 @@ impl Plugin for SpawnPlayerPlugin {
 
 pub const EYELINE: f32 = 0.1;
 
-fn spawn_player(
-    mut commands: Commands,
-    dimension_q: Query<Entity, With<Dimension>>,
-    metadata: Res<WorldMetadata>,
-) {
-    let spawn_point = spawn_point(&metadata);
+fn spawn_player(mut commands: Commands, dimension: Single<&Dimension, With<Active>>) {
+    let spawn_point = dimension.arrival();
 
     commands.spawn((
-        ChildOf(dimension_q.single().unwrap()),
         Player::default(),
+        PlayerDimension::new(dimension.id()),
         RigidBody::Kinematic,
         Position::new(spawn_point),
         Transform::from_translation(spawn_point),
@@ -62,14 +56,6 @@ fn spawn_player(
     ));
 }
 
-pub fn spawn_point(metadata: &WorldMetadata) -> Vec3 {
-    let x = CHUNK_SIZE as f32 / 2.0;
-    let z = CHUNK_SIZE as f32 / 2.0;
-    let y = terrain_height(metadata, x as i32, z as i32) as f32 + PLAYER_HEIGHT + 2.0;
-
-    Vec3::new(x, y, z)
-}
-
 pub fn make_player_collider() -> Collider {
     Collider::cuboid(PLAYER_LENGTH, PLAYER_HEIGHT, PLAYER_WIDTH)
 }
@@ -77,13 +63,29 @@ pub fn make_player_collider() -> Collider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::world::{DimensionCatalog, DimensionId, WorldMetadata};
 
     #[test]
-    fn spawn_point_is_above_seeded_terrain() {
-        let metadata = WorldMetadata::with_seed(123);
-        let spawn = spawn_point(&metadata);
-        let surface_y = terrain_height(&metadata, spawn.x as i32, spawn.z as i32) as f32;
+    fn player_uses_active_arrival_without_becoming_a_dimension_child() {
+        let definition = *DimensionCatalog::for_world(&WorldMetadata::with_seed(123))
+            .get(DimensionId::GRASS_FLOOR)
+            .unwrap();
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .add_systems(Update, spawn_player);
+        let owner = app.world_mut().spawn_empty().id();
+        app.world_mut()
+            .entity_mut(owner)
+            .insert((Dimension::new(owner, definition), Active));
 
-        assert!(spawn.y > surface_y + PLAYER_HEIGHT);
+        app.update();
+
+        let mut query = app
+            .world_mut()
+            .query_filtered::<(&PlayerDimension, &Position, Option<&ChildOf>), With<Player>>();
+        let (membership, position, parent) = query.single(app.world()).unwrap();
+        assert_eq!(membership.id(), definition.id());
+        assert_eq!(position.0, definition.arrival());
+        assert!(parent.is_none());
     }
 }

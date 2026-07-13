@@ -11,6 +11,8 @@ use inspector::InspectorPlugin;
 use interaction::BlockInteractionPlugin;
 use spawn::SpawnPlayerPlugin;
 
+use crate::world::DimensionId;
+
 pub struct PlayerPlugin;
 
 impl Plugin for PlayerPlugin {
@@ -33,6 +35,20 @@ pub const PLAYER_LENGTH: f32 = PLAYER_WIDTH;
 #[require(Name::new("Player"))]
 pub struct Player {
     pub gamemode: GameMode,
+}
+
+/// Logical dimension membership for actors that must outlive runtime roots.
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PlayerDimension(DimensionId);
+
+impl PlayerDimension {
+    pub const fn new(id: DimensionId) -> Self {
+        Self(id)
+    }
+
+    pub const fn id(self) -> DimensionId {
+        self.0
+    }
 }
 
 #[derive(Default)]

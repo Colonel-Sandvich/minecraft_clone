@@ -5,13 +5,14 @@ use bevy::prelude::*;
 use super::*;
 use crate::{
     block::BlockType,
-    player::Player,
+    player::{Player, PlayerDimension},
     world::{
         chunk::{
             CHUNK_SIZE, Chunk, ChunkColumn, ChunkHeightmap, ChunkLight, ChunkNeedsMeshRebuild,
-            ChunkNeedsSave, LocalBlockPos,
+            ChunkNeedsSave, ChunkPos, LocalBlockPos,
             mesh::{PreparedChunkMeshLight, padded_chunk_index},
         },
+        definition::{DimensionCatalog, DimensionDefinition, DimensionId, GeneratorProfile},
         dimension::{
             Active, ChunkTaskPool, ColumnLightBudget, DesiredColumnView, Dimension, ViewDistance,
             light::{cancel_inactive_dimension_light_tasks, rebuild_chunk_light},
@@ -28,9 +29,34 @@ fn metadata(height_chunks: usize) -> WorldMetadata {
 }
 
 fn spawn_dimension(app: &mut App, height: crate::world::WorldHeight, active: bool) -> Entity {
+    let metadata = app.world().resource::<WorldMetadata>();
+    assert_eq!(metadata.height(), height);
+    let definition = *DimensionCatalog::for_world(metadata)
+        .get(DimensionId::OVERWORLD)
+        .unwrap();
     let entity = app.world_mut().spawn_empty().id();
     let mut entity_mut = app.world_mut().entity_mut(entity);
-    entity_mut.insert(Dimension::new(entity, height));
+    entity_mut.insert((
+        Dimension::new(entity, definition),
+        DesiredColumnView::default(),
+    ));
+    if active {
+        entity_mut.insert(Active);
+    }
+    entity
+}
+
+fn spawn_defined_dimension(
+    app: &mut App,
+    definition: crate::world::DimensionDefinition,
+    active: bool,
+) -> Entity {
+    let entity = app.world_mut().spawn_empty().id();
+    let mut entity_mut = app.world_mut().entity_mut(entity);
+    entity_mut.insert((
+        Dimension::new(entity, definition),
+        DesiredColumnView::default(),
+    ));
     if active {
         entity_mut.insert(Active);
     }
@@ -49,7 +75,6 @@ fn streaming_app(height_chunks: usize) -> (App, Entity, Entity) {
         .insert_resource(ColumnStagingBudget(1))
         .insert_resource(ColumnActivationBudget(1))
         .insert_resource(ViewDistance::new(1))
-        .init_resource::<DesiredColumnView>()
         .add_systems(
             Update,
             (
@@ -63,7 +88,11 @@ fn streaming_app(height_chunks: usize) -> (App, Entity, Entity) {
     let dimension = spawn_dimension(&mut app, metadata.height(), true);
     let player = app
         .world_mut()
-        .spawn((Player::default(), Transform::default()))
+        .spawn((
+            Player::default(),
+            PlayerDimension::new(DimensionId::OVERWORLD),
+            Transform::default(),
+        ))
         .id();
     (app, dimension, player)
 }
@@ -81,7 +110,6 @@ fn staged_lighting_app(height_chunks: usize) -> (App, Entity, Entity) {
         .insert_resource(ColumnActivationBudget(9))
         .insert_resource(ColumnLightBudget(100))
         .insert_resource(ViewDistance::new(1))
-        .init_resource::<DesiredColumnView>()
         .init_resource::<crate::world::chunk::ChunkPerfCounters>()
         .add_systems(
             Update,
@@ -99,7 +127,11 @@ fn staged_lighting_app(height_chunks: usize) -> (App, Entity, Entity) {
     let dimension = spawn_dimension(&mut app, metadata.height(), true);
     let player = app
         .world_mut()
-        .spawn((Player::default(), Transform::default()))
+        .spawn((
+            Player::default(),
+            PlayerDimension::new(DimensionId::OVERWORLD),
+            Transform::default(),
+        ))
         .id();
     (app, dimension, player)
 }
@@ -155,6 +187,83 @@ fn activation_stages_a_complete_pending_column_in_one_update() {
     for (position, _) in dimension_ref.complete_loaded_column(center).unwrap() {
         assert!(!dimension_ref.contains_published_chunk(position));
     }
+}
+
+#[test]
+fn streaming_generation_uses_the_root_dimension_definition() {
+    let metadata = metadata(2);
+    let definition = *DimensionCatalog::for_world(&metadata)
+        .get(DimensionId::GRASS_FLOOR)
+        .unwrap();
+    let repository = ChunkRepository::new(NoopChunkStore::new(metadata.clone()));
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins)
+        .insert_resource(repository)
+        .insert_resource(ChunkTaskPool::new_for_test())
+        .insert_resource(ColumnLoadBudget(9))
+        .insert_resource(ColumnStagingBudget(1))
+        .insert_resource(ColumnActivationBudget(1))
+        .insert_resource(ViewDistance::new(1))
+        .add_systems(
+            Update,
+            (
+                refresh_desired_column_view,
+                maintain_column_residency,
+                finish_column_loads,
+                start_column_loads,
+            )
+                .chain(),
+        );
+    let dimension = spawn_defined_dimension(&mut app, definition, true);
+    app.world_mut().spawn((
+        Player::default(),
+        PlayerDimension::new(DimensionId::GRASS_FLOOR),
+        Transform::default(),
+    ));
+
+    update_until(&mut app, |world| {
+        world
+            .get::<Dimension>(dimension)
+            .unwrap()
+            .has_complete_loaded_column(ChunkColumn::new(0, 0))
+    });
+
+    let dimension = app.world().get::<Dimension>(dimension).unwrap();
+    assert_eq!(dimension.id(), DimensionId::GRASS_FLOOR);
+    let bottom = dimension
+        .loaded_chunk_entity(ChunkPos::new(0, 0, 0))
+        .and_then(|entity| app.world().get::<Chunk>(entity))
+        .unwrap();
+    let upper = dimension
+        .loaded_chunk_entity(ChunkPos::new(0, 1, 0))
+        .and_then(|entity| app.world().get::<Chunk>(entity))
+        .unwrap();
+    assert_eq!(bottom.cell_xyz(0, 0, 0).as_block(), Some(BlockType::Grass));
+    assert!(bottom.cell_xyz(0, 1, 0).is_empty());
+    assert!(upper.cell_xyz(0, 0, 0).is_empty());
+}
+
+#[test]
+#[should_panic(expected = "dimension root definition must match the repository catalog")]
+fn streaming_rejects_a_same_id_definition_that_is_not_from_the_catalog() {
+    let metadata = metadata(2);
+    let repository = ChunkRepository::new(NoopChunkStore::new(metadata.clone()));
+    let catalog_definition = *repository.catalog().get(DimensionId::GRASS_FLOOR).unwrap();
+    let mismatched = DimensionDefinition::new(
+        DimensionId::GRASS_FLOOR,
+        catalog_definition.height(),
+        GeneratorProfile::CenterGlassPlatformV1,
+        catalog_definition.arrival(),
+    );
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins)
+        .insert_resource(repository)
+        .insert_resource(ChunkTaskPool::new_for_test())
+        .insert_resource(ColumnLoadBudget(1))
+        .add_systems(Update, start_column_loads);
+    spawn_defined_dimension(&mut app, mismatched, true);
+
+    app.update();
 }
 
 #[test]

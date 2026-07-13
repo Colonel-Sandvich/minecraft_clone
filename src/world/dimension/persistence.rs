@@ -9,10 +9,8 @@ use bevy::{
 use super::{Active, ChunkTaskPool, DesiredColumnView, Dimension};
 
 use crate::world::{
-    chunk::{
-        Chunk, ChunkColumn, ChunkHeightmap, ChunkNeedsSave, ChunkPos, ChunkPosition, ChunkRevision,
-    },
-    definition::{ChunkAddress, DimensionId},
+    chunk::{Chunk, ChunkHeightmap, ChunkNeedsSave, ChunkPosition, ChunkRevision},
+    definition::{ChunkAddress, ColumnAddress},
     storage::{ChunkRepository, ChunkStoreError, ChunkStoreResult},
 };
 
@@ -98,19 +96,25 @@ impl ChunkSaveTasks {
 struct ChunkSaveHandle {
     owner: Entity,
     entity: Entity,
-    position: ChunkPos,
+    address: ChunkAddress,
 }
 
 impl ChunkSaveHandle {
-    const fn column(self) -> ChunkColumn {
-        ChunkColumn::from_chunk(self.position)
+    const fn position(self) -> crate::world::chunk::ChunkPos {
+        self.address.position()
     }
 
-    const fn order_key(self) -> (i32, i32, i32, Entity) {
+    const fn column(self) -> ColumnAddress {
+        self.address.column()
+    }
+
+    const fn order_key(self) -> (u32, i32, i32, i32, Entity) {
+        let position = self.address.position();
         (
-            self.position.x(),
-            self.position.z(),
-            self.position.y(),
+            self.address.dimension().get(),
+            position.x(),
+            position.z(),
+            position.y(),
             self.entity,
         )
     }
@@ -165,7 +169,7 @@ impl Default for ChunkSaveBudget {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ChunkSaveRequest {
-    position: ChunkPos,
+    address: ChunkAddress,
     chunk: Chunk,
     heightmap: ChunkHeightmap,
 }
@@ -211,13 +215,15 @@ pub(crate) fn finish_chunk_save_tasks(
                 let Ok(dimension) = dimensions.get(handle.owner) else {
                     continue;
                 };
-                if dimension.loaded_chunk_entity(handle.position) != Some(handle.entity) {
+                if dimension.id() != handle.address.dimension()
+                    || dimension.loaded_chunk_entity(handle.position()) != Some(handle.entity)
+                {
                     continue;
                 }
                 let Ok((position, chunk, heightmap, Some(_))) = chunks.get(handle.entity) else {
                     continue;
                 };
-                if position.chunk_pos() != handle.position {
+                if position.chunk_pos() != handle.position() {
                     continue;
                 }
 
@@ -226,7 +232,7 @@ pub(crate) fn finish_chunk_save_tasks(
                 }
             }
             Err(error) => {
-                warn!(%error, pos = ?handle.position, owner = ?handle.owner, "Failed to persist dirty chunk");
+                warn!(%error, address = ?handle.address, owner = ?handle.owner, "Failed to persist dirty chunk");
                 if save_handle_is_current(handle, &dimensions, &chunks) {
                     save_tasks.record_failure(handle, error);
                 }
@@ -240,14 +246,13 @@ pub(crate) fn finish_chunk_save_tasks(
 }
 
 pub(crate) fn start_chunk_save_tasks(
-    active_dimension: Option<Single<(&Dimension, Entity), With<Active>>>,
+    active_dimension: Option<Single<(&Dimension, &DesiredColumnView, Entity), With<Active>>>,
     chunks: Query<(
         &ChunkPosition,
         &Chunk,
         &ChunkHeightmap,
         Option<&ChunkNeedsSave>,
     )>,
-    desired_view: Res<DesiredColumnView>,
     repository: Res<ChunkRepository>,
     save_budget: Res<ChunkSaveBudget>,
     mut save_tasks: ResMut<ChunkSaveTasks>,
@@ -262,7 +267,7 @@ pub(crate) fn start_chunk_save_tasks(
     let Some(active_dimension) = active_dimension else {
         return;
     };
-    let (dimension, owner) = active_dimension.into_inner();
+    let (dimension, desired_view, owner) = active_dimension.into_inner();
     dimension.assert_stream_owner(owner);
 
     let mut candidates = Vec::new();
@@ -279,7 +284,7 @@ pub(crate) fn start_chunk_save_tasks(
             handle: ChunkSaveHandle {
                 owner,
                 entity,
-                position: registered_position,
+                address: ChunkAddress::new(dimension.id(), registered_position),
             },
             revision: chunk.content_revision(),
             eviction_priority: !desired_view.contains_resident_column(registered_position.into()),
@@ -302,7 +307,7 @@ pub(crate) fn start_chunk_save_tasks(
         else {
             continue;
         };
-        assert_eq!(position.chunk_pos(), candidate.handle.position);
+        assert_eq!(position.chunk_pos(), candidate.handle.position());
         if chunk.content_revision() != candidate.revision {
             continue;
         }
@@ -313,7 +318,7 @@ pub(crate) fn start_chunk_save_tasks(
             heightmap: *heightmap,
         };
         let request = ChunkSaveRequest {
-            position: candidate.handle.position,
+            address: candidate.handle.address,
             chunk: chunk.clone(),
             heightmap: *heightmap,
         };
@@ -340,12 +345,14 @@ fn save_handle_is_current(
     let Ok(dimension) = dimensions.get(handle.owner) else {
         return false;
     };
-    if dimension.loaded_chunk_entity(handle.position) != Some(handle.entity) {
+    if dimension.id() != handle.address.dimension()
+        || dimension.loaded_chunk_entity(handle.position()) != Some(handle.entity)
+    {
         return false;
     }
     matches!(
         chunks.get(handle.entity),
-        Ok((position, _, _, Some(_))) if position.chunk_pos() == handle.position
+        Ok((position, _, _, Some(_))) if position.chunk_pos() == handle.position()
     )
 }
 
@@ -378,10 +385,7 @@ fn save_chunk_snapshot(
     request: ChunkSaveRequest,
     repository: ChunkRepository,
 ) -> ChunkStoreResult<()> {
-    // Runtime dimension ownership is introduced in the next migration; the
-    // sole active root is currently overworld.
-    let address = ChunkAddress::new(DimensionId::OVERWORLD, request.position);
-    repository.save_chunk(address, &request.chunk, &request.heightmap)
+    repository.save_chunk(request.address, &request.chunk, &request.heightmap)
 }
 
 #[cfg(test)]

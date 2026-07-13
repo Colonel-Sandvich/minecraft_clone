@@ -1,6 +1,6 @@
 use std::fmt;
 
-use bevy::prelude::{Component, Resource, Vec3};
+use bevy::prelude::{Resource, Vec3};
 
 use super::{
     chunk::{ChunkColumn, ChunkPos},
@@ -135,7 +135,7 @@ impl GeneratorProfile {
 }
 
 /// Immutable configuration for one logical dimension.
-#[derive(Component, Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DimensionDefinition {
     id: DimensionId,
     height: WorldHeight,

@@ -1,13 +1,13 @@
 use crate::{
     input::DoubleTap,
     mob::controller::{FlyController, Flying, Velocity},
-    world::{dimension::ViewDistance, generation::WorldMetadata},
+    world::dimension::{Active, Dimension, ViewDistance},
 };
 
 use super::{
-    GameMode, Player,
+    GameMode, Player, PlayerDimension,
     cam::{MouseCam, MouseState},
-    spawn::{make_player_collider, spawn_point},
+    spawn::make_player_collider,
 };
 use avian3d::prelude::*;
 use bevy::prelude::*;
@@ -159,13 +159,24 @@ fn toggle_fly(
 fn debug_reset_character(
     keys: Res<ButtonInput<KeyCode>>,
     key_bindings: Res<KeyBindings>,
-    metadata: Res<WorldMetadata>,
-    player_q: Single<(&mut Transform, &mut Position, &mut Velocity), With<Player>>,
+    dimension: Single<&Dimension, With<Active>>,
+    player_q: Single<
+        (
+            &PlayerDimension,
+            &mut Transform,
+            &mut Position,
+            &mut Velocity,
+        ),
+        With<Player>,
+    >,
     mut camera: Single<&mut Transform, (With<MouseCam>, Without<Player>)>,
 ) {
     if keys.just_pressed(key_bindings.debug_reset_character) {
-        let (mut transform, mut position, mut velocity) = player_q.into_inner();
-        let spawn_point = spawn_point(&metadata);
+        let (player_dimension, mut transform, mut position, mut velocity) = player_q.into_inner();
+        if player_dimension.id() != dimension.id() {
+            return;
+        }
+        let spawn_point = dimension.arrival();
         **velocity = Vec3::ZERO;
         position.0 = spawn_point;
         *transform = Transform::from_translation(spawn_point);

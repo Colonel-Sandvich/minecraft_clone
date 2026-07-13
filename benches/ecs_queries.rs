@@ -9,7 +9,7 @@ use criterion::{BatchSize, BenchmarkId, Criterion, Throughput, criterion_group, 
 use minecraft_clone::{
     block::BlockType,
     world::{
-        WORLD_COLLISION_LAYERS, WorldMetadata,
+        DimensionCatalog, DimensionId, WORLD_COLLISION_LAYERS, WorldMetadata,
         chunk::{
             CHUNK_SIZE, Chunk, ChunkCell, ChunkColumn, ChunkContentCounts, ChunkHeightmap,
             ChunkLight, ChunkNeedsColliderRebuild, ChunkNeedsFluidStep, ChunkNeedsLightRebuild,
@@ -383,7 +383,7 @@ fn build_light_rebuild_world(dirty_columns: usize, with_active_dimension: bool) 
     let metadata = WorldMetadata::with_seed(1)
         .with_height_chunks(LIGHT_REBUILD_HEIGHT as usize)
         .unwrap();
-    let height = metadata.height();
+    let catalog = DimensionCatalog::for_world(&metadata);
     world.insert_resource(metadata);
     world.insert_resource(LightRebuildBenchStats::default());
 
@@ -411,7 +411,7 @@ fn build_light_rebuild_world(dirty_columns: usize, with_active_dimension: bool) 
     }
 
     if with_active_dimension {
-        let owner = Dimension::spawn_in_world(&mut world, height);
+        let owner = Dimension::spawn_in_world(&mut world, &catalog, DimensionId::OVERWORLD);
         {
             let mut dimension = world.get_mut::<Dimension>(owner).unwrap();
             for (position, entity) in loaded_chunks {

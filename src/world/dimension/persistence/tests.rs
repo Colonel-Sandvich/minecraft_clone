@@ -12,7 +12,7 @@ use super::*;
 use crate::{
     block::BlockType,
     world::{
-        chunk::{ChunkHeightmap, ChunkLight},
+        chunk::{ChunkColumn, ChunkHeightmap, ChunkLight, ChunkPos},
         definition::{ChunkAddress, DimensionId},
         generation::WorldMetadata,
         storage::{ChunkRepository, ChunkStore, InMemoryChunkStore},
@@ -36,7 +36,16 @@ fn update_until(app: &mut App, mut predicate: impl FnMut(&World) -> bool) {
 }
 
 fn save_app(repository: ChunkRepository, budget: usize) -> (App, Entity) {
+    save_app_in_dimension(repository, budget, DimensionId::OVERWORLD)
+}
+
+fn save_app_in_dimension(
+    repository: ChunkRepository,
+    budget: usize,
+    dimension_id: DimensionId,
+) -> (App, Entity) {
     let metadata = repository.metadata().clone();
+    let definition = *repository.catalog().get(dimension_id).unwrap();
     let mut app = App::new();
     app.add_plugins(MinimalPlugins)
         .insert_resource(metadata.clone())
@@ -44,19 +53,38 @@ fn save_app(repository: ChunkRepository, budget: usize) -> (App, Entity) {
         .insert_resource(ChunkSaveBudget(budget))
         .insert_resource(ChunkTaskPool::new_for_test())
         .insert_resource(ChunkSaveTasks::default())
-        .init_resource::<DesiredColumnView>()
         .add_systems(
             Update,
             (finish_chunk_save_tasks, start_chunk_save_tasks).chain(),
         );
-    let owner = spawn_dimension(&mut app, metadata.height(), true);
+    let owner = spawn_defined_dimension(&mut app, definition, true);
     (app, owner)
 }
 
 fn spawn_dimension(app: &mut App, height: crate::world::WorldHeight, active: bool) -> Entity {
     let owner = app.world_mut().spawn_empty().id();
     let mut entity = app.world_mut().entity_mut(owner);
-    entity.insert(Dimension::new(owner, height));
+    entity.insert((
+        Dimension::new_for_test(owner, height),
+        DesiredColumnView::default(),
+    ));
+    if active {
+        entity.insert(Active);
+    }
+    owner
+}
+
+fn spawn_defined_dimension(
+    app: &mut App,
+    definition: crate::world::DimensionDefinition,
+    active: bool,
+) -> Entity {
+    let owner = app.world_mut().spawn_empty().id();
+    let mut entity = app.world_mut().entity_mut(owner);
+    entity.insert((
+        Dimension::new(owner, definition),
+        DesiredColumnView::default(),
+    ));
     if active {
         entity.insert(Active);
     }
@@ -95,7 +123,7 @@ fn save_handle(owner: Entity, entity: Entity, position: ChunkPos) -> ChunkSaveHa
     ChunkSaveHandle {
         owner,
         entity,
-        position,
+        address: overworld(position),
     }
 }
 
@@ -188,6 +216,20 @@ fn failure_records_distinguish_retryable_and_permanent_errors() {
 }
 
 #[test]
+fn equal_local_columns_in_different_dimensions_have_distinct_save_lanes() {
+    let position = ChunkPos::new(4, 1, -7);
+    let overworld = save_handle(Entity::from_bits(1), Entity::from_bits(2), position);
+    let grass_floor = ChunkSaveHandle {
+        owner: Entity::from_bits(3),
+        entity: Entity::from_bits(4),
+        address: ChunkAddress::new(DimensionId::GRASS_FLOOR, position),
+    };
+
+    assert_ne!(overworld.column(), grass_floor.column());
+    assert_ne!(overworld.order_key(), grass_floor.order_key());
+}
+
+#[test]
 fn dirty_chunks_are_persisted_and_marked_clean() {
     let metadata = WorldMetadata::with_seed(9);
     let repository = ChunkRepository::new(InMemoryChunkStore::new(metadata));
@@ -209,6 +251,38 @@ fn dirty_chunks_are_persisted_and_marked_clean() {
 
     let (loaded, _) = repository.load_chunk(overworld(position)).unwrap().unwrap();
     assert_eq!(loaded, chunk);
+}
+
+#[test]
+fn dirty_chunks_are_persisted_under_their_root_dimension() {
+    let metadata = WorldMetadata::with_seed(9);
+    let repository = ChunkRepository::new(InMemoryChunkStore::new(metadata));
+    let position = ChunkPos::new(2, 0, -1);
+    let mut chunk = Chunk::default();
+    chunk.set_cell_xyz(0, 0, 0, BlockType::Grass.into());
+    let (mut app, owner) =
+        save_app_in_dimension(repository.clone(), usize::MAX, DimensionId::GRASS_FLOOR);
+    let entity = spawn_dirty_chunk(
+        &mut app,
+        owner,
+        position,
+        chunk.clone(),
+        ChunkHeightmap::default(),
+    );
+
+    update_until(&mut app, |world| {
+        world.get::<ChunkNeedsSave>(entity).is_none()
+    });
+
+    let address = ChunkAddress::new(DimensionId::GRASS_FLOOR, position);
+    let (loaded, _) = repository.load_chunk(address).unwrap().unwrap();
+    assert_eq!(loaded, chunk);
+    assert!(
+        repository
+            .load_chunk(overworld(position))
+            .unwrap()
+            .is_none()
+    );
 }
 
 #[test]
@@ -553,11 +627,14 @@ fn chunks_waiting_to_evict_are_saved_before_resident_chunks() {
     let metadata = WorldMetadata::with_seed(9);
     let repository = ChunkRepository::new(InMemoryChunkStore::new(metadata.clone()));
     let (mut app, owner) = save_app(repository, 1);
-    app.world_mut().resource_mut::<DesiredColumnView>().refresh(
-        ChunkColumn::new(0, 0),
-        crate::world::dimension::ViewDistance::new(1),
-        metadata.height(),
-    );
+    app.world_mut()
+        .get_mut::<DesiredColumnView>(owner)
+        .unwrap()
+        .refresh(
+            ChunkColumn::new(0, 0),
+            crate::world::dimension::ViewDistance::new(1),
+            metadata.height(),
+        );
     spawn_dirty_chunk(
         &mut app,
         owner,
@@ -583,5 +660,5 @@ fn chunks_waiting_to_evict_are_saved_before_resident_chunks() {
         .keys()
         .next()
         .unwrap();
-    assert_eq!(handle.position, evicting_position);
+    assert_eq!(handle.position(), evicting_position);
 }

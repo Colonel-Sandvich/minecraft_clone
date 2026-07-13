@@ -2,13 +2,10 @@ use std::time::{Duration, Instant};
 
 use bevy::{platform::collections::HashSet, prelude::*};
 
-use crate::world::{
-    chunk::{
-        Chunk, ChunkColumn, ChunkHeightmap, ChunkInvalidationPlan, ChunkLight,
-        ChunkNeedsLightRebuild, ChunkNeedsRenderLightUpload, ChunkPerfCounters, ChunkPos,
-        ChunkPosition, light::ChunkLightRegion, mesh::PreparedChunkMeshLight,
-    },
-    generation::WorldMetadata,
+use crate::world::chunk::{
+    Chunk, ChunkColumn, ChunkHeightmap, ChunkInvalidationPlan, ChunkLight, ChunkNeedsLightRebuild,
+    ChunkNeedsRenderLightUpload, ChunkPerfCounters, ChunkPos, ChunkPosition,
+    light::ChunkLightRegion, mesh::PreparedChunkMeshLight,
 };
 
 use super::{
@@ -46,21 +43,19 @@ pub(crate) fn rebuild_chunk_light(
     mut perf: Option<ResMut<ChunkPerfCounters>>,
     needs_rebuild: Query<(Entity, &ChunkPosition), With<ChunkNeedsLightRebuild>>,
     all_chunks: Query<(&ChunkPosition, &Chunk, &ChunkLight, &ChunkHeightmap)>,
-    dimension: Single<&mut Dimension, With<Active>>,
-    metadata: Res<WorldMetadata>,
-    desired_view: Option<Res<DesiredColumnView>>,
+    dimension: Single<(&mut Dimension, &DesiredColumnView), With<Active>>,
     patch_budget: Option<Res<ColumnLightBudget>>,
     load_budget: Option<Res<ColumnLoadBudget>>,
     task_pool: Option<Res<ChunkTaskPool>>,
 ) {
-    let mut dimension = dimension.into_inner();
-    if let (Some(desired_view), Some(task_pool)) = (desired_view, task_pool) {
+    let (mut dimension, desired_view) = dimension.into_inner();
+    if let Some(task_pool) = task_pool {
         process_streamed_column_light(
             &mut commands,
             perf.as_deref_mut(),
             &mut dimension,
             &all_chunks,
-            &desired_view,
+            desired_view,
             StreamedLightAdmission::from_budgets(patch_budget.as_deref(), load_budget.as_deref()),
             &task_pool,
         );
@@ -88,7 +83,7 @@ pub(crate) fn rebuild_chunk_light(
         .map(|(_, position)| *position)
         .collect::<Vec<_>>();
 
-    let height_chunks = metadata.height_chunks();
+    let height_chunks = dimension.height().chunks();
     let mut region = ChunkLightRegion::new(height_chunks);
     let targets = light_rebuild_targets(&dirty_positions, &dimension, height_chunks);
     if let Some(perf) = perf.as_deref_mut() {
@@ -606,9 +601,12 @@ mod tests {
     use super::*;
     use crate::{
         block::BlockType,
-        world::chunk::{
-            CHUNK_SIZE, ChunkCell, ChunkNeedsLightRebuild, ChunkNeedsMeshRebuild,
-            ChunkNeedsRenderLightUpload, LocalBlockPos,
+        world::{
+            chunk::{
+                CHUNK_SIZE, ChunkCell, ChunkNeedsLightRebuild, ChunkNeedsMeshRebuild,
+                ChunkNeedsRenderLightUpload, LocalBlockPos,
+            },
+            generation::WorldMetadata,
         },
     };
 
@@ -619,11 +617,17 @@ mod tests {
         let metadata = WorldMetadata::with_seed(1)
             .with_height_chunks(height_chunks)
             .unwrap();
+        let height = metadata.height();
         let mut app = App::new();
         app.add_plugins(MinimalPlugins)
             .insert_resource(metadata)
             .add_systems(Update, rebuild_chunk_light);
-        let dimension = app.world_mut().spawn((Dimension::default(), Active)).id();
+        let dimension = app.world_mut().spawn_empty().id();
+        app.world_mut().entity_mut(dimension).insert((
+            Dimension::new_for_test(dimension, height),
+            DesiredColumnView::default(),
+            Active,
+        ));
         app.insert_resource(TestDimension(dimension));
         app
     }

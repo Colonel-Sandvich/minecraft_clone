@@ -17,7 +17,7 @@ use bevy::{prelude::*, state::app::StatesPlugin};
 use minecraft_clone::{
     game_state::GameStatePlugin,
     world::{
-        WorldMetadata,
+        DimensionCatalog, WorldMetadata,
         chunk::ChunkPerfCounters,
         dimension::{
             Active, ColumnActivationBudget, ColumnLightBudget, ColumnLoadBudget,
@@ -49,12 +49,14 @@ fn main() {
         .with_height_chunks(height_chunks)
         .expect("profile world height must be valid");
     let repository = ChunkRepository::new(NoopChunkStore::new(metadata.clone()));
+    let catalog = DimensionCatalog::for_world(&metadata);
 
     let mut app = App::new();
     app.add_plugins(MinimalPlugins)
         .add_plugins(StatesPlugin)
         .add_plugins(GameStatePlugin)
         .insert_resource(metadata)
+        .insert_resource(catalog)
         .insert_resource(repository)
         .insert_resource(ViewDistance::new(radius))
         .insert_resource(ColumnLoadBudget(load_budget))
@@ -72,10 +74,8 @@ fn main() {
         app.update();
         update_times.push(frame_started.elapsed());
 
-        let desired = app.world().resource::<DesiredColumnView>();
-        let visible_chunks = desired.visible_chunk_count();
-        let resident_chunks = desired.resident_chunk_count();
-        let (loaded_chunks, published_chunks) = active_dimension_counts(app.world_mut());
+        let (visible_chunks, resident_chunks, loaded_chunks, published_chunks) =
+            active_dimension_counts(app.world_mut());
         if visible_chunks > 0 && published_chunks == visible_chunks {
             break (
                 visible_chunks,
@@ -171,13 +171,15 @@ fn main() {
     );
 }
 
-fn active_dimension_counts(world: &mut World) -> (usize, usize) {
-    let mut query = world.query_filtered::<&Dimension, With<Active>>();
-    let dimension = query
+fn active_dimension_counts(world: &mut World) -> (usize, usize, usize, usize) {
+    let mut query = world.query_filtered::<(&Dimension, &DesiredColumnView), With<Active>>();
+    let (dimension, desired) = query
         .iter(world)
         .next()
         .expect("dimension setup must create one active dimension");
     (
+        desired.visible_chunk_count(),
+        desired.resident_chunk_count(),
         dimension.loaded_chunk_count(),
         dimension.published_chunk_count(),
     )

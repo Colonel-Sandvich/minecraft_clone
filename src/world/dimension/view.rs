@@ -76,7 +76,7 @@ impl OrderedColumnSet {
 }
 
 /// Cached visible columns and their resident lighting dependency closure.
-#[derive(Resource, Debug, Default)]
+#[derive(Component, Debug, Default)]
 pub struct DesiredColumnView {
     key: Option<DesiredColumnViewKey>,
     revision: u64,

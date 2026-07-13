@@ -132,8 +132,7 @@ fn finish_streaming_startup_frame(mut trace: ResMut<StreamingStartupTrace>) {
 }
 
 fn log_streaming_startup_milestones(
-    dimension: Option<Single<&Dimension, With<Active>>>,
-    desired_view: Option<Res<DesiredColumnView>>,
+    dimension: Option<Single<(&Dimension, &DesiredColumnView), With<Active>>>,
     dirty_meshes: Query<(), With<ChunkNeedsMeshRebuild>>,
     chunk_contents: Query<&ChunkContentCounts>,
     player: Option<Single<&Transform, With<Player>>>,
@@ -149,14 +148,10 @@ fn log_streaming_startup_milestones(
     let Some(dimension) = dimension else {
         return;
     };
-    let Some(desired_view) = desired_view else {
-        return;
-    };
+    let (dimension, desired_view) = dimension.into_inner();
     let Some(center) = desired_view.center() else {
         return;
     };
-    let dimension = dimension.into_inner();
-
     let center_loaded = dimension.has_complete_loaded_column(center);
     let dependencies_loaded = dimension.has_complete_resident_light_neighborhood(center);
     let center_light_submitted = dimension

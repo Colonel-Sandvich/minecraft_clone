@@ -5,7 +5,7 @@ use bevy::{
 
 use crate::world::{
     chunk::{Chunk, ChunkCell, WorldBlockPos},
-    dimension::Dimension,
+    dimension::{Active, Dimension},
 };
 
 const MINECRAFT_WATER_FOG_START: f32 = -8.0;
@@ -123,11 +123,11 @@ fn update_camera_fluid_visuals(
     mut settings: ResMut<TerrainVisualSettings>,
     mut clear_color: ResMut<ClearColor>,
     cameras: Query<&GlobalTransform, With<Camera3d>>,
-    dimensions: Query<&Dimension>,
+    dimension: Option<Single<&Dimension, With<Active>>>,
     chunks: Query<&Chunk>,
 ) {
     let underwater = cameras.iter().next().is_some_and(|camera| {
-        let Some(dimension) = dimensions.iter().next() else {
+        let Some(dimension) = dimension.as_deref() else {
             return false;
         };
         camera_is_underwater(camera.translation(), dimension, &chunks)

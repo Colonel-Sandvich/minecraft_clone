@@ -42,9 +42,12 @@ use self::{
 };
 use super::{
     chunk::{ChunkColumn, ChunkPos},
-    generation::{WorldHeight, WorldMetadata},
-    storage::ChunkRepository,
+    definition::{DimensionCatalog, DimensionDefinition, DimensionId},
+    generation::WorldHeight,
 };
+
+#[cfg(test)]
+use super::definition::GeneratorProfile;
 
 pub(crate) use self::persistence::ChunkSaveTasks;
 pub use self::{
@@ -100,7 +103,7 @@ pub struct Dimension {
     loaded_chunks: HashMap<ChunkPos, Entity>,
     published_chunks: HashSet<ChunkPos>,
     loaded_columns: HashMap<ChunkColumn, LoadedColumnHandle>,
-    height: WorldHeight,
+    definition: DimensionDefinition,
     stream: DimensionStreamState,
     light_tasks: DimensionLightTasks,
     #[expect(
@@ -122,31 +125,77 @@ pub(crate) struct EvictedColumn {
 #[cfg(test)]
 impl Default for Dimension {
     fn default() -> Self {
-        Self::new(Entity::PLACEHOLDER, WorldHeight::default())
+        Self::new_for_test(Entity::PLACEHOLDER, WorldHeight::default())
     }
 }
 
 impl Dimension {
-    pub(crate) fn new(owner: Entity, height: WorldHeight) -> Self {
+    pub(crate) fn new(owner: Entity, definition: DimensionDefinition) -> Self {
         Self {
             loaded_chunks: HashMap::default(),
             published_chunks: HashSet::default(),
             loaded_columns: HashMap::default(),
-            height,
+            definition,
             stream: DimensionStreamState::new(owner),
             light_tasks: DimensionLightTasks::default(),
             derived_work: DimensionDerivedWork::new(),
         }
     }
 
-    pub fn spawn_in_world(world: &mut World, height: WorldHeight) -> Entity {
+    #[cfg(test)]
+    pub(crate) fn new_for_test(owner: Entity, height: WorldHeight) -> Self {
+        Self::new(
+            owner,
+            DimensionDefinition::new(
+                DimensionId::OVERWORLD,
+                height,
+                GeneratorProfile::OverworldV1,
+                Vec3::ZERO,
+            ),
+        )
+    }
+
+    fn root_components(
+        owner: Entity,
+        definition: DimensionDefinition,
+    ) -> (Self, DesiredColumnView, Transform, Visibility) {
+        (
+            Self::new(owner, definition),
+            DesiredColumnView::default(),
+            Transform::default(),
+            Visibility::default(),
+        )
+    }
+
+    pub fn spawn_in_world(
+        world: &mut World,
+        catalog: &DimensionCatalog,
+        id: DimensionId,
+    ) -> Entity {
+        let definition = *catalog
+            .get(id)
+            .unwrap_or_else(|| panic!("world catalog does not contain dimension {id}"));
         let owner = world.spawn_empty().id();
-        world.entity_mut(owner).insert(Self::new(owner, height));
+        world
+            .entity_mut(owner)
+            .insert(Self::root_components(owner, definition));
         owner
     }
 
+    pub const fn definition(&self) -> DimensionDefinition {
+        self.definition
+    }
+
+    pub const fn id(&self) -> DimensionId {
+        self.definition.id()
+    }
+
     pub const fn height(&self) -> WorldHeight {
-        self.height
+        self.definition.height()
+    }
+
+    pub const fn arrival(&self) -> Vec3 {
+        self.definition.arrival()
     }
 
     pub fn loaded_chunk_entity(&self, position: ChunkPos) -> Option<Entity> {
@@ -176,7 +225,7 @@ impl Dimension {
         entity: Entity,
     ) -> Option<Entity> {
         assert!(
-            self.height.contains_chunk(position),
+            self.height().contains_chunk(position),
             "registered chunk must be within the dimension height"
         );
         assert!(
@@ -197,7 +246,7 @@ impl Dimension {
 
     pub fn unregister_published_chunk(&mut self, position: ChunkPos) -> Option<Entity> {
         assert!(
-            self.height.contains_chunk(position),
+            self.height().contains_chunk(position),
             "unregistered chunk must be within the dimension height"
         );
         assert!(
@@ -292,11 +341,11 @@ impl Dimension {
     }
 
     pub(crate) fn has_any_loaded_chunk_in_column(&self, column: ChunkColumn) -> bool {
-        (0..self.height.chunks_i32()).any(|y| self.contains_loaded_chunk(column.chunk(y)))
+        (0..self.height().chunks_i32()).any(|y| self.contains_loaded_chunk(column.chunk(y)))
     }
 
     pub(crate) fn has_complete_loaded_column(&self, column: ChunkColumn) -> bool {
-        (0..self.height.chunks_i32()).all(|y| self.contains_loaded_chunk(column.chunk(y)))
+        (0..self.height().chunks_i32()).all(|y| self.contains_loaded_chunk(column.chunk(y)))
     }
 
     pub(crate) fn has_complete_resident_light_neighborhood(&self, column: ChunkColumn) -> bool {
@@ -310,7 +359,7 @@ impl Dimension {
         &self,
         column: ChunkColumn,
     ) -> Option<Vec<(ChunkPos, Entity)>> {
-        (0..self.height.chunks_i32())
+        (0..self.height().chunks_i32())
             .map(|y| {
                 let position = column.chunk(y);
                 self.loaded_chunk_entity(position)
@@ -325,10 +374,10 @@ impl Dimension {
         incarnation: Entity,
         entities: Vec<Entity>,
     ) {
-        assert_eq!(entities.len(), self.height.chunks());
+        assert_eq!(entities.len(), self.height().chunks());
         assert_eq!(ticket.owner(), self.stream.owner());
         assert!(
-            (0..self.height.chunks_i32())
+            (0..self.height().chunks_i32())
                 .all(|y| !self.contains_loaded_chunk(ticket.column().chunk(y))),
             "loaded column must not overlap registered chunks"
         );
@@ -354,7 +403,7 @@ impl Dimension {
     fn expose_loaded_column(&mut self, column: ChunkColumn) -> bool {
         if !self.loaded_columns.contains_key(&column)
             || !self.has_complete_loaded_column(column)
-            || (0..self.height.chunks_i32())
+            || (0..self.height().chunks_i32())
                 .any(|y| self.published_chunks.contains(&column.chunk(y)))
         {
             return false;
@@ -370,12 +419,12 @@ impl Dimension {
 
     fn hide_loaded_column(&mut self, column: ChunkColumn) -> bool {
         if !self.loaded_columns.contains_key(&column)
-            || !(0..self.height.chunks_i32())
+            || !(0..self.height().chunks_i32())
                 .all(|y| self.published_chunks.contains(&column.chunk(y)))
         {
             return false;
         }
-        for y in 0..self.height.chunks_i32() {
+        for y in 0..self.height().chunks_i32() {
             assert!(self.published_chunks.remove(&column.chunk(y)));
         }
         true
@@ -436,7 +485,7 @@ impl Dimension {
     pub(crate) fn publish_lit_column(&mut self, column: ChunkColumn) -> bool {
         if !self.loaded_columns.contains_key(&column)
             || !self.has_complete_loaded_column(column)
-            || (0..self.height.chunks_i32())
+            || (0..self.height().chunks_i32())
                 .any(|y| self.published_chunks.contains(&column.chunk(y)))
             || !self.stream.publish(column)
         {
@@ -451,7 +500,7 @@ impl Dimension {
 
     pub(crate) fn unpublish_column(&mut self, column: ChunkColumn) -> bool {
         if !self.loaded_columns.contains_key(&column)
-            || !(0..self.height.chunks_i32())
+            || !(0..self.height().chunks_i32())
                 .all(|y| self.published_chunks.contains(&column.chunk(y)))
             || !self.stream.unpublish(column)
         {
@@ -501,8 +550,6 @@ pub struct DimensionPlugin;
 impl Plugin for DimensionPlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(ChunkTaskPool::global())
-            .init_resource::<WorldMetadata>()
-            .init_resource::<ChunkRepository>()
             .init_resource::<ColumnLoadBudget>()
             .init_resource::<ColumnStagingBudget>()
             .init_resource::<ColumnActivationBudget>()
@@ -510,7 +557,6 @@ impl Plugin for DimensionPlugin {
             .init_resource::<ChunkSaveBudget>()
             .init_resource::<ChunkSaveTasks>()
             .init_resource::<ViewDistance>()
-            .init_resource::<DesiredColumnView>()
             .add_plugins(DimensionFluidPlugin);
 
         app.add_systems(
@@ -550,14 +596,14 @@ impl Plugin for DimensionPlugin {
     }
 }
 
-fn setup(mut commands: Commands, metadata: Res<WorldMetadata>) {
+fn setup(mut commands: Commands, catalog: Res<DimensionCatalog>) {
+    let definition = *catalog
+        .get(DimensionId::OVERWORLD)
+        .expect("world catalog must contain the initial dimension");
     let entity = commands.spawn_empty().id();
-    commands.entity(entity).insert((
-        Dimension::new(entity, metadata.height()),
-        Transform::default(),
-        Visibility::default(),
-        Active,
-    ));
+    commands
+        .entity(entity)
+        .insert((Dimension::root_components(entity, definition), Active));
 }
 
 #[derive(Component)]
@@ -571,12 +617,17 @@ mod tests {
     fn immediate_spawn_binds_streaming_state_to_the_allocated_entity() {
         let mut world = World::new();
 
-        let owner = Dimension::spawn_in_world(&mut world, WorldHeight::default());
+        let catalog = DimensionCatalog::for_world(&crate::world::WorldMetadata::default());
+        let definition = *catalog.get(DimensionId::OVERWORLD).unwrap();
+        let owner = Dimension::spawn_in_world(&mut world, &catalog, DimensionId::OVERWORLD);
 
-        world
-            .get::<Dimension>(owner)
-            .unwrap()
-            .assert_stream_owner(owner);
+        let dimension = world.get::<Dimension>(owner).unwrap();
+        dimension.assert_stream_owner(owner);
+        assert_eq!(dimension.definition(), definition);
+        assert_eq!(dimension.id(), DimensionId::OVERWORLD);
+        assert!(world.get::<DesiredColumnView>(owner).is_some());
+        assert!(world.get::<Transform>(owner).is_some());
+        assert!(world.get::<Visibility>(owner).is_some());
     }
 
     #[test]
@@ -617,7 +668,7 @@ mod tests {
         let height = WorldHeight::new(2).unwrap();
         let column = ChunkColumn::new(-4, 7);
         let entities = [Entity::from_bits(11), Entity::from_bits(12)];
-        let mut dimension = Dimension::new(Entity::PLACEHOLDER, height);
+        let mut dimension = Dimension::new_for_test(Entity::PLACEHOLDER, height);
         dimension.loaded_columns.insert(
             column,
             LoadedColumnHandle {
