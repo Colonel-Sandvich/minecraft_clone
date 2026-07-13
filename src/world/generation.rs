@@ -2,7 +2,10 @@ use bevy::prelude::*;
 
 use crate::{
     block::BlockType,
-    world::chunk::{CHUNK_ISIZE, CHUNK_SIZE, Chunk, ChunkCell, ChunkPos, WorldBlockPos},
+    world::{
+        chunk::{CHUNK_ISIZE, CHUNK_SIZE, Chunk, ChunkCell, ChunkPos, WorldBlockPos},
+        definition::{DimensionDefinition, GeneratorProfile},
+    },
 };
 
 // KEEP THIS AT 1. IF THERE ARE BREAKING CHANGES IN CHUNK FORMAT THAT'S FINE I WILL JUST DELETE THE dev save world and make a new one!
@@ -162,6 +165,58 @@ pub fn generate_chunk(metadata: &WorldMetadata, chunk_pos: IVec3) -> Chunk {
     }
 
     chunk
+}
+
+/// Generates a chunk using an explicit, immutable generator profile.
+///
+/// Column loading captures this profile before starting asynchronous work, so
+/// switching the active dimension cannot change a task's generation behavior.
+pub fn generate_chunk_for_profile(
+    metadata: &WorldMetadata,
+    profile: GeneratorProfile,
+    chunk_pos: ChunkPos,
+) -> Chunk {
+    match profile {
+        GeneratorProfile::OverworldV1 => generate_chunk(metadata, chunk_pos.as_ivec3()),
+        GeneratorProfile::GrassFloorV1 => generate_grass_floor_chunk(chunk_pos),
+        GeneratorProfile::CenterGlassPlatformV1 => generate_center_glass_platform_chunk(chunk_pos),
+    }
+}
+
+pub fn generate_dimension_chunk(
+    metadata: &WorldMetadata,
+    definition: &DimensionDefinition,
+    chunk_pos: ChunkPos,
+) -> Chunk {
+    generate_chunk_for_profile(metadata, definition.generator(), chunk_pos)
+}
+
+fn generate_grass_floor_chunk(chunk_pos: ChunkPos) -> Chunk {
+    if chunk_pos.y() != 0 {
+        return Chunk::default();
+    }
+
+    Chunk::from_cell_fn(|_, y, _| {
+        if y == 0 {
+            BlockType::Grass.into()
+        } else {
+            ChunkCell::EMPTY
+        }
+    })
+}
+
+fn generate_center_glass_platform_chunk(chunk_pos: ChunkPos) -> Chunk {
+    if chunk_pos != ChunkPos::ZERO {
+        return Chunk::default();
+    }
+
+    Chunk::from_cell_fn(|_, y, _| {
+        if y == 0 {
+            BlockType::Glass.into()
+        } else {
+            ChunkCell::EMPTY
+        }
+    })
 }
 
 pub fn terrain_height(metadata: &WorldMetadata, world_x: i32, world_z: i32) -> i32 {
@@ -388,6 +443,26 @@ fn lerp(a: f32, b: f32, t: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::world::definition::{DimensionCatalog, DimensionId};
+
+    fn assert_single_bottom_layer(chunk: &Chunk, block: BlockType) {
+        for (cell, local) in chunk.iter() {
+            let expected = if local.y() == 0 {
+                block.into()
+            } else {
+                ChunkCell::EMPTY
+            };
+            assert_eq!(cell, expected, "unexpected cell at {local:?}");
+        }
+    }
+
+    fn storage_fingerprint(chunk: &Chunk) -> (usize, u64) {
+        let bytes = chunk.to_storage_bytes();
+        let fingerprint = bytes.iter().fold(0xcbf2_9ce4_8422_2325u64, |hash, byte| {
+            (hash ^ u64::from(*byte)).wrapping_mul(0x1000_0000_01b3)
+        });
+        (bytes.len(), fingerprint)
+    }
 
     #[test]
     fn world_height_accepts_persistable_bounds() {
@@ -441,6 +516,149 @@ mod tests {
         assert_eq!(
             generate_chunk(&metadata, ivec3(2, 1, -3)),
             generate_chunk(&metadata, ivec3(2, 1, -3))
+        );
+    }
+
+    #[test]
+    fn overworld_profile_is_exactly_compatible_with_generate_chunk() {
+        let cases = [
+            (0, ChunkPos::ZERO),
+            (1234, ChunkPos::new(2, 1, -3)),
+            (DEFAULT_DEV_WORLD_SEED, ChunkPos::new(-1, 1, -1)),
+            (u64::MAX, ChunkPos::new(7, 4, 9)),
+        ];
+
+        for (seed, position) in cases {
+            let metadata = WorldMetadata::with_seed(seed);
+            let compatibility = generate_chunk(&metadata, position.as_ivec3());
+            let profiled =
+                generate_chunk_for_profile(&metadata, GeneratorProfile::OverworldV1, position);
+
+            assert_eq!(
+                profiled.to_storage_bytes(),
+                compatibility.to_storage_bytes()
+            );
+            assert_eq!(
+                generate_chunk_for_profile(&metadata, GeneratorProfile::OverworldV1, position,)
+                    .to_storage_bytes(),
+                profiled.to_storage_bytes()
+            );
+        }
+    }
+
+    #[test]
+    fn overworld_profile_retains_golden_chunks() {
+        let cases = [
+            (0, ChunkPos::ZERO, (526, 0xd7ba_7b6e_a672_1b8b)),
+            (
+                1234,
+                ChunkPos::new(2, 1, -3),
+                (1_053, 0x3603_bf74_e0b7_cd78),
+            ),
+            (
+                DEFAULT_DEV_WORLD_SEED,
+                ChunkPos::new(-1, 1, -1),
+                (1_579, 0x24d7_a93b_6f03_f59b),
+            ),
+        ];
+
+        for (seed, position, expected) in cases {
+            let chunk = generate_chunk_for_profile(
+                &WorldMetadata::with_seed(seed),
+                GeneratorProfile::OverworldV1,
+                position,
+            );
+            assert_eq!(
+                storage_fingerprint(&chunk),
+                expected,
+                "seed={seed} position={position:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn grass_floor_is_one_grass_layer_in_every_bottom_chunk() {
+        let metadata = WorldMetadata::with_seed(1);
+
+        for position in [
+            ChunkPos::ZERO,
+            ChunkPos::new(-8, 0, 13),
+            ChunkPos::new(21, 0, -34),
+        ] {
+            let chunk =
+                generate_chunk_for_profile(&metadata, GeneratorProfile::GrassFloorV1, position);
+            assert_single_bottom_layer(&chunk, BlockType::Grass);
+        }
+    }
+
+    #[test]
+    fn grass_floor_is_empty_above_and_below_chunk_y_zero() {
+        let metadata = WorldMetadata::with_seed(1);
+
+        for position in [ChunkPos::new(0, 1, 0), ChunkPos::new(-4, -1, 9)] {
+            assert_eq!(
+                generate_chunk_for_profile(&metadata, GeneratorProfile::GrassFloorV1, position,),
+                Chunk::default()
+            );
+        }
+    }
+
+    #[test]
+    fn center_glass_platform_is_one_layer_in_the_origin_chunk() {
+        let chunk = generate_chunk_for_profile(
+            &WorldMetadata::with_seed(1),
+            GeneratorProfile::CenterGlassPlatformV1,
+            ChunkPos::ZERO,
+        );
+
+        assert_single_bottom_layer(&chunk, BlockType::Glass);
+    }
+
+    #[test]
+    fn center_glass_platform_is_empty_outside_the_origin_chunk() {
+        let metadata = WorldMetadata::with_seed(1);
+
+        for position in [
+            ChunkPos::new(-1, 0, 0),
+            ChunkPos::new(1, 0, 0),
+            ChunkPos::new(0, 0, -1),
+            ChunkPos::new(0, 0, 1),
+            ChunkPos::new(0, 1, 0),
+            ChunkPos::new(0, -1, 0),
+        ] {
+            assert_eq!(
+                generate_chunk_for_profile(
+                    &metadata,
+                    GeneratorProfile::CenterGlassPlatformV1,
+                    position,
+                ),
+                Chunk::default(),
+                "expected {position:?} to be empty"
+            );
+        }
+    }
+
+    #[test]
+    fn dimension_generation_dispatches_from_the_catalog_definition() {
+        let metadata = WorldMetadata::with_seed(9876);
+        let catalog = DimensionCatalog::for_world(&metadata);
+
+        let overworld = catalog.get(DimensionId::OVERWORLD).unwrap();
+        assert_eq!(
+            generate_dimension_chunk(&metadata, overworld, ChunkPos::new(2, 1, -3)),
+            generate_chunk(&metadata, ivec3(2, 1, -3))
+        );
+
+        let grass = catalog.get(DimensionId::GRASS_FLOOR).unwrap();
+        assert_single_bottom_layer(
+            &generate_dimension_chunk(&metadata, grass, ChunkPos::new(2, 0, -3)),
+            BlockType::Grass,
+        );
+
+        let glass = catalog.get(DimensionId::CENTER_GLASS_PLATFORM).unwrap();
+        assert_single_bottom_layer(
+            &generate_dimension_chunk(&metadata, glass, ChunkPos::ZERO),
+            BlockType::Glass,
         );
     }
 

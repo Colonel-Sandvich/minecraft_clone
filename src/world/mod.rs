@@ -1,4 +1,5 @@
 pub mod chunk;
+pub mod definition;
 pub mod dimension;
 pub mod generation;
 pub mod loading;
@@ -18,6 +19,7 @@ use storage::{
 #[cfg(feature = "turso-store")]
 use storage::{TursoChunkStore, development_turso_path};
 
+pub use definition::{DimensionCatalog, DimensionDefinition, DimensionId, GeneratorProfile};
 pub use generation::{InvalidWorldHeight, WorldHeight, WorldMetadata};
 
 pub struct WorldPlugin;
