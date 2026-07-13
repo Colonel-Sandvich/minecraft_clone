@@ -13,10 +13,15 @@ use crate::{
     block::BlockType,
     world::{
         chunk::{ChunkHeightmap, ChunkLight},
+        definition::{ChunkAddress, DimensionId},
         generation::WorldMetadata,
         storage::{ChunkRepository, ChunkStore, InMemoryChunkStore},
     },
 };
+
+fn overworld(position: ChunkPos) -> ChunkAddress {
+    ChunkAddress::new(DimensionId::OVERWORLD, position)
+}
 
 fn update_until(app: &mut App, mut predicate: impl FnMut(&World) -> bool) {
     for _ in 0..2_000 {
@@ -129,13 +134,16 @@ impl ChunkStore for ScriptedSaveStore {
         self.inner.metadata()
     }
 
-    fn load_chunk(&self, position: ChunkPos) -> ChunkStoreResult<Option<(Chunk, ChunkHeightmap)>> {
-        self.inner.load_chunk(position)
+    fn load_chunk(
+        &self,
+        address: ChunkAddress,
+    ) -> ChunkStoreResult<Option<(Chunk, ChunkHeightmap)>> {
+        self.inner.load_chunk(address)
     }
 
     fn save_chunk(
         &self,
-        position: ChunkPos,
+        address: ChunkAddress,
         chunk: &Chunk,
         heightmap: &ChunkHeightmap,
     ) -> ChunkStoreResult<()> {
@@ -143,7 +151,7 @@ impl ChunkStore for ScriptedSaveStore {
         if call < self.failures_before_success {
             return Err(io_error(self.failure_kind));
         }
-        self.inner.save_chunk(position, chunk, heightmap)
+        self.inner.save_chunk(address, chunk, heightmap)
     }
 }
 
@@ -199,7 +207,7 @@ fn dirty_chunks_are_persisted_and_marked_clean() {
         world.get::<ChunkNeedsSave>(entity).is_none()
     });
 
-    let (loaded, _) = repository.load_chunk(position).unwrap().unwrap();
+    let (loaded, _) = repository.load_chunk(overworld(position)).unwrap().unwrap();
     assert_eq!(loaded, chunk);
 }
 
@@ -256,13 +264,13 @@ fn saves_are_serialized_within_a_column() {
     });
     assert!(
         repository
-            .load_chunk(ChunkPos::new(0, 0, 0))
+            .load_chunk(overworld(ChunkPos::new(0, 0, 0)))
             .unwrap()
             .is_some()
     );
     assert!(
         repository
-            .load_chunk(ChunkPos::new(0, 1, 0))
+            .load_chunk(overworld(ChunkPos::new(0, 1, 0)))
             .unwrap()
             .is_some()
     );
@@ -322,7 +330,7 @@ fn stale_revision_completion_cannot_clean_identical_live_content() {
     });
 
     assert_eq!(calls.load(Ordering::SeqCst), 2);
-    let (loaded, _) = repository.load_chunk(position).unwrap().unwrap();
+    let (loaded, _) = repository.load_chunk(overworld(position)).unwrap().unwrap();
     assert_eq!(loaded, original);
 }
 
@@ -367,7 +375,7 @@ fn stale_heightmap_completion_cannot_clean_a_chunk() {
     });
 
     assert_eq!(calls.load(Ordering::SeqCst), 2);
-    let (_, stored_heightmap) = repository.load_chunk(position).unwrap().unwrap();
+    let (_, stored_heightmap) = repository.load_chunk(overworld(position)).unwrap().unwrap();
     assert_eq!(stored_heightmap, current_heightmap);
 }
 

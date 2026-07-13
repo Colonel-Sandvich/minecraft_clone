@@ -1,8 +1,9 @@
 use std::{collections::HashMap, sync::Mutex};
 
 use crate::world::{
-    chunk::{Chunk, ChunkColumn, ChunkHeightmap, ChunkPos},
-    generation::WorldMetadata,
+    chunk::{Chunk, ChunkHeightmap},
+    definition::{ChunkAddress, ColumnAddress},
+    generation::{WorldHeight, WorldMetadata},
 };
 
 use super::{ChunkStore, ChunkStoreError, ChunkStoreResult, StoredChunk, StoredColumn};
@@ -14,8 +15,13 @@ pub struct InMemoryChunkStore {
 
 #[derive(Default)]
 struct InMemoryChunkStoreInner {
-    chunks: HashMap<ChunkPos, Vec<u8>>,
-    column_heightmaps: HashMap<ChunkColumn, Vec<u8>>,
+    columns: HashMap<ColumnAddress, InMemoryStoredColumn>,
+}
+
+#[derive(Default)]
+struct InMemoryStoredColumn {
+    chunks: HashMap<i32, Vec<u8>>,
+    heightmap: Vec<u8>,
 }
 
 impl InMemoryChunkStore {
@@ -38,7 +44,10 @@ impl ChunkStore for InMemoryChunkStore {
         &self.metadata
     }
 
-    fn load_chunk(&self, position: ChunkPos) -> ChunkStoreResult<Option<(Chunk, ChunkHeightmap)>> {
+    fn load_chunk(
+        &self,
+        address: ChunkAddress,
+    ) -> ChunkStoreResult<Option<(Chunk, ChunkHeightmap)>> {
         let inner = self
             .inner
             .lock()
@@ -46,21 +55,28 @@ impl ChunkStore for InMemoryChunkStore {
                 store: "in-memory chunk store",
             })?;
 
-        let Some(bytes) = inner.chunks.get(&position) else {
+        let Some(column) = inner.columns.get(&address.column()) else {
+            return Ok(None);
+        };
+        let Some(bytes) = column.chunks.get(&address.position().y()) else {
             return Ok(None);
         };
 
         let chunk = Chunk::try_from_storage_bytes(bytes)?;
-        let heightmap = inner
-            .column_heightmaps
-            .get(&ChunkColumn::from(position))
-            .map(|b| ChunkHeightmap::from_bytes(b))
-            .unwrap_or_default();
+        let heightmap = if column.heightmap.is_empty() {
+            ChunkHeightmap::default()
+        } else {
+            ChunkHeightmap::from_bytes(&column.heightmap)
+        };
 
         Ok(Some((chunk, heightmap)))
     }
 
-    fn load_stored_column(&self, column: ChunkColumn) -> ChunkStoreResult<StoredColumn> {
+    fn load_stored_column(
+        &self,
+        address: ColumnAddress,
+        height: WorldHeight,
+    ) -> ChunkStoreResult<StoredColumn> {
         let inner = self
             .inner
             .lock()
@@ -68,27 +84,30 @@ impl ChunkStore for InMemoryChunkStore {
                 store: "in-memory chunk store",
             })?;
 
-        let chunks = inner
+        let Some(column) = inner.columns.get(&address) else {
+            return StoredColumn::empty(address, height).map_err(Into::into);
+        };
+        let chunks = column
             .chunks
             .iter()
-            .filter(|(position, _)| ChunkColumn::from(**position) == column)
-            .map(|(&position, bytes)| {
+            .filter(|(y, _)| (0..height.chunks_i32()).contains(y))
+            .map(|(&y, bytes)| {
                 let chunk = Chunk::try_from_storage_bytes(bytes)?;
-                Ok(StoredChunk::new(position, chunk))
+                Ok(StoredChunk::new(address.chunk(y), chunk))
             })
             .collect::<ChunkStoreResult<Vec<_>>>()?;
-        let heightmap = inner
-            .column_heightmaps
-            .get(&column)
-            .map(|bytes| ChunkHeightmap::from_bytes(bytes))
-            .unwrap_or_default();
+        let heightmap = if column.heightmap.is_empty() {
+            ChunkHeightmap::default()
+        } else {
+            ChunkHeightmap::from_bytes(&column.heightmap)
+        };
 
-        StoredColumn::try_new(column, self.metadata.height(), heightmap, chunks).map_err(Into::into)
+        StoredColumn::try_new(address, height, heightmap, chunks).map_err(Into::into)
     }
 
     fn save_chunk(
         &self,
-        position: ChunkPos,
+        address: ChunkAddress,
         chunk: &Chunk,
         heightmap: &ChunkHeightmap,
     ) -> ChunkStoreResult<()> {
@@ -99,10 +118,11 @@ impl ChunkStore for InMemoryChunkStore {
                 store: "in-memory chunk store",
             })?;
 
-        inner.chunks.insert(position, chunk.to_storage_bytes());
-        inner
-            .column_heightmaps
-            .insert(ChunkColumn::from(position), heightmap.to_bytes());
+        let column = inner.columns.entry(address.column()).or_default();
+        column
+            .chunks
+            .insert(address.position().y(), chunk.to_storage_bytes());
+        column.heightmap = heightmap.to_bytes();
         Ok(())
     }
 }
@@ -128,17 +148,24 @@ impl ChunkStore for NoopChunkStore {
         &self.metadata
     }
 
-    fn load_chunk(&self, _position: ChunkPos) -> ChunkStoreResult<Option<(Chunk, ChunkHeightmap)>> {
+    fn load_chunk(
+        &self,
+        _address: ChunkAddress,
+    ) -> ChunkStoreResult<Option<(Chunk, ChunkHeightmap)>> {
         Ok(None)
     }
 
-    fn load_stored_column(&self, column: ChunkColumn) -> ChunkStoreResult<StoredColumn> {
-        StoredColumn::empty(column, self.metadata.height()).map_err(Into::into)
+    fn load_stored_column(
+        &self,
+        address: ColumnAddress,
+        height: WorldHeight,
+    ) -> ChunkStoreResult<StoredColumn> {
+        StoredColumn::empty(address, height).map_err(Into::into)
     }
 
     fn save_chunk(
         &self,
-        _position: ChunkPos,
+        _address: ChunkAddress,
         _chunk: &Chunk,
         _heightmap: &ChunkHeightmap,
     ) -> ChunkStoreResult<()> {

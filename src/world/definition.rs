@@ -2,7 +2,10 @@ use std::fmt;
 
 use bevy::prelude::{Component, Resource, Vec3};
 
-use super::generation::{WorldHeight, WorldMetadata, terrain_height};
+use super::{
+    chunk::{ChunkColumn, ChunkPos},
+    generation::{WorldHeight, WorldMetadata, terrain_height},
+};
 
 const ARRIVAL_XZ: f32 = 8.0;
 // Matches the current player spawn calculation without making world
@@ -36,6 +39,69 @@ impl DimensionId {
 impl fmt::Display for DimensionId {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.fmt(formatter)
+    }
+}
+
+/// A dimension-qualified chunk coordinate used at durable and asynchronous
+/// ownership boundaries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ChunkAddress {
+    dimension: DimensionId,
+    position: ChunkPos,
+}
+
+impl ChunkAddress {
+    pub const fn new(dimension: DimensionId, position: ChunkPos) -> Self {
+        Self {
+            dimension,
+            position,
+        }
+    }
+
+    pub const fn dimension(self) -> DimensionId {
+        self.dimension
+    }
+
+    pub const fn position(self) -> ChunkPos {
+        self.position
+    }
+
+    pub const fn column(self) -> ColumnAddress {
+        ColumnAddress::new(self.dimension, self.position.column())
+    }
+}
+
+/// A dimension-qualified XZ column coordinate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ColumnAddress {
+    dimension: DimensionId,
+    position: ChunkColumn,
+}
+
+impl ColumnAddress {
+    pub const fn new(dimension: DimensionId, position: ChunkColumn) -> Self {
+        Self {
+            dimension,
+            position,
+        }
+    }
+
+    pub const fn dimension(self) -> DimensionId {
+        self.dimension
+    }
+
+    pub const fn column(self) -> ChunkColumn {
+        self.position
+    }
+
+    pub const fn chunk(self, y: i32) -> ChunkAddress {
+        ChunkAddress::new(self.dimension, self.position.chunk(y))
+    }
+}
+
+impl From<ChunkAddress> for ColumnAddress {
+    fn from(address: ChunkAddress) -> Self {
+        address.column()
     }
 }
 

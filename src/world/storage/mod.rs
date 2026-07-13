@@ -15,6 +15,7 @@ use rusqlite::ErrorCode;
 
 use crate::world::{
     chunk::{Chunk, ChunkColumn, ChunkDecodeError, ChunkHeightmap, ChunkPos},
+    definition::{ChunkAddress, ColumnAddress, DimensionCatalog, DimensionId},
     generation::{WorldHeight, WorldMetadata},
 };
 
@@ -37,13 +38,17 @@ pub(crate) const SQL_INSERT_METADATA_VALUE: &str =
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoredChunk {
-    pub position: ChunkPos,
+    pub address: ChunkAddress,
     pub chunk: Chunk,
 }
 
 impl StoredChunk {
-    pub fn new(position: ChunkPos, chunk: Chunk) -> Self {
-        Self { position, chunk }
+    pub fn new(address: ChunkAddress, chunk: Chunk) -> Self {
+        Self { address, chunk }
+    }
+
+    pub const fn position(&self) -> ChunkPos {
+        self.address.position()
     }
 }
 
@@ -53,7 +58,7 @@ impl StoredChunk {
 /// generation. Stored chunks are always ordered from lowest to highest Y.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoredColumn {
-    position: ChunkColumn,
+    address: ColumnAddress,
     height: WorldHeight,
     heightmap: ChunkHeightmap,
     chunks: Vec<StoredChunk>,
@@ -61,51 +66,54 @@ pub struct StoredColumn {
 
 impl StoredColumn {
     pub fn try_new(
-        position: ChunkColumn,
+        address: ColumnAddress,
         height: WorldHeight,
         heightmap: ChunkHeightmap,
         mut chunks: Vec<StoredChunk>,
     ) -> Result<Self, StoredColumnError> {
         for stored in &chunks {
-            let actual_column = ChunkColumn::from(stored.position);
-            if actual_column != position {
+            if stored.address.column() != address {
                 return Err(StoredColumnError::WrongColumn {
-                    expected: position,
-                    position: stored.position,
+                    expected: address,
+                    address: stored.address,
                 });
             }
 
-            if !height.contains_chunk(stored.position) {
+            if !height.contains_chunk(stored.position()) {
                 return Err(StoredColumnError::YOutOfRange {
-                    position: stored.position,
+                    address: stored.address,
                     height,
                 });
             }
         }
 
-        chunks.sort_unstable_by_key(|stored| stored.position.y());
+        chunks.sort_unstable_by_key(|stored| stored.position().y());
         if let Some(duplicate) = chunks
             .windows(2)
-            .find(|pair| pair[0].position == pair[1].position)
-            .map(|pair| pair[0].position)
+            .find(|pair| pair[0].address == pair[1].address)
+            .map(|pair| pair[0].address)
         {
-            return Err(StoredColumnError::DuplicatePosition(duplicate));
+            return Err(StoredColumnError::DuplicateAddress(duplicate));
         }
 
         Ok(Self {
-            position,
+            address,
             height,
             heightmap,
             chunks,
         })
     }
 
-    pub fn empty(position: ChunkColumn, height: WorldHeight) -> Result<Self, StoredColumnError> {
-        Self::try_new(position, height, ChunkHeightmap::default(), Vec::new())
+    pub fn empty(address: ColumnAddress, height: WorldHeight) -> Result<Self, StoredColumnError> {
+        Self::try_new(address, height, ChunkHeightmap::default(), Vec::new())
+    }
+
+    pub const fn address(&self) -> ColumnAddress {
+        self.address
     }
 
     pub const fn position(&self) -> ChunkColumn {
-        self.position
+        self.address.column()
     }
 
     pub const fn height(&self) -> WorldHeight {
@@ -126,13 +134,13 @@ impl StoredColumn {
 
     fn validate_request(
         &self,
-        requested_position: ChunkColumn,
+        requested_address: ColumnAddress,
         expected_height: WorldHeight,
     ) -> Result<(), StoredColumnError> {
-        if self.position != requested_position {
+        if self.address != requested_address {
             return Err(StoredColumnError::RequestedColumnMismatch {
-                requested: requested_position,
-                returned: self.position,
+                requested: requested_address,
+                returned: self.address,
             });
         }
         if self.height != expected_height {
@@ -148,34 +156,34 @@ impl StoredColumn {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StoredColumnError {
     WrongColumn {
-        expected: ChunkColumn,
-        position: ChunkPos,
+        expected: ColumnAddress,
+        address: ChunkAddress,
     },
     YOutOfRange {
-        position: ChunkPos,
+        address: ChunkAddress,
         height: WorldHeight,
     },
     RequestedColumnMismatch {
-        requested: ChunkColumn,
-        returned: ChunkColumn,
+        requested: ColumnAddress,
+        returned: ColumnAddress,
     },
     HeightMismatch {
         expected: WorldHeight,
         returned: WorldHeight,
     },
-    DuplicatePosition(ChunkPos),
+    DuplicateAddress(ChunkAddress),
 }
 
 impl std::fmt::Display for StoredColumnError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::WrongColumn { expected, position } => write!(
+            Self::WrongColumn { expected, address } => write!(
                 f,
-                "stored chunk {position:?} does not belong to column {expected:?}"
+                "stored chunk {address:?} does not belong to column {expected:?}"
             ),
-            Self::YOutOfRange { position, height } => write!(
+            Self::YOutOfRange { address, height } => write!(
                 f,
-                "stored chunk {position:?} is outside configured height 0..{}",
+                "stored chunk {address:?} is outside configured height 0..{}",
                 height.chunks()
             ),
             Self::RequestedColumnMismatch {
@@ -191,8 +199,8 @@ impl std::fmt::Display for StoredColumnError {
                 returned.chunks(),
                 expected.chunks()
             ),
-            Self::DuplicatePosition(position) => {
-                write!(f, "stored column contains duplicate chunk {position:?}")
+            Self::DuplicateAddress(address) => {
+                write!(f, "stored column contains duplicate chunk {address:?}")
             }
         }
     }
@@ -203,26 +211,32 @@ impl std::error::Error for StoredColumnError {}
 pub trait ChunkStore: Send + Sync + 'static {
     fn metadata(&self) -> &WorldMetadata;
 
-    fn load_chunk(&self, position: ChunkPos) -> ChunkStoreResult<Option<(Chunk, ChunkHeightmap)>>;
+    fn load_chunk(
+        &self,
+        address: ChunkAddress,
+    ) -> ChunkStoreResult<Option<(Chunk, ChunkHeightmap)>>;
 
-    fn load_stored_column(&self, column: ChunkColumn) -> ChunkStoreResult<StoredColumn> {
+    fn load_stored_column(
+        &self,
+        address: ColumnAddress,
+        height: WorldHeight,
+    ) -> ChunkStoreResult<StoredColumn> {
         let mut chunks = Vec::new();
         let mut heightmap = ChunkHeightmap::default();
-        let height = self.metadata().height();
         for y in 0..height.chunks_i32() {
-            let position = column.chunk(y);
-            if let Some((chunk, loaded_heightmap)) = self.load_chunk(position)? {
+            let chunk_address = address.chunk(y);
+            if let Some((chunk, loaded_heightmap)) = self.load_chunk(chunk_address)? {
                 heightmap = loaded_heightmap;
-                chunks.push(StoredChunk::new(position, chunk));
+                chunks.push(StoredChunk::new(chunk_address, chunk));
             }
         }
 
-        StoredColumn::try_new(column, height, heightmap, chunks).map_err(Into::into)
+        StoredColumn::try_new(address, height, heightmap, chunks).map_err(Into::into)
     }
 
     fn save_chunk(
         &self,
-        position: ChunkPos,
+        address: ChunkAddress,
         chunk: &Chunk,
         heightmap: &ChunkHeightmap,
     ) -> ChunkStoreResult<()>;
@@ -231,14 +245,17 @@ pub trait ChunkStore: Send + Sync + 'static {
 #[derive(Resource, Clone)]
 pub struct ChunkRepository {
     metadata: WorldMetadata,
+    catalog: DimensionCatalog,
     store: Arc<dyn ChunkStore>,
 }
 
 impl ChunkRepository {
     pub fn new(store: impl ChunkStore) -> Self {
         let metadata = store.metadata().clone();
+        let catalog = DimensionCatalog::for_world(&metadata);
         Self {
             metadata,
+            catalog,
             store: Arc::new(store),
         }
     }
@@ -247,34 +264,46 @@ impl ChunkRepository {
         &self.metadata
     }
 
-    pub fn load_chunk(
-        &self,
-        position: ChunkPos,
-    ) -> ChunkStoreResult<Option<(Chunk, ChunkHeightmap)>> {
-        self.validate_position(position)?;
-        self.store.load_chunk(position)
+    pub fn catalog(&self) -> &DimensionCatalog {
+        &self.catalog
     }
 
-    pub fn load_stored_column(&self, column: ChunkColumn) -> ChunkStoreResult<StoredColumn> {
-        let stored = self.store.load_stored_column(column)?;
-        stored.validate_request(column, self.metadata.height())?;
+    pub fn load_chunk(
+        &self,
+        address: ChunkAddress,
+    ) -> ChunkStoreResult<Option<(Chunk, ChunkHeightmap)>> {
+        self.validate_address(address)?;
+        self.store.load_chunk(address)
+    }
+
+    pub fn load_stored_column(&self, address: ColumnAddress) -> ChunkStoreResult<StoredColumn> {
+        let height = self.dimension_height(address.dimension())?;
+        let stored = self.store.load_stored_column(address, height)?;
+        stored.validate_request(address, height)?;
         Ok(stored)
     }
 
     pub fn save_chunk(
         &self,
-        position: ChunkPos,
+        address: ChunkAddress,
         chunk: &Chunk,
         heightmap: &ChunkHeightmap,
     ) -> ChunkStoreResult<()> {
-        self.validate_position(position)?;
-        self.store.save_chunk(position, chunk, heightmap)
+        self.validate_address(address)?;
+        self.store.save_chunk(address, chunk, heightmap)
     }
 
-    fn validate_position(&self, position: ChunkPos) -> ChunkStoreResult<()> {
-        let height = self.metadata.height();
-        if !height.contains_chunk(position) {
-            return Err(ChunkStoreError::ChunkPositionOutOfRange { position, height });
+    pub fn dimension_height(&self, dimension: DimensionId) -> ChunkStoreResult<WorldHeight> {
+        self.catalog
+            .get(dimension)
+            .map(|definition| definition.height())
+            .ok_or(ChunkStoreError::UnknownDimension { dimension })
+    }
+
+    fn validate_address(&self, address: ChunkAddress) -> ChunkStoreResult<()> {
+        let height = self.dimension_height(address.dimension())?;
+        if !height.contains_chunk(address.position()) {
+            return Err(ChunkStoreError::ChunkAddressOutOfRange { address, height });
         }
         Ok(())
     }
@@ -286,16 +315,49 @@ impl Default for ChunkRepository {
     }
 }
 
-pub(crate) fn metadata_entries(metadata: &WorldMetadata) -> [(&'static str, String); 4] {
-    [
-        ("seed", metadata.seed.to_string()),
-        ("generator_version", metadata.generator_version.to_string()),
+pub(crate) fn metadata_entries(metadata: &WorldMetadata) -> Vec<(String, String)> {
+    let catalog = DimensionCatalog::for_world(metadata);
+    let dimension_ids = catalog
+        .iter()
+        .map(|definition| definition.id().to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    let mut entries = vec![
+        ("seed".to_owned(), metadata.seed.to_string()),
         (
-            "chunk_format_version",
+            "generator_version".to_owned(),
+            metadata.generator_version.to_string(),
+        ),
+        (
+            "chunk_format_version".to_owned(),
             metadata.chunk_format_version.to_string(),
         ),
-        ("height_chunks", metadata.height_chunks().to_string()),
-    ]
+        (
+            "height_chunks".to_owned(),
+            metadata.height_chunks().to_string(),
+        ),
+        ("dimension_ids".to_owned(), dimension_ids),
+    ];
+
+    for definition in catalog.iter() {
+        let prefix = format!("dimension.{}", definition.id());
+        entries.extend([
+            (
+                format!("{prefix}.generator_family"),
+                definition.generator().family().to_owned(),
+            ),
+            (
+                format!("{prefix}.generator_version"),
+                definition.generator().version().to_string(),
+            ),
+            (
+                format!("{prefix}.height_chunks"),
+                definition.height().chunks().to_string(),
+            ),
+        ]);
+    }
+
+    entries
 }
 
 #[cfg(feature = "turso-store")]
@@ -324,8 +386,11 @@ pub enum ChunkStoreError {
     },
     Decode(ChunkDecodeError),
     InvalidStoredColumn(StoredColumnError),
-    ChunkPositionOutOfRange {
-        position: ChunkPos,
+    UnknownDimension {
+        dimension: DimensionId,
+    },
+    ChunkAddressOutOfRange {
+        address: ChunkAddress,
         height: WorldHeight,
     },
     WorldMetadataMismatch {
@@ -356,9 +421,12 @@ impl std::fmt::Display for ChunkStoreError {
             Self::Io { kind, message } => write!(f, "io error {kind:?}: {message}"),
             Self::Decode(error) => write!(f, "chunk decode error: {error}"),
             Self::InvalidStoredColumn(error) => write!(f, "invalid stored column: {error}"),
-            Self::ChunkPositionOutOfRange { position, height } => write!(
+            Self::UnknownDimension { dimension } => {
+                write!(f, "unknown dimension {dimension}")
+            }
+            Self::ChunkAddressOutOfRange { address, height } => write!(
                 f,
-                "chunk {position:?} is outside configured height 0..{}",
+                "chunk {address:?} is outside configured height 0..{}",
                 height.chunks()
             ),
             Self::WorldMetadataMismatch {

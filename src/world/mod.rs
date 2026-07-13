@@ -19,7 +19,10 @@ use storage::{
 #[cfg(feature = "turso-store")]
 use storage::{TursoChunkStore, development_turso_path};
 
-pub use definition::{DimensionCatalog, DimensionDefinition, DimensionId, GeneratorProfile};
+pub use definition::{
+    ChunkAddress, ColumnAddress, DimensionCatalog, DimensionDefinition, DimensionId,
+    GeneratorProfile,
+};
 pub use generation::{InvalidWorldHeight, WorldHeight, WorldMetadata};
 
 pub struct WorldPlugin;

@@ -12,6 +12,7 @@ use crate::world::{
     chunk::{
         Chunk, ChunkColumn, ChunkHeightmap, ChunkNeedsSave, ChunkPos, ChunkPosition, ChunkRevision,
     },
+    definition::{ChunkAddress, DimensionId},
     storage::{ChunkRepository, ChunkStoreError, ChunkStoreResult},
 };
 
@@ -377,7 +378,10 @@ fn save_chunk_snapshot(
     request: ChunkSaveRequest,
     repository: ChunkRepository,
 ) -> ChunkStoreResult<()> {
-    repository.save_chunk(request.position, &request.chunk, &request.heightmap)
+    // Runtime dimension ownership is introduced in the next migration; the
+    // sole active root is currently overworld.
+    let address = ChunkAddress::new(DimensionId::OVERWORLD, request.position);
+    repository.save_chunk(address, &request.chunk, &request.heightmap)
 }
 
 #[cfg(test)]

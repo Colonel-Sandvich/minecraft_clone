@@ -4,8 +4,9 @@ use std::{
 };
 
 use crate::world::{
-    chunk::{Chunk, ChunkColumn, ChunkHeightmap, ChunkPos},
-    generation::WorldMetadata,
+    chunk::{Chunk, ChunkHeightmap},
+    definition::{ChunkAddress, ColumnAddress},
+    generation::{WorldHeight, WorldMetadata},
 };
 
 use super::{
@@ -15,34 +16,38 @@ use super::{
 };
 
 const SQL_CREATE_CHUNKS: &str = "CREATE TABLE IF NOT EXISTS chunks (
+    dimension INTEGER NOT NULL,
     x INTEGER NOT NULL,
     z INTEGER NOT NULL,
     y INTEGER NOT NULL,
     blocks BLOB NOT NULL,
-    PRIMARY KEY (x, z, y)
+    PRIMARY KEY (dimension, x, z, y)
 )";
-const SQL_SELECT_CHUNK: &str = "SELECT blocks FROM chunks WHERE x = ?1 AND z = ?2 AND y = ?3";
+const SQL_SELECT_CHUNK: &str = "SELECT blocks FROM chunks
+WHERE dimension = ?1 AND x = ?2 AND z = ?3 AND y = ?4";
 const SQL_SELECT_COLUMN: &str = "SELECT y, blocks FROM chunks
-WHERE x = ?1 AND z = ?2 AND y >= 0 AND y < ?3
+WHERE dimension = ?1 AND x = ?2 AND z = ?3 AND y >= 0 AND y < ?4
 ORDER BY y";
 const SQL_UPDATE_CHUNK: &str = "UPDATE chunks
-SET blocks = ?4
-WHERE x = ?1 AND z = ?2 AND y = ?3";
+SET blocks = ?5
+WHERE dimension = ?1 AND x = ?2 AND z = ?3 AND y = ?4";
 const SQL_INSERT_CHUNK: &str = "INSERT INTO chunks (
-    x, z, y, blocks
-) VALUES (?1, ?2, ?3, ?4)";
+    dimension, x, z, y, blocks
+) VALUES (?1, ?2, ?3, ?4, ?5)";
 
 const SQL_CREATE_COLUMN_HEIGHTMAPS: &str = "CREATE TABLE IF NOT EXISTS column_heightmaps (
+    dimension INTEGER NOT NULL,
     x INTEGER NOT NULL,
     z INTEGER NOT NULL,
     heightmap BLOB NOT NULL,
-    PRIMARY KEY (x, z)
+    PRIMARY KEY (dimension, x, z)
 )";
 const SQL_SELECT_COLUMN_HEIGHTMAP: &str =
-    "SELECT heightmap FROM column_heightmaps WHERE x = ?1 AND z = ?2";
-const SQL_UPSERT_COLUMN_HEIGHTMAP: &str = "INSERT INTO column_heightmaps (x, z, heightmap)
-    VALUES (?1, ?2, ?3)
-    ON CONFLICT(x, z) DO UPDATE SET heightmap = excluded.heightmap";
+    "SELECT heightmap FROM column_heightmaps WHERE dimension = ?1 AND x = ?2 AND z = ?3";
+const SQL_UPSERT_COLUMN_HEIGHTMAP: &str =
+    "INSERT INTO column_heightmaps (dimension, x, z, heightmap)
+    VALUES (?1, ?2, ?3, ?4)
+    ON CONFLICT(dimension, x, z) DO UPDATE SET heightmap = excluded.heightmap";
 
 pub struct TursoChunkStore {
     database: turso::Database,
@@ -82,14 +87,27 @@ impl TursoChunkStore {
     async fn initialize(&self, metadata: &WorldMetadata) -> ChunkStoreResult<()> {
         let connection = self.database.connect()?;
         connection.execute(SQL_CREATE_WORLD_METADATA, ()).await?;
-        connection.execute(SQL_CREATE_CHUNKS, ()).await?;
-        connection.execute(SQL_CREATE_COLUMN_HEIGHTMAPS, ()).await?;
-
         for (key, value) in metadata_entries(metadata) {
             ensure_metadata_value(&connection, key, value).await?;
         }
+        connection.execute(SQL_CREATE_CHUNKS, ()).await?;
+        connection.execute(SQL_CREATE_COLUMN_HEIGHTMAPS, ()).await?;
 
         Ok(())
+    }
+
+    #[cfg(test)]
+    pub(super) fn overwrite_metadata_for_test(&self, key: &str, value: &str) {
+        self.runtime.block_on(async {
+            let connection = self.database.connect().expect("test database must connect");
+            connection
+                .execute(
+                    "UPDATE world_metadata SET value = ?2 WHERE key = ?1",
+                    (key, value),
+                )
+                .await
+                .expect("test metadata update must succeed");
+        });
     }
 }
 
@@ -98,12 +116,24 @@ impl ChunkStore for TursoChunkStore {
         &self.metadata
     }
 
-    fn load_chunk(&self, position: ChunkPos) -> ChunkStoreResult<Option<(Chunk, ChunkHeightmap)>> {
+    fn load_chunk(
+        &self,
+        address: ChunkAddress,
+    ) -> ChunkStoreResult<Option<(Chunk, ChunkHeightmap)>> {
         self.runtime.block_on(async {
             let connection = self.database.connect()?;
+            let position = address.position();
             let bytes = {
                 let mut rows = connection
-                    .query(SQL_SELECT_CHUNK, (position.x(), position.z(), position.y()))
+                    .query(
+                        SQL_SELECT_CHUNK,
+                        (
+                            i64::from(address.dimension().get()),
+                            position.x(),
+                            position.z(),
+                            position.y(),
+                        ),
+                    )
                     .await?;
                 let Some(row) = rows.next().await? else {
                     return Ok(None);
@@ -111,19 +141,29 @@ impl ChunkStore for TursoChunkStore {
                 row.get::<Vec<u8>>(0)?
             };
             let chunk = Chunk::try_from_storage_bytes(&bytes)?;
-            let heightmap = load_column_heightmap(&connection, position.x(), position.z()).await?;
+            let heightmap = load_column_heightmap(&connection, address.column()).await?;
 
             Ok(Some((chunk, heightmap)))
         })
     }
 
-    fn load_stored_column(&self, column: ChunkColumn) -> ChunkStoreResult<StoredColumn> {
+    fn load_stored_column(
+        &self,
+        address: ColumnAddress,
+        height: WorldHeight,
+    ) -> ChunkStoreResult<StoredColumn> {
         self.runtime.block_on(async {
             let connection = self.database.connect()?;
+            let column = address.column();
             let mut rows = connection
                 .query(
                     SQL_SELECT_COLUMN,
-                    (column.x(), column.z(), self.metadata.height().chunks_i32()),
+                    (
+                        i64::from(address.dimension().get()),
+                        column.x(),
+                        column.z(),
+                        height.chunks_i32(),
+                    ),
                 )
                 .await?;
             let mut chunks = Vec::new();
@@ -131,21 +171,17 @@ impl ChunkStore for TursoChunkStore {
                 let y = row.get::<i32>(0)?;
                 let bytes = row.get::<Vec<u8>>(1)?;
                 let chunk = Chunk::try_from_storage_bytes(&bytes)?;
-                chunks.push(StoredChunk::new(
-                    ChunkPos::new(column.x(), y, column.z()),
-                    chunk,
-                ));
+                chunks.push(StoredChunk::new(address.chunk(y), chunk));
             }
-            let heightmap = load_column_heightmap(&connection, column.x(), column.z()).await?;
+            let heightmap = load_column_heightmap(&connection, address).await?;
 
-            StoredColumn::try_new(column, self.metadata.height(), heightmap, chunks)
-                .map_err(Into::into)
+            StoredColumn::try_new(address, height, heightmap, chunks).map_err(Into::into)
         })
     }
 
     fn save_chunk(
         &self,
-        position: ChunkPos,
+        address: ChunkAddress,
         chunk: &Chunk,
         heightmap: &ChunkHeightmap,
     ) -> ChunkStoreResult<()> {
@@ -155,22 +191,29 @@ impl ChunkStore for TursoChunkStore {
         self.runtime.block_on(async {
             let mut connection = self.database.connect()?;
             let transaction = connection.transaction().await?;
+            let position = address.position();
+            let dimension = i64::from(address.dimension().get());
             let changed = transaction
                 .execute(
                     SQL_UPDATE_CHUNK,
-                    (position.x(), position.z(), position.y(), blocks.clone()),
+                    (
+                        dimension,
+                        position.x(),
+                        position.z(),
+                        position.y(),
+                        blocks.clone(),
+                    ),
                 )
                 .await?;
             if changed == 0 {
                 transaction
                     .execute(
                         SQL_INSERT_CHUNK,
-                        (position.x(), position.z(), position.y(), blocks),
+                        (dimension, position.x(), position.z(), position.y(), blocks),
                     )
                     .await?;
             }
-            save_column_heightmap(&transaction, position.x(), position.z(), &heightmap_bytes)
-                .await?;
+            save_column_heightmap(&transaction, address.column(), &heightmap_bytes).await?;
             transaction.commit().await?;
 
             Ok(())
@@ -180,13 +223,15 @@ impl ChunkStore for TursoChunkStore {
 
 async fn ensure_metadata_value(
     connection: &turso::Connection,
-    key: &'static str,
+    key: String,
     expected: String,
 ) -> ChunkStoreResult<()> {
-    let mut rows = connection.query(SQL_SELECT_METADATA_VALUE, (key,)).await?;
+    let mut rows = connection
+        .query(SQL_SELECT_METADATA_VALUE, (key.as_str(),))
+        .await?;
     let Some(row) = rows.next().await? else {
         connection
-            .execute(SQL_INSERT_METADATA_VALUE, (key, expected))
+            .execute(SQL_INSERT_METADATA_VALUE, (key.as_str(), expected))
             .await?;
         return Ok(());
     };
@@ -196,7 +241,7 @@ async fn ensure_metadata_value(
         Ok(())
     } else {
         Err(ChunkStoreError::WorldMetadataMismatch {
-            key: key.to_owned(),
+            key,
             expected,
             found: existing,
         })
@@ -220,11 +265,14 @@ pub fn development_turso_path(metadata: &WorldMetadata) -> PathBuf {
 
 async fn load_column_heightmap(
     connection: &turso::Connection,
-    x: i32,
-    z: i32,
+    address: ColumnAddress,
 ) -> ChunkStoreResult<ChunkHeightmap> {
+    let column = address.column();
     let mut rows = connection
-        .query(SQL_SELECT_COLUMN_HEIGHTMAP, (x, z))
+        .query(
+            SQL_SELECT_COLUMN_HEIGHTMAP,
+            (i64::from(address.dimension().get()), column.x(), column.z()),
+        )
         .await?;
     let Some(row) = rows.next().await? else {
         return Ok(ChunkHeightmap::default());
@@ -235,14 +283,19 @@ async fn load_column_heightmap(
 
 async fn save_column_heightmap(
     connection: &turso::Connection,
-    x: i32,
-    z: i32,
+    address: ColumnAddress,
     heightmap_bytes: &[u8],
 ) -> ChunkStoreResult<()> {
+    let column = address.column();
     connection
         .execute(
             SQL_UPSERT_COLUMN_HEIGHTMAP,
-            (x, z, heightmap_bytes.to_vec()),
+            (
+                i64::from(address.dimension().get()),
+                column.x(),
+                column.z(),
+                heightmap_bytes.to_vec(),
+            ),
         )
         .await?;
     Ok(())

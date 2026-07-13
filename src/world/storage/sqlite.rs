@@ -6,8 +6,9 @@ use std::{
 use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::world::{
-    chunk::{Chunk, ChunkColumn, ChunkHeightmap, ChunkPos},
-    generation::WorldMetadata,
+    chunk::{Chunk, ChunkHeightmap},
+    definition::{ChunkAddress, ColumnAddress},
+    generation::{WorldHeight, WorldMetadata},
 };
 
 use super::{
@@ -21,31 +22,35 @@ const SQLITE_MMAP_SIZE_BYTES: i64 = 256 * 1024 * 1024;
 const SQLITE_WAL_AUTOCHECKPOINT_PAGES: i32 = 1_000;
 
 const SQL_CREATE_CHUNKS: &str = "CREATE TABLE IF NOT EXISTS chunks (
+    dimension INTEGER NOT NULL,
     x INTEGER NOT NULL,
     z INTEGER NOT NULL,
     y INTEGER NOT NULL,
     blocks BLOB NOT NULL,
-    PRIMARY KEY (x, z, y)
+    PRIMARY KEY (dimension, x, z, y)
 ) WITHOUT ROWID";
-const SQL_SELECT_CHUNK: &str = "SELECT blocks FROM chunks WHERE x = ?1 AND z = ?2 AND y = ?3";
+const SQL_SELECT_CHUNK: &str = "SELECT blocks FROM chunks
+WHERE dimension = ?1 AND x = ?2 AND z = ?3 AND y = ?4";
 const SQL_SELECT_COLUMN: &str = "SELECT y, blocks FROM chunks
-WHERE x = ?1 AND z = ?2 AND y >= 0 AND y < ?3
+WHERE dimension = ?1 AND x = ?2 AND z = ?3 AND y >= 0 AND y < ?4
 ORDER BY y";
-const SQL_UPSERT_CHUNK: &str = "INSERT INTO chunks (x, z, y, blocks)
-VALUES (?1, ?2, ?3, ?4)
-ON CONFLICT(x, z, y) DO UPDATE SET blocks = excluded.blocks";
+const SQL_UPSERT_CHUNK: &str = "INSERT INTO chunks (dimension, x, z, y, blocks)
+VALUES (?1, ?2, ?3, ?4, ?5)
+ON CONFLICT(dimension, x, z, y) DO UPDATE SET blocks = excluded.blocks";
 
 const SQL_CREATE_COLUMN_HEIGHTMAPS: &str = "CREATE TABLE IF NOT EXISTS column_heightmaps (
+    dimension INTEGER NOT NULL,
     x INTEGER NOT NULL,
     z INTEGER NOT NULL,
     heightmap BLOB NOT NULL,
-    PRIMARY KEY (x, z)
+    PRIMARY KEY (dimension, x, z)
 ) WITHOUT ROWID";
 const SQL_SELECT_COLUMN_HEIGHTMAP: &str =
-    "SELECT heightmap FROM column_heightmaps WHERE x = ?1 AND z = ?2";
-const SQL_UPSERT_COLUMN_HEIGHTMAP: &str = "INSERT INTO column_heightmaps (x, z, heightmap)
-    VALUES (?1, ?2, ?3)
-    ON CONFLICT(x, z) DO UPDATE SET heightmap = excluded.heightmap";
+    "SELECT heightmap FROM column_heightmaps WHERE dimension = ?1 AND x = ?2 AND z = ?3";
+const SQL_UPSERT_COLUMN_HEIGHTMAP: &str =
+    "INSERT INTO column_heightmaps (dimension, x, z, heightmap)
+    VALUES (?1, ?2, ?3, ?4)
+    ON CONFLICT(dimension, x, z) DO UPDATE SET heightmap = excluded.heightmap";
 
 pub struct SqliteChunkStore {
     path: PathBuf,
@@ -78,12 +83,11 @@ impl SqliteChunkStore {
         configure_database(connection)?;
 
         connection.execute(SQL_CREATE_WORLD_METADATA, [])?;
+        for (key, value) in metadata_entries(metadata) {
+            ensure_metadata_value(connection, &key, value)?;
+        }
         connection.execute(SQL_CREATE_CHUNKS, [])?;
         connection.execute(SQL_CREATE_COLUMN_HEIGHTMAPS, [])?;
-
-        for (key, value) in metadata_entries(metadata) {
-            ensure_metadata_value(connection, key, value)?;
-        }
 
         Ok(())
     }
@@ -94,12 +98,21 @@ impl ChunkStore for SqliteChunkStore {
         &self.metadata
     }
 
-    fn load_chunk(&self, position: ChunkPos) -> ChunkStoreResult<Option<(Chunk, ChunkHeightmap)>> {
+    fn load_chunk(
+        &self,
+        address: ChunkAddress,
+    ) -> ChunkStoreResult<Option<(Chunk, ChunkHeightmap)>> {
         let connection = self.open_connection()?;
+        let position = address.position();
         let bytes = connection
             .query_row(
                 SQL_SELECT_CHUNK,
-                params![position.x(), position.z(), position.y()],
+                params![
+                    i64::from(address.dimension().get()),
+                    position.x(),
+                    position.z(),
+                    position.y()
+                ],
                 |row| row.get::<_, Vec<u8>>(0),
             )
             .optional()?;
@@ -109,16 +122,26 @@ impl ChunkStore for SqliteChunkStore {
         };
 
         let chunk = Chunk::try_from_storage_bytes(&bytes)?;
-        let heightmap = load_column_heightmap(&connection, position.x(), position.z())?;
+        let heightmap = load_column_heightmap(&connection, address.column())?;
 
         Ok(Some((chunk, heightmap)))
     }
 
-    fn load_stored_column(&self, column: ChunkColumn) -> ChunkStoreResult<StoredColumn> {
+    fn load_stored_column(
+        &self,
+        address: ColumnAddress,
+        height: WorldHeight,
+    ) -> ChunkStoreResult<StoredColumn> {
         let connection = self.open_connection()?;
         let mut statement = connection.prepare(SQL_SELECT_COLUMN)?;
+        let column = address.column();
         let rows = statement.query_map(
-            params![column.x(), column.z(), self.metadata.height().chunks_i32()],
+            params![
+                i64::from(address.dimension().get()),
+                column.x(),
+                column.z(),
+                height.chunks_i32()
+            ],
             |row| Ok((row.get::<_, i32>(0)?, row.get::<_, Vec<u8>>(1)?)),
         )?;
 
@@ -126,30 +149,34 @@ impl ChunkStore for SqliteChunkStore {
         for row in rows {
             let (y, bytes) = row?;
             let chunk = Chunk::try_from_storage_bytes(&bytes)?;
-            chunks.push(StoredChunk::new(
-                ChunkPos::new(column.x(), y, column.z()),
-                chunk,
-            ));
+            chunks.push(StoredChunk::new(address.chunk(y), chunk));
         }
-        let heightmap = load_column_heightmap(&connection, column.x(), column.z())?;
+        let heightmap = load_column_heightmap(&connection, address)?;
 
-        StoredColumn::try_new(column, self.metadata.height(), heightmap, chunks).map_err(Into::into)
+        StoredColumn::try_new(address, height, heightmap, chunks).map_err(Into::into)
     }
 
     fn save_chunk(
         &self,
-        position: ChunkPos,
+        address: ChunkAddress,
         chunk: &Chunk,
         heightmap: &ChunkHeightmap,
     ) -> ChunkStoreResult<()> {
         let mut connection = self.open_connection()?;
+        let position = address.position();
         let blocks = chunk.to_storage_bytes();
         let tx = connection.transaction()?;
         tx.execute(
             SQL_UPSERT_CHUNK,
-            params![position.x(), position.z(), position.y(), &blocks],
+            params![
+                i64::from(address.dimension().get()),
+                position.x(),
+                position.z(),
+                position.y(),
+                &blocks
+            ],
         )?;
-        save_column_heightmap(&tx, position.x(), position.z(), heightmap)?;
+        save_column_heightmap(&tx, address.column(), heightmap)?;
         tx.commit()?;
 
         Ok(())
@@ -208,13 +235,15 @@ fn ensure_metadata_value(
 
 fn load_column_heightmap(
     connection: &Connection,
-    x: i32,
-    z: i32,
+    address: ColumnAddress,
 ) -> ChunkStoreResult<ChunkHeightmap> {
+    let column = address.column();
     let bytes = connection
-        .query_row(SQL_SELECT_COLUMN_HEIGHTMAP, params![x, z], |row| {
-            row.get::<_, Vec<u8>>(0)
-        })
+        .query_row(
+            SQL_SELECT_COLUMN_HEIGHTMAP,
+            params![i64::from(address.dimension().get()), column.x(), column.z()],
+            |row| row.get::<_, Vec<u8>>(0),
+        )
         .optional()?;
 
     Ok(bytes
@@ -225,11 +254,19 @@ fn load_column_heightmap(
 
 fn save_column_heightmap(
     connection: &Connection,
-    x: i32,
-    z: i32,
+    address: ColumnAddress,
     heightmap: &ChunkHeightmap,
 ) -> ChunkStoreResult<()> {
+    let column = address.column();
     let bytes = heightmap.to_bytes();
-    connection.execute(SQL_UPSERT_COLUMN_HEIGHTMAP, params![x, z, &bytes])?;
+    connection.execute(
+        SQL_UPSERT_COLUMN_HEIGHTMAP,
+        params![
+            i64::from(address.dimension().get()),
+            column.x(),
+            column.z(),
+            &bytes
+        ],
+    )?;
     Ok(())
 }

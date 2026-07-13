@@ -12,6 +12,7 @@ use crate::{
             ChunkNeedsRenderLightUpload, ChunkNeedsSave, ChunkPerfCounters, ChunkPos,
             ChunkPosition,
         },
+        definition::{ColumnAddress, DimensionId},
         generation::WorldMetadata,
         loading::load_or_generate_column,
         storage::ChunkRepository,
@@ -165,7 +166,10 @@ pub(crate) fn finish_column_loads(
             }
         };
 
-        assert_eq!(loaded.position, ticket.column());
+        assert_eq!(loaded.position(), ticket.column());
+        // Runtime dimension ownership is introduced in the next migration;
+        // until then the sole active root is the overworld root.
+        assert_eq!(loaded.address.dimension(), DimensionId::OVERWORLD);
         assert_eq!(loaded.height, dimension.height());
         if !dimension.stream_mut().accept_load(ticket) {
             continue;
@@ -325,7 +329,10 @@ fn try_start_column_load(
             task_pool.spawn(async move {
                 let queue_elapsed = submitted_at.elapsed();
                 let worker_started = Instant::now();
-                let result = load_or_generate_column(column, repository);
+                // Runtime dimension ownership is introduced in the next
+                // migration; the sole active root is currently overworld.
+                let address = ColumnAddress::new(DimensionId::OVERWORLD, column);
+                let result = load_or_generate_column(address, repository);
                 let completed_at = Instant::now();
                 CompletedColumnLoad {
                     result,

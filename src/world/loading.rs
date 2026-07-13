@@ -2,7 +2,8 @@ use bevy::prelude::*;
 
 use crate::world::{
     chunk::{Chunk, ChunkColumn, ChunkContentCounts, ChunkHeightmap, ChunkPos},
-    generation::{WorldHeight, generate_chunk},
+    definition::ColumnAddress,
+    generation::{WorldHeight, generate_dimension_chunk},
     storage::{ChunkRepository, ChunkStoreError},
 };
 
@@ -73,7 +74,7 @@ pub struct LoadedColumnChunk {
 /// A complete configured-height column, ordered from lowest to highest Y.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LoadedColumn {
-    pub position: ChunkColumn,
+    pub address: ColumnAddress,
     pub height: WorldHeight,
     pub heightmap: ChunkHeightmap,
     chunks: Vec<LoadedColumnChunk>,
@@ -81,7 +82,7 @@ pub struct LoadedColumn {
 
 impl LoadedColumn {
     fn new(
-        position: ChunkColumn,
+        address: ColumnAddress,
         height: WorldHeight,
         heightmap: ChunkHeightmap,
         chunks: Vec<LoadedColumnChunk>,
@@ -95,15 +96,19 @@ impl LoadedColumn {
             chunks
                 .iter()
                 .enumerate()
-                .all(|(y, loaded)| loaded.position == position.chunk(y as i32)),
+                .all(|(y, loaded)| loaded.position == address.column().chunk(y as i32)),
             "loaded column chunks must be contiguous and ordered by Y"
         );
         Self {
-            position,
+            address,
             height,
             heightmap,
             chunks,
         }
+    }
+
+    pub const fn position(&self) -> ChunkColumn {
+        self.address.column()
     }
 
     pub fn chunks(&self) -> &[LoadedColumnChunk] {
@@ -120,29 +125,33 @@ pub type ColumnLoadResult = Result<LoadedColumn, ChunkLoadError>;
 /// Loads persisted chunks in one store call and deterministically generates
 /// every missing Y position, producing a complete configured-height column.
 pub fn load_or_generate_column(
-    position: ChunkColumn,
+    address: ColumnAddress,
     repository: ChunkRepository,
 ) -> ColumnLoadResult {
     let stored = repository
-        .load_stored_column(position)
+        .load_stored_column(address)
         .map_err(classify_load_error)?;
-    let height = repository.metadata().height();
+    let definition = *repository
+        .catalog()
+        .get(address.dimension())
+        .expect("repository accepted a dimension missing from its catalog");
+    let height = definition.height();
     let height_chunks = height.chunks();
 
     let (heightmap, stored_chunks) = stored.into_parts();
     let mut stored_chunks = stored_chunks.into_iter().peekable();
     let mut chunks = Vec::with_capacity(height_chunks);
     for y in 0..height_chunks {
-        let chunk_position = position.chunk(y as i32);
+        let chunk_position = address.column().chunk(y as i32);
         let (chunk, source) = match stored_chunks.peek() {
-            Some(stored) if stored.position == chunk_position => {
+            Some(stored) if stored.position() == chunk_position => {
                 let stored = stored_chunks
                     .next()
                     .expect("peeked stored chunk must exist");
                 (stored.chunk, ChunkLoadSource::Stored)
             }
             _ => (
-                generate_chunk(repository.metadata(), chunk_position.as_ivec3()),
+                generate_dimension_chunk(repository.metadata(), &definition, chunk_position),
                 ChunkLoadSource::Generated,
             ),
         };
@@ -159,7 +168,7 @@ pub fn load_or_generate_column(
         "validated stored column must be fully consumed"
     );
 
-    Ok(LoadedColumn::new(position, height, heightmap, chunks))
+    Ok(LoadedColumn::new(address, height, heightmap, chunks))
 }
 
 pub fn classify_load_error(error: ChunkStoreError) -> ChunkLoadError {
@@ -186,7 +195,8 @@ mod tests {
     use crate::{
         block::BlockType,
         world::{
-            generation::WorldMetadata,
+            definition::{ChunkAddress, ColumnAddress, DimensionId},
+            generation::{WorldMetadata, generate_dimension_chunk},
             storage::{
                 ChunkStore, ChunkStoreResult, InMemoryChunkStore, StoredChunk, StoredColumn,
             },
@@ -207,20 +217,25 @@ mod tests {
 
         fn load_chunk(
             &self,
-            _position: ChunkPos,
+            _address: ChunkAddress,
         ) -> ChunkStoreResult<Option<(Chunk, ChunkHeightmap)>> {
             panic!("column loading must not fall back to one store call per subchunk")
         }
 
-        fn load_stored_column(&self, column: ChunkColumn) -> ChunkStoreResult<StoredColumn> {
-            assert_eq!(column, self.stored.position());
+        fn load_stored_column(
+            &self,
+            address: ColumnAddress,
+            height: WorldHeight,
+        ) -> ChunkStoreResult<StoredColumn> {
+            assert_eq!(address, self.stored.address());
+            assert_eq!(height, self.stored.height());
             self.loads.fetch_add(1, Ordering::Relaxed);
             Ok(self.stored.clone())
         }
 
         fn save_chunk(
             &self,
-            _position: ChunkPos,
+            _address: ChunkAddress,
             _chunk: &Chunk,
             _heightmap: &ChunkHeightmap,
         ) -> ChunkStoreResult<()> {
@@ -232,16 +247,17 @@ mod tests {
     fn column_loading_reads_storage_once_and_generates_every_missing_y() {
         let metadata = WorldMetadata::with_seed(77).with_height_chunks(3).unwrap();
         let position = ChunkColumn::new(-5, 8);
+        let address = ColumnAddress::new(DimensionId::OVERWORLD, position);
         let mut persisted = Chunk::default();
         persisted.set_cell_xyz(0, 0, 0, BlockType::Glowstone.into());
         let heightmap = ChunkHeightmap {
             heights: [[19; crate::world::chunk::CHUNK_SIZE]; crate::world::chunk::CHUNK_SIZE],
         };
         let stored = StoredColumn::try_new(
-            position,
+            address,
             metadata.height(),
             heightmap,
-            vec![StoredChunk::new(position.chunk(1), persisted.clone())],
+            vec![StoredChunk::new(address.chunk(1), persisted.clone())],
         )
         .unwrap();
         let loads = Arc::new(AtomicUsize::new(0));
@@ -251,10 +267,10 @@ mod tests {
             stored,
         });
 
-        let loaded = load_or_generate_column(position, repository).unwrap();
+        let loaded = load_or_generate_column(address, repository).unwrap();
 
         assert_eq!(loads.load(Ordering::Relaxed), 1);
-        assert_eq!(loaded.position, position);
+        assert_eq!(loaded.address, address);
         assert_eq!(loaded.heightmap, heightmap);
         assert_eq!(loaded.chunks().len(), 3);
         for (y, chunk) in loaded.chunks().iter().enumerate() {
@@ -267,11 +283,25 @@ mod tests {
         assert_eq!(loaded.chunks()[2].source, ChunkLoadSource::Generated);
         assert_eq!(
             loaded.chunks()[0].chunk,
-            generate_chunk(&metadata, position.chunk(0).as_ivec3())
+            generate_dimension_chunk(
+                &metadata,
+                &crate::world::DimensionCatalog::for_world(&metadata)
+                    .get(DimensionId::OVERWORLD)
+                    .copied()
+                    .unwrap(),
+                position.chunk(0),
+            )
         );
         assert_eq!(
             loaded.chunks()[2].chunk,
-            generate_chunk(&metadata, position.chunk(2).as_ivec3())
+            generate_dimension_chunk(
+                &metadata,
+                &crate::world::DimensionCatalog::for_world(&metadata)
+                    .get(DimensionId::OVERWORLD)
+                    .copied()
+                    .unwrap(),
+                position.chunk(2),
+            )
         );
     }
 
@@ -280,9 +310,10 @@ mod tests {
         let metadata = WorldMetadata::with_seed(91).with_height_chunks(2).unwrap();
         let repository = ChunkRepository::new(InMemoryChunkStore::new(metadata.clone()));
         let position = ChunkColumn::new(3, -6);
+        let address = ColumnAddress::new(DimensionId::OVERWORLD, position);
 
-        let first = load_or_generate_column(position, repository.clone()).unwrap();
-        let second = load_or_generate_column(position, repository.clone()).unwrap();
+        let first = load_or_generate_column(address, repository.clone()).unwrap();
+        let second = load_or_generate_column(address, repository.clone()).unwrap();
 
         assert_eq!(first, second);
         assert_eq!(first.chunks().len(), metadata.height_chunks());
@@ -294,10 +325,54 @@ mod tests {
         );
         assert!(
             repository
-                .load_stored_column(position)
+                .load_stored_column(address)
                 .unwrap()
                 .chunks()
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn empty_storage_uses_the_grass_floor_generator_at_every_height() {
+        let metadata = WorldMetadata::with_seed(91).with_height_chunks(2).unwrap();
+        let repository = ChunkRepository::new(InMemoryChunkStore::new(metadata));
+        let column = ChunkColumn::new(3, -6);
+        let address = ColumnAddress::new(DimensionId::GRASS_FLOOR, column);
+
+        let loaded = load_or_generate_column(address, repository).unwrap();
+
+        assert_eq!(loaded.address, address);
+        assert_eq!(
+            loaded.chunks()[0].chunk.cell_xyz(0, 0, 0).as_block(),
+            Some(BlockType::Grass)
+        );
+        assert!(loaded.chunks()[0].chunk.cell_xyz(0, 1, 0).is_empty());
+        assert!(loaded.chunks()[1].chunk.cell_xyz(0, 0, 0).is_empty());
+    }
+
+    #[test]
+    fn empty_storage_uses_the_center_platform_generator_only_at_the_origin() {
+        let metadata = WorldMetadata::with_seed(91).with_height_chunks(2).unwrap();
+        let repository = ChunkRepository::new(InMemoryChunkStore::new(metadata));
+        let center_address =
+            ColumnAddress::new(DimensionId::CENTER_GLASS_PLATFORM, ChunkColumn::new(0, 0));
+        let outside_address =
+            ColumnAddress::new(DimensionId::CENTER_GLASS_PLATFORM, ChunkColumn::new(1, 0));
+
+        let center = load_or_generate_column(center_address, repository.clone()).unwrap();
+        let outside = load_or_generate_column(outside_address, repository).unwrap();
+
+        assert_eq!(
+            center.chunks()[0].chunk.cell_xyz(0, 0, 0).as_block(),
+            Some(BlockType::Glass)
+        );
+        assert!(center.chunks()[0].chunk.cell_xyz(0, 1, 0).is_empty());
+        assert!(center.chunks()[1].chunk.cell_xyz(0, 0, 0).is_empty());
+        assert!(
+            outside
+                .chunks()
+                .iter()
+                .all(|chunk| chunk.contents.rendered == 0)
         );
     }
 
