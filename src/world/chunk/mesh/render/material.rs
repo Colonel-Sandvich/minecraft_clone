@@ -32,7 +32,7 @@ impl ExtractResource for TerrainMaterialState {
 
 pub(super) fn install(app: &mut App) {
     app.add_systems(
-        PreUpdate,
+        Update,
         sync_terrain_material_state.run_if(in_state(TextureState::Finished)),
     );
 }

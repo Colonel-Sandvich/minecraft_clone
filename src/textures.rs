@@ -1,5 +1,5 @@
 use bevy::{
-    asset::RenderAssetUsages,
+    asset::{AssetTrackingSystems, RenderAssetUsages},
     image::{
         ImageAddressMode, ImageFilterMode, ImageLoaderSettings, ImageSampler,
         ImageSamplerDescriptor,
@@ -36,8 +36,10 @@ impl Plugin for BlockTexturePlugin {
         app.init_state::<TextureState>()
             .add_systems(OnEnter(TextureState::Loading), load_textures)
             .add_systems(
-                Update,
-                check_textures.run_if(in_state(TextureState::Loading)),
+                PreUpdate,
+                check_textures
+                    .after(AssetTrackingSystems)
+                    .run_if(in_state(TextureState::Loading)),
             )
             .add_systems(OnEnter(TextureState::Finished), setup);
     }
