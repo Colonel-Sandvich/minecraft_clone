@@ -1,9 +1,11 @@
 use std::{
     io::ErrorKind,
+    mem::size_of,
     sync::{
         Arc,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
+    time::{Duration, Instant},
 };
 
 use bevy::prelude::*;
@@ -119,14 +121,6 @@ fn spawn_dirty_chunk(
     entity
 }
 
-fn save_handle(owner: Entity, entity: Entity, position: ChunkPos) -> ChunkSaveHandle {
-    ChunkSaveHandle {
-        owner,
-        entity,
-        address: overworld(position),
-    }
-}
-
 fn io_error(kind: ErrorKind) -> ChunkStoreError {
     ChunkStoreError::Io {
         kind,
@@ -183,50 +177,354 @@ impl ChunkStore for ScriptedSaveStore {
     }
 }
 
-fn candidate(handle: ChunkSaveHandle, eviction_priority: bool) -> ChunkSaveCandidate {
+struct GatedFirstSaveStore {
+    inner: InMemoryChunkStore,
+    calls: Arc<AtomicUsize>,
+    first_started: Arc<AtomicBool>,
+    release_first: Arc<AtomicBool>,
+    first_failure: Option<ErrorKind>,
+}
+
+impl GatedFirstSaveStore {
+    fn new(metadata: WorldMetadata, first_failure: Option<ErrorKind>) -> (Self, GatedSaveControl) {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let first_started = Arc::new(AtomicBool::new(false));
+        let release_first = Arc::new(AtomicBool::new(false));
+        (
+            Self {
+                inner: InMemoryChunkStore::new(metadata),
+                calls: calls.clone(),
+                first_started: first_started.clone(),
+                release_first: release_first.clone(),
+                first_failure,
+            },
+            GatedSaveControl {
+                calls,
+                first_started,
+                release_first,
+            },
+        )
+    }
+}
+
+impl ChunkStore for GatedFirstSaveStore {
+    fn metadata(&self) -> &WorldMetadata {
+        self.inner.metadata()
+    }
+
+    fn load_chunk(
+        &self,
+        address: ChunkAddress,
+    ) -> ChunkStoreResult<Option<(Chunk, ChunkHeightmap)>> {
+        self.inner.load_chunk(address)
+    }
+
+    fn save_chunk(
+        &self,
+        address: ChunkAddress,
+        chunk: &Chunk,
+        heightmap: &ChunkHeightmap,
+    ) -> ChunkStoreResult<()> {
+        let call = self.calls.fetch_add(1, Ordering::SeqCst);
+        if call == 0 {
+            self.first_started.store(true, Ordering::Release);
+            while !self.release_first.load(Ordering::Acquire) {
+                std::thread::yield_now();
+            }
+            if let Some(kind) = self.first_failure {
+                return Err(io_error(kind));
+            }
+        }
+        self.inner.save_chunk(address, chunk, heightmap)
+    }
+}
+
+struct GatedSaveControl {
+    calls: Arc<AtomicUsize>,
+    first_started: Arc<AtomicBool>,
+    release_first: Arc<AtomicBool>,
+}
+
+impl GatedSaveControl {
+    fn wait_until_first_started(&self) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !self.first_started.load(Ordering::Acquire) {
+            assert!(Instant::now() < deadline, "first save did not start");
+            std::thread::yield_now();
+        }
+    }
+
+    fn release_first(&self) {
+        self.release_first.store(true, Ordering::Release);
+    }
+}
+
+impl Drop for GatedSaveControl {
+    fn drop(&mut self) {
+        self.release_first.store(true, Ordering::Release);
+    }
+}
+
+fn capture_all_dimension_save_snapshots(
+    mut save_tasks: ResMut<ChunkSaveTasks>,
+    dimensions: Query<(&Dimension, &DesiredColumnView, Entity)>,
+    chunks: Query<(
+        &ChunkPosition,
+        &Chunk,
+        &ChunkHeightmap,
+        Option<&ChunkNeedsSave>,
+    )>,
+) {
+    for (dimension, desired_view, owner) in &dimensions {
+        capture_dimension_save_snapshots(&mut save_tasks, dimension, desired_view, owner, &chunks);
+    }
+}
+
+fn candidate(address: ChunkAddress, eviction_priority: bool) -> ChunkSaveCandidate {
     ChunkSaveCandidate {
-        handle,
-        revision: ChunkRevision::INITIAL,
+        address,
         eviction_priority,
     }
 }
 
 #[test]
 fn failure_records_distinguish_retryable_and_permanent_errors() {
-    let handle = save_handle(Entity::PLACEHOLDER, Entity::PLACEHOLDER, ChunkPos::ZERO);
+    let address = overworld(ChunkPos::ZERO);
     let mut save_tasks = ChunkSaveTasks::default();
 
-    save_tasks.record_failure(handle, io_error(ErrorKind::TimedOut));
-    assert_eq!(save_tasks.failures[&handle].attempts, 1);
+    save_tasks.record_failure(address, io_error(ErrorKind::TimedOut));
+    assert_eq!(save_tasks.failures[&address].attempts, 1);
     assert_eq!(
-        save_tasks.failures[&handle].retry_after_updates,
+        save_tasks.failures[&address].retry_after_updates,
         Some(retry_delay_for_attempt(1))
     );
 
-    save_tasks.record_failure(handle, io_error(ErrorKind::TimedOut));
-    assert_eq!(save_tasks.failures[&handle].attempts, 2);
+    save_tasks.record_failure(address, io_error(ErrorKind::TimedOut));
+    assert_eq!(save_tasks.failures[&address].attempts, 2);
     assert_eq!(
-        save_tasks.failures[&handle].retry_after_updates,
+        save_tasks.failures[&address].retry_after_updates,
         Some(retry_delay_for_attempt(2))
     );
 
-    save_tasks.record_failure(handle, io_error(ErrorKind::PermissionDenied));
-    assert_eq!(save_tasks.failures[&handle].attempts, 3);
-    assert_eq!(save_tasks.failures[&handle].retry_after_updates, None);
+    save_tasks.record_failure(address, io_error(ErrorKind::PermissionDenied));
+    assert_eq!(save_tasks.failures[&address].attempts, 3);
+    assert_eq!(save_tasks.failures[&address].retry_after_updates, None);
 }
 
 #[test]
 fn equal_local_columns_in_different_dimensions_have_distinct_save_lanes() {
     let position = ChunkPos::new(4, 1, -7);
-    let overworld = save_handle(Entity::from_bits(1), Entity::from_bits(2), position);
-    let grass_floor = ChunkSaveHandle {
-        owner: Entity::from_bits(3),
-        entity: Entity::from_bits(4),
-        address: ChunkAddress::new(DimensionId::GRASS_FLOOR, position),
-    };
+    let overworld = overworld(position);
+    let grass_floor = ChunkAddress::new(DimensionId::GRASS_FLOOR, position);
 
     assert_ne!(overworld.column(), grass_floor.column());
-    assert_ne!(overworld.order_key(), grass_floor.order_key());
+    assert_ne!(address_order_key(overworld), address_order_key(grass_floor));
+}
+
+#[test]
+fn outgoing_dimension_capture_does_not_require_active_or_an_io_budget() {
+    let metadata = WorldMetadata::with_seed(9);
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins)
+        .insert_resource(ChunkSaveTasks::default())
+        .add_systems(Update, capture_all_dimension_save_snapshots);
+    let owner = spawn_dimension(&mut app, metadata.height(), false);
+    let position = ChunkPos::new(3, 0, -2);
+    let mut chunk = Chunk::default();
+    chunk.set_cell_xyz(0, 0, 0, BlockType::OakLog.into());
+    let entity = spawn_dirty_chunk(
+        &mut app,
+        owner,
+        position,
+        chunk.clone(),
+        ChunkHeightmap::default(),
+    );
+
+    app.update();
+
+    let address = overworld(position);
+    let save_tasks = app.world().resource::<ChunkSaveTasks>();
+    assert!(save_tasks.pending.contains_key(&address));
+    assert!(save_tasks.in_flight.is_empty());
+    assert!(save_tasks.has_uncommitted_dimension(DimensionId::OVERWORLD));
+    assert!(
+        save_tasks.stats().estimated_payload_bytes
+            >= size_of::<ChunkAddress>()
+                + size_of::<PendingChunkSave>()
+                + size_of::<ChunkSavePayload>()
+    );
+
+    app.world_mut().despawn(entity);
+    app.world_mut().despawn(owner);
+    assert_eq!(
+        app.world().resource::<ChunkSaveTasks>().pending[&address]
+            .snapshot
+            .payload
+            .chunk,
+        chunk
+    );
+}
+
+#[test]
+fn transient_failure_retries_owned_snapshot_after_root_despawn() {
+    let metadata = WorldMetadata::with_seed(9);
+    let (store, control) = GatedFirstSaveStore::new(metadata, Some(ErrorKind::TimedOut));
+    let repository = ChunkRepository::new(store);
+    let position = ChunkPos::new(2, 0, -1);
+    let address = overworld(position);
+    let mut expected = Chunk::default();
+    expected.set_cell_xyz(0, 0, 0, BlockType::OakLog.into());
+    let mut heightmap = ChunkHeightmap::default();
+    heightmap.heights[2][5] = 9;
+    let (mut app, owner) = save_app(repository.clone(), usize::MAX);
+    let entity = spawn_dirty_chunk(&mut app, owner, position, expected.clone(), heightmap);
+
+    app.update();
+    control.wait_until_first_started();
+    assert!(
+        app.world()
+            .resource::<ChunkSaveTasks>()
+            .in_flight
+            .contains_key(&address)
+    );
+
+    app.world_mut().despawn(entity);
+    app.world_mut().despawn(owner);
+    control.release_first();
+
+    update_until(&mut app, |world| {
+        !world
+            .resource::<ChunkSaveTasks>()
+            .has_uncommitted_dimension(DimensionId::OVERWORLD)
+    });
+
+    assert_eq!(control.calls.load(Ordering::SeqCst), 2);
+    let (stored, stored_heightmap) = repository.load_chunk(address).unwrap().unwrap();
+    assert_eq!(stored, expected);
+    assert_eq!(stored_heightmap, heightmap);
+}
+
+#[test]
+fn newer_live_revision_coalesces_behind_in_flight_snapshot() {
+    let metadata = WorldMetadata::with_seed(9);
+    let (store, control) = GatedFirstSaveStore::new(metadata, None);
+    let repository = ChunkRepository::new(store);
+    let position = ChunkPos::new(2, 0, -1);
+    let address = overworld(position);
+    let mut original = Chunk::default();
+    original.set_cell_xyz(0, 0, 0, BlockType::OakLog.into());
+    let (mut app, owner) = save_app(repository.clone(), usize::MAX);
+    let entity = spawn_dirty_chunk(
+        &mut app,
+        owner,
+        position,
+        original,
+        ChunkHeightmap::default(),
+    );
+
+    app.update();
+    control.wait_until_first_started();
+    let first_revision = app.world().get::<Chunk>(entity).unwrap().content_revision();
+    app.world_mut()
+        .get_mut::<Chunk>(entity)
+        .unwrap()
+        .set_cell_xyz(1, 0, 0, BlockType::Stone.into());
+    let expected = app.world().get::<Chunk>(entity).unwrap().clone();
+    let latest_revision = expected.content_revision();
+
+    app.update();
+
+    let save_tasks = app.world().resource::<ChunkSaveTasks>();
+    assert_eq!(
+        save_tasks.in_flight[&address]
+            .snapshot
+            .source
+            .unwrap()
+            .revision,
+        first_revision
+    );
+    assert_eq!(
+        save_tasks.pending[&address]
+            .snapshot
+            .source
+            .unwrap()
+            .revision,
+        latest_revision
+    );
+    assert_eq!(save_tasks.stats().tasks, 2);
+
+    control.release_first();
+    update_until(&mut app, |world| {
+        world.get::<ChunkNeedsSave>(entity).is_none()
+    });
+
+    assert_eq!(control.calls.load(Ordering::SeqCst), 2);
+    let (stored, _) = repository.load_chunk(address).unwrap().unwrap();
+    assert_eq!(stored, expected);
+}
+
+#[test]
+fn equal_local_columns_in_different_dimensions_save_concurrently() {
+    let metadata = WorldMetadata::with_seed(9);
+    let (store, control) = GatedFirstSaveStore::new(metadata, None);
+    let repository = ChunkRepository::new(store);
+    let position = ChunkPos::ZERO;
+    let overworld_address = overworld(position);
+    let grass_address = ChunkAddress::new(DimensionId::GRASS_FLOOR, position);
+    let (mut app, overworld_owner) = save_app(repository.clone(), 2);
+    let mut overworld_chunk = Chunk::default();
+    overworld_chunk.set_cell_xyz(0, 0, 0, BlockType::OakLog.into());
+    let mut overworld_heightmap = ChunkHeightmap::default();
+    overworld_heightmap.heights[0][0] = 3;
+    let overworld_entity = spawn_dirty_chunk(
+        &mut app,
+        overworld_owner,
+        position,
+        overworld_chunk.clone(),
+        overworld_heightmap,
+    );
+
+    app.update();
+    control.wait_until_first_started();
+
+    let grass_definition = *repository.catalog().get(DimensionId::GRASS_FLOOR).unwrap();
+    let grass_owner = spawn_defined_dimension(&mut app, grass_definition, false);
+    let mut grass_chunk = Chunk::default();
+    grass_chunk.set_cell_xyz(0, 0, 0, BlockType::Grass.into());
+    let mut grass_heightmap = ChunkHeightmap::default();
+    grass_heightmap.heights[0][0] = 7;
+    let grass_entity = spawn_dirty_chunk(
+        &mut app,
+        grass_owner,
+        position,
+        grass_chunk.clone(),
+        grass_heightmap,
+    );
+    app.world_mut()
+        .entity_mut(overworld_owner)
+        .remove::<Active>();
+    app.world_mut().entity_mut(grass_owner).insert(Active);
+
+    app.update();
+
+    let save_tasks = app.world().resource::<ChunkSaveTasks>();
+    assert!(save_tasks.in_flight.contains_key(&overworld_address));
+    assert!(save_tasks.in_flight.contains_key(&grass_address));
+
+    control.release_first();
+    update_until(&mut app, |world| {
+        world.get::<ChunkNeedsSave>(overworld_entity).is_none()
+            && world.get::<ChunkNeedsSave>(grass_entity).is_none()
+    });
+
+    let (stored_overworld, stored_overworld_heightmap) =
+        repository.load_chunk(overworld_address).unwrap().unwrap();
+    let (stored_grass, stored_grass_heightmap) =
+        repository.load_chunk(grass_address).unwrap().unwrap();
+    assert_eq!(stored_overworld, overworld_chunk);
+    assert_eq!(stored_overworld_heightmap, overworld_heightmap);
+    assert_eq!(stored_grass, grass_chunk);
+    assert_eq!(stored_grass_heightmap, grass_heightmap);
 }
 
 #[test]
@@ -307,7 +605,9 @@ fn save_budget_limits_total_in_flight_chunks() {
 
     app.update();
 
-    assert_eq!(app.world().resource::<ChunkSaveTasks>().tasks.len(), 1);
+    let save_tasks = app.world().resource::<ChunkSaveTasks>();
+    assert_eq!(save_tasks.in_flight.len(), 1);
+    assert_eq!(save_tasks.pending.len(), 1);
 }
 
 #[test]
@@ -332,7 +632,7 @@ fn saves_are_serialized_within_a_column() {
 
     app.update();
 
-    assert_eq!(app.world().resource::<ChunkSaveTasks>().tasks.len(), 1);
+    assert_eq!(app.world().resource::<ChunkSaveTasks>().in_flight.len(), 1);
     update_until(&mut app, |world| {
         world.get::<ChunkNeedsSave>(lower).is_none() && world.get::<ChunkNeedsSave>(upper).is_none()
     });
@@ -376,11 +676,13 @@ fn stale_revision_completion_cannot_clean_identical_live_content() {
     let first_revision = app
         .world()
         .resource::<ChunkSaveTasks>()
-        .tasks
+        .in_flight
         .values()
         .next()
         .unwrap()
-        .ticket
+        .snapshot
+        .source
+        .unwrap()
         .revision;
     {
         let mut chunk = app.world_mut().get_mut::<Chunk>(entity).unwrap();
@@ -395,9 +697,13 @@ fn stale_revision_completion_cannot_clean_identical_live_content() {
         world.get::<ChunkNeedsSave>(entity).is_some()
             && world
                 .resource::<ChunkSaveTasks>()
-                .tasks
+                .in_flight
                 .values()
-                .any(|task| task.ticket.revision == live_revision)
+                .any(|task| {
+                    task.snapshot
+                        .source
+                        .is_some_and(|source| source.revision == live_revision)
+                })
     });
     update_until(&mut app, |world| {
         world.get::<ChunkNeedsSave>(entity).is_none()
@@ -438,10 +744,13 @@ fn stale_heightmap_completion_cannot_clean_a_chunk() {
         world.get::<ChunkNeedsSave>(entity).is_some()
             && world
                 .resource::<ChunkSaveTasks>()
-                .tasks
+                .in_flight
                 .values()
                 .any(|task| {
-                    task.ticket.revision == revision && task.ticket.heightmap == current_heightmap
+                    task.snapshot
+                        .source
+                        .is_some_and(|source| source.revision == revision)
+                        && task.snapshot.payload.heightmap == current_heightmap
                 })
     });
     update_until(&mut app, |world| {
@@ -484,11 +793,18 @@ fn only_the_active_dimensions_registered_chunks_start_saves() {
     app.update();
 
     let save_tasks = app.world().resource::<ChunkSaveTasks>();
-    assert_eq!(save_tasks.tasks.len(), 1);
-    let handle = *save_tasks.tasks.keys().next().unwrap();
-    assert_eq!(handle.owner, active_owner);
-    assert_eq!(handle.entity, active);
-    assert_ne!(handle.entity, inactive);
+    assert_eq!(save_tasks.in_flight.len(), 1);
+    let source = save_tasks
+        .in_flight
+        .values()
+        .next()
+        .unwrap()
+        .snapshot
+        .source
+        .unwrap();
+    assert_eq!(source.owner, active_owner);
+    assert_eq!(source.entity, active);
+    assert_ne!(source.entity, inactive);
 }
 
 #[test]
@@ -518,7 +834,7 @@ fn completion_stays_bound_to_its_original_owner_after_an_active_switch() {
     app.world_mut().entity_mut(second_owner).insert(Active);
     app.world_mut().resource_mut::<ChunkSaveBudget>().0 = 0;
     update_until(&mut app, |world| {
-        world.resource::<ChunkSaveTasks>().tasks.is_empty()
+        world.resource::<ChunkSaveTasks>().in_flight.is_empty()
     });
 
     assert!(app.world().get::<ChunkNeedsSave>(first).is_none());
@@ -560,63 +876,107 @@ fn transient_failures_back_off_then_retry() {
 }
 
 #[test]
-fn permanent_failures_do_not_retry_or_allow_eviction() {
+fn permanent_failure_retains_the_newest_owned_snapshot_after_despawn() {
     let metadata = WorldMetadata::with_seed(9);
-    let calls = Arc::new(AtomicUsize::new(0));
-    let repository = ChunkRepository::new(ScriptedSaveStore::new(
-        metadata,
-        calls.clone(),
-        usize::MAX,
-        ErrorKind::PermissionDenied,
-    ));
-    let (mut app, owner) = save_app(repository, usize::MAX);
+    let (store, control) = GatedFirstSaveStore::new(metadata, Some(ErrorKind::PermissionDenied));
+    let repository = ChunkRepository::new(store);
+    let address = overworld(ChunkPos::ZERO);
+    let (mut app, owner) = save_app(repository.clone(), usize::MAX);
+    let mut original = Chunk::default();
+    original.set_cell_xyz(0, 0, 0, BlockType::OakLog.into());
     let entity = spawn_dirty_chunk(
         &mut app,
         owner,
         ChunkPos::ZERO,
-        Chunk::default(),
+        original,
         ChunkHeightmap::default(),
     );
+
+    app.update();
+    control.wait_until_first_started();
+    app.world_mut()
+        .get_mut::<Chunk>(entity)
+        .unwrap()
+        .set_cell_xyz(1, 0, 0, BlockType::Stone.into());
+    let expected = app.world().get::<Chunk>(entity).unwrap().clone();
+    let expected_revision = expected.content_revision();
+    app.update();
+    control.release_first();
 
     update_until(&mut app, |world| {
         world
             .resource::<ChunkSaveTasks>()
             .failures
-            .values()
-            .any(|failure| failure.retry_after_updates.is_none())
+            .get(&address)
+            .is_some_and(|failure| failure.retry_after_updates.is_none())
     });
+
+    let save_tasks = app.world().resource::<ChunkSaveTasks>();
+    assert_eq!(
+        save_tasks.pending[&address]
+            .snapshot
+            .source
+            .unwrap()
+            .revision,
+        expected_revision
+    );
+    assert_eq!(
+        save_tasks.pending[&address].snapshot.payload.chunk,
+        expected
+    );
+
+    app.world_mut().despawn(entity);
+    app.world_mut().despawn(owner);
     for _ in 0..INITIAL_SAVE_RETRY_DELAY_UPDATES * 2 {
         app.update();
     }
 
-    assert_eq!(calls.load(Ordering::SeqCst), 1);
-    assert!(app.world().get::<ChunkNeedsSave>(entity).is_some());
-    assert!(app.world().resource::<ChunkSaveTasks>().tasks.is_empty());
+    let save_tasks = app.world().resource::<ChunkSaveTasks>();
+    assert_eq!(control.calls.load(Ordering::SeqCst), 1);
+    assert!(save_tasks.pending.contains_key(&address));
+    assert!(save_tasks.in_flight.is_empty());
+    assert!(save_tasks.failures.contains_key(&address));
+    assert!(save_tasks.has_uncommitted_dimension(DimensionId::OVERWORLD));
+
+    let retained = save_tasks.pending[&address].snapshot.payload.clone();
+    assert!(
+        app.world_mut()
+            .resource_mut::<ChunkSaveTasks>()
+            .retry_permanent_failure(address)
+    );
+    assert_eq!(
+        app.world().resource::<ChunkSaveTasks>().pending[&address]
+            .snapshot
+            .payload,
+        retained
+    );
+
+    update_until(&mut app, |world| {
+        !world
+            .resource::<ChunkSaveTasks>()
+            .has_uncommitted_dimension(DimensionId::OVERWORLD)
+    });
+    assert_eq!(control.calls.load(Ordering::SeqCst), 2);
+    let (stored, _) = repository.load_chunk(address).unwrap().unwrap();
+    assert_eq!(stored, expected);
 }
 
 #[test]
 fn selection_is_round_robin_within_each_priority() {
-    let mut world = World::new();
-    let owner = world.spawn_empty().id();
-    let entities = [
-        world.spawn_empty().id(),
-        world.spawn_empty().id(),
-        world.spawn_empty().id(),
-    ];
-    let handles = [
-        save_handle(owner, entities[0], ChunkPos::new(0, 0, 0)),
-        save_handle(owner, entities[1], ChunkPos::new(1, 0, 0)),
-        save_handle(owner, entities[2], ChunkPos::new(2, 0, 0)),
+    let addresses = [
+        overworld(ChunkPos::new(0, 0, 0)),
+        overworld(ChunkPos::new(1, 0, 0)),
+        overworld(ChunkPos::new(2, 0, 0)),
     ];
     let candidates = vec![
-        candidate(handles[2], false),
-        candidate(handles[0], false),
-        candidate(handles[1], false),
+        candidate(addresses[2], false),
+        candidate(addresses[0], false),
+        candidate(addresses[1], false),
     ];
     let mut cursor = None;
 
-    for expected in [handles[0], handles[1], handles[2], handles[0]] {
-        let selected = ordered_candidates(candidates.clone(), cursor)[0].handle;
+    for expected in [addresses[0], addresses[1], addresses[2], addresses[0]] {
+        let selected = ordered_candidates(candidates.clone(), cursor)[0].address;
         assert_eq!(selected, expected);
         cursor = Some(selected);
     }
@@ -653,12 +1013,12 @@ fn chunks_waiting_to_evict_are_saved_before_resident_chunks() {
 
     app.update();
 
-    let handle = *app
+    let address = *app
         .world()
         .resource::<ChunkSaveTasks>()
-        .tasks
+        .in_flight
         .keys()
         .next()
         .unwrap();
-    assert_eq!(handle.position(), evicting_position);
+    assert_eq!(address.position(), evicting_position);
 }
