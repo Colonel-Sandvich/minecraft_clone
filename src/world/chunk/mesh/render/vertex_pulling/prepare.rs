@@ -48,7 +48,11 @@ struct MaterialBuffers {
     ao_brightness: Buffer,
 }
 
-type ChangedMeshData = Or<(Changed<ChunkMeshLayer>, Changed<ChunkMeshFaces>)>;
+type MeshNeedsPreparation = Or<(
+    Changed<ChunkMeshLayer>,
+    Changed<ChunkMeshFaces>,
+    Without<PreparedChunkMesh>,
+)>;
 
 pub(super) fn extract_changed_meshes(
     mut commands: Commands,
@@ -86,7 +90,10 @@ pub(super) fn prepare_gpu_data(
     pipeline: Option<Res<Pipeline>>,
     material_state: Option<Res<TerrainMaterialState>>,
     gpu_images: Res<RenderAssets<GpuImage>>,
-    changed_meshes: Query<(Entity, &ChunkMeshLayer, Option<Ref<ChunkMeshLight>>), ChangedMeshData>,
+    changed_meshes: Query<
+        (Entity, &ChunkMeshLayer, Option<Ref<ChunkMeshLight>>),
+        MeshNeedsPreparation,
+    >,
     faces: Query<&ChunkMeshFaces>,
     changed_lights: Query<(Entity, Ref<ChunkMeshLight>), Changed<ChunkMeshLight>>,
     all_meshes: Query<&ChunkMeshLayer>,
@@ -476,8 +483,37 @@ fn create_chunk_bind_group(
 mod tests {
     use super::*;
 
+    #[derive(Resource, Default)]
+    struct PreparationVisits(usize);
+
+    fn count_meshes_needing_preparation(
+        meshes: Query<(Entity, &ChunkMeshLayer), MeshNeedsPreparation>,
+        mut visits: ResMut<PreparationVisits>,
+    ) {
+        visits.0 += meshes.iter().count();
+    }
+
     #[test]
     fn chunk_origin_uniform_matches_shader_layout() {
         assert_eq!(std::mem::size_of::<ChunkOriginUniform>(), 16);
+    }
+
+    #[test]
+    fn unprepared_mesh_is_retried_after_its_change_tick_expires() {
+        let mut app = App::new();
+        app.init_resource::<PreparationVisits>()
+            .add_systems(Update, count_meshes_needing_preparation);
+
+        let faces = ChunkMeshFaces::new(Vec::new());
+        app.world_mut().spawn(ChunkMeshLayer::new(
+            crate::block::BlockMaterialLayer::Opaque,
+            Vec3::ZERO,
+            &faces,
+        ));
+
+        app.update();
+        app.update();
+
+        assert_eq!(app.world().resource::<PreparationVisits>().0, 2);
     }
 }
