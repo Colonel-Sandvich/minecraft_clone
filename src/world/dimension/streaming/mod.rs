@@ -4,7 +4,10 @@ mod systems;
 #[cfg(test)]
 mod tests;
 
-use std::mem::size_of;
+use std::{
+    mem::size_of,
+    time::{Duration, Instant},
+};
 
 use bevy::{
     platform::collections::HashMap,
@@ -57,10 +60,18 @@ pub(crate) struct ColumnLoadTaskStats {
     pub(crate) estimated_payload_bytes: usize,
 }
 
+struct CompletedColumnLoad {
+    result: ColumnLoadResult,
+    submitted_at: Instant,
+    completed_at: Instant,
+    queue_elapsed: Duration,
+    worker_elapsed: Duration,
+}
+
 /// Asynchronous streaming work owned by exactly one dimension.
 pub(crate) struct DimensionStreamState {
     ledger: ColumnResidencyLedger,
-    load_tasks: HashMap<ColumnLoadTicket, Task<ColumnLoadResult>>,
+    load_tasks: HashMap<ColumnLoadTicket, Task<CompletedColumnLoad>>,
 }
 
 impl DimensionStreamState {
@@ -86,11 +97,11 @@ impl DimensionStreamState {
         self.ledger.mark_undesired(column)
     }
 
-    pub(crate) fn start_load(
+    fn start_load(
         &mut self,
         column: ChunkColumn,
         view_revision: u64,
-        start: impl FnOnce() -> Task<ColumnLoadResult>,
+        start: impl FnOnce() -> Task<CompletedColumnLoad>,
     ) -> Option<ColumnLoadTicket> {
         let ticket = self.ledger.begin_load(column, view_revision)?;
         let previous = self.load_tasks.insert(ticket, start());
@@ -98,10 +109,10 @@ impl DimensionStreamState {
         Some(ticket)
     }
 
-    pub(crate) fn take_ready_load(
+    fn take_ready_load(
         &mut self,
         column: ChunkColumn,
-    ) -> Option<(ColumnLoadTicket, ColumnLoadResult)> {
+    ) -> Option<(ColumnLoadTicket, CompletedColumnLoad)> {
         let ticket = self.ledger.loading_ticket(column)?;
         let output = check_ready(self.load_tasks.get_mut(&ticket)?)?;
         self.load_tasks.remove(&ticket);
@@ -215,8 +226,8 @@ impl DimensionStreamState {
             failures: residency.failed,
             estimated_payload_bytes: self.load_tasks.len().saturating_mul(
                 size_of::<ColumnLoadTicket>()
-                    + size_of::<Task<ColumnLoadResult>>()
-                    + size_of::<ColumnLoadResult>(),
+                    + size_of::<Task<CompletedColumnLoad>>()
+                    + size_of::<CompletedColumnLoad>(),
             ),
         }
     }

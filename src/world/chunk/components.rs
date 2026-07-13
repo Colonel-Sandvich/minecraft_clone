@@ -11,6 +11,15 @@ use super::{
 
 #[derive(Resource, Debug, Default)]
 pub struct ChunkPerfCounters {
+    pub column_loads: usize,
+    pub column_load_worker_elapsed: Duration,
+    pub column_load_max_worker_elapsed: Duration,
+    pub column_load_queue_elapsed: Duration,
+    pub column_load_max_queue_elapsed: Duration,
+    pub column_load_pickup_lag: Duration,
+    pub column_load_max_pickup_lag: Duration,
+    pub column_load_latency: Duration,
+    pub column_load_max_latency: Duration,
     pub mesh_rebuilds: usize,
     pub mesh_rebuild_runs: usize,
     pub mesh_rebuild_elapsed: Duration,

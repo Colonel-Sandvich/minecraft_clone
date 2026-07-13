@@ -59,6 +59,7 @@ pub(super) fn rebuild_chunk_meshes(
         return;
     };
     let dimension = dimension.into_inner();
+    let rebuild_started = Instant::now();
     let active_dirty = dimension
         .iter_published_chunks()
         .filter_map(|(registered, entity)| {
@@ -70,7 +71,6 @@ pub(super) fn rebuild_chunk_meshes(
         return;
     }
 
-    let rebuild_started = Instant::now();
     let context_started = Instant::now();
     let mut chunks_by_pos = HashMap::with_capacity(dimension.loaded_chunk_count());
     for (registered, entity) in dimension.iter_loaded_chunks() {

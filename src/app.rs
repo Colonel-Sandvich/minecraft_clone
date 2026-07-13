@@ -90,7 +90,16 @@ impl Plugin for AppPlugin {
             app.add_plugins(MemoryTrackingPlugin);
         }
         if std::env::var_os("MINECRAFT_CLONE_STREAM_TIMINGS").is_some() {
-            app.add_systems(Last, log_streaming_startup_milestones);
+            app.init_resource::<StreamingStartupTrace>()
+                .add_systems(First, begin_streaming_startup_frame)
+                .add_systems(
+                    Last,
+                    (
+                        log_streaming_startup_milestones,
+                        finish_streaming_startup_frame,
+                    )
+                        .chain(),
+                );
         }
         // .insert_resource(FramepaceSettings {
         //     limiter: Limiter::from_framerate(60.0),
@@ -98,11 +107,28 @@ impl Plugin for AppPlugin {
     }
 }
 
-#[derive(Default)]
+#[derive(Resource, Default)]
 struct StreamingStartupTrace {
     started: Option<Instant>,
+    frame_started: Option<Instant>,
+    previous_frame_finished: Option<Instant>,
+    between_updates: Duration,
     updates: u64,
     completed: u16,
+}
+
+fn begin_streaming_startup_frame(mut trace: ResMut<StreamingStartupTrace>) {
+    let now = Instant::now();
+    trace.started.get_or_insert(now);
+    trace.between_updates = trace
+        .previous_frame_finished
+        .map_or(Duration::ZERO, |finished| now.duration_since(finished));
+    trace.frame_started = Some(now);
+    trace.updates += 1;
+}
+
+fn finish_streaming_startup_frame(mut trace: ResMut<StreamingStartupTrace>) {
+    trace.previous_frame_finished = Some(Instant::now());
 }
 
 fn log_streaming_startup_milestones(
@@ -110,7 +136,8 @@ fn log_streaming_startup_milestones(
     desired_view: Option<Res<DesiredColumnView>>,
     dirty_meshes: Query<(), With<ChunkNeedsMeshRebuild>>,
     player: Option<Single<&Transform, With<Player>>>,
-    mut trace: Local<StreamingStartupTrace>,
+    perf: Option<Res<ChunkPerfCounters>>,
+    mut trace: ResMut<StreamingStartupTrace>,
 ) {
     const MILESTONE_COUNT: usize = 10;
     const ALL_MILESTONES: u16 = (1 << MILESTONE_COUNT) - 1;
@@ -118,8 +145,6 @@ fn log_streaming_startup_milestones(
     if trace.completed == ALL_MILESTONES {
         return;
     }
-    trace.started.get_or_insert_with(Instant::now);
-    trace.updates += 1;
     let Some(dimension) = dimension else {
         return;
     };
@@ -186,11 +211,117 @@ fn log_streaming_startup_milestones(
                     * 1_000.0
             ),
             updates = trace.updates,
+            main_update_ms = format_args!(
+                "{:.3}",
+                trace
+                    .frame_started
+                    .expect("startup frame must begin in First")
+                    .elapsed()
+                    .as_secs_f64()
+                    * 1_000.0
+            ),
+            between_updates_ms = format_args!(
+                "{:.3}",
+                trace.between_updates.as_secs_f64() * 1_000.0
+            ),
             loaded_chunks = dimension.loaded_chunk_count(),
             published_chunks = dimension.published_chunk_count(),
             player_chunk = ?player_chunk,
             "streaming startup milestone"
         );
+        if name == "center_dependencies_loaded"
+            && let Some(perf) = perf.as_deref()
+        {
+            info!(
+                target: "perf",
+                completed_columns = perf.column_loads,
+                worker_total_ms = format_args!(
+                    "{:.3}",
+                    perf.column_load_worker_elapsed.as_secs_f64() * 1_000.0
+                ),
+                worker_max_ms = format_args!(
+                    "{:.3}",
+                    perf.column_load_max_worker_elapsed.as_secs_f64() * 1_000.0
+                ),
+                queue_total_ms = format_args!(
+                    "{:.3}",
+                    perf.column_load_queue_elapsed.as_secs_f64() * 1_000.0
+                ),
+                queue_max_ms = format_args!(
+                    "{:.3}",
+                    perf.column_load_max_queue_elapsed.as_secs_f64() * 1_000.0
+                ),
+                pickup_total_ms = format_args!(
+                    "{:.3}",
+                    perf.column_load_pickup_lag.as_secs_f64() * 1_000.0
+                ),
+                pickup_max_ms = format_args!(
+                    "{:.3}",
+                    perf.column_load_max_pickup_lag.as_secs_f64() * 1_000.0
+                ),
+                latency_max_ms = format_args!(
+                    "{:.3}",
+                    perf.column_load_max_latency.as_secs_f64() * 1_000.0
+                ),
+                "center dependency load work"
+            );
+        }
+        if name == "center_cpu_meshed"
+            && let Some(perf) = perf.as_deref()
+        {
+            info!(
+                target: "perf",
+                mesh_runs = perf.mesh_rebuild_runs,
+                mesh_chunks = perf.mesh_rebuilds,
+                mesh_total_ms = format_args!(
+                    "{:.3}",
+                    perf.mesh_rebuild_elapsed.as_secs_f64() * 1_000.0
+                ),
+                mesh_context_ms = format_args!(
+                    "{:.3}",
+                    perf.mesh_context_elapsed.as_secs_f64() * 1_000.0
+                ),
+                mesh_build_ms = format_args!(
+                    "{:.3}",
+                    perf.mesh_build_elapsed.as_secs_f64() * 1_000.0
+                ),
+                mesh_apply_ms = format_args!(
+                    "{:.3}",
+                    perf.mesh_apply_elapsed.as_secs_f64() * 1_000.0
+                ),
+                light_submitted = perf.light_patch_runs,
+                light_accepted = perf.light_patch_accepted_results,
+                light_task_ms = format_args!(
+                    "{:.3}",
+                    perf.light_patch_elapsed.as_secs_f64() * 1_000.0
+                ),
+                light_solve_ms = format_args!(
+                    "{:.3}",
+                    perf.light_patch_solve_elapsed.as_secs_f64() * 1_000.0
+                ),
+                light_prepare_ms = format_args!(
+                    "{:.3}",
+                    perf.light_patch_prepare_elapsed.as_secs_f64() * 1_000.0
+                ),
+                light_snapshot_ms = format_args!(
+                    "{:.3}",
+                    perf.light_patch_snapshot_elapsed.as_secs_f64() * 1_000.0
+                ),
+                light_collect_ms = format_args!(
+                    "{:.3}",
+                    perf.light_patch_collect_elapsed.as_secs_f64() * 1_000.0
+                ),
+                light_queue_ms = format_args!(
+                    "{:.3}",
+                    perf.light_patch_queue_elapsed.as_secs_f64() * 1_000.0
+                ),
+                light_pickup_lag_ms = format_args!(
+                    "{:.3}",
+                    perf.light_patch_pickup_lag.as_secs_f64() * 1_000.0
+                ),
+                "center startup CPU work"
+            );
+        }
     }
 }
 
@@ -310,6 +441,39 @@ fn log_frame_perf(
         dirty_light_upload_sample = %dirty_light_upload_sample,
         dirty_light_rebuild = dirty_light_rebuild_positions.len(),
         dirty_light_rebuild_sample = %dirty_light_rebuild_sample,
+        column_loads_5s = chunk_perf.column_loads,
+        column_load_worker_ms_5s = format_args!(
+            "{:.3}",
+            chunk_perf.column_load_worker_elapsed.as_secs_f64() * 1_000.0
+        ),
+        column_load_max_worker_ms_5s = format_args!(
+            "{:.3}",
+            chunk_perf.column_load_max_worker_elapsed.as_secs_f64() * 1_000.0
+        ),
+        column_load_queue_ms_5s = format_args!(
+            "{:.3}",
+            chunk_perf.column_load_queue_elapsed.as_secs_f64() * 1_000.0
+        ),
+        column_load_max_queue_ms_5s = format_args!(
+            "{:.3}",
+            chunk_perf.column_load_max_queue_elapsed.as_secs_f64() * 1_000.0
+        ),
+        column_load_pickup_lag_ms_5s = format_args!(
+            "{:.3}",
+            chunk_perf.column_load_pickup_lag.as_secs_f64() * 1_000.0
+        ),
+        column_load_max_pickup_lag_ms_5s = format_args!(
+            "{:.3}",
+            chunk_perf.column_load_max_pickup_lag.as_secs_f64() * 1_000.0
+        ),
+        column_load_latency_ms_5s = format_args!(
+            "{:.3}",
+            chunk_perf.column_load_latency.as_secs_f64() * 1_000.0
+        ),
+        column_load_max_latency_ms_5s = format_args!(
+            "{:.3}",
+            chunk_perf.column_load_max_latency.as_secs_f64() * 1_000.0
+        ),
         mesh_rebuilds_5s = chunk_perf.mesh_rebuilds,
         mesh_rebuild_runs_5s = chunk_perf.mesh_rebuild_runs,
         mesh_rebuild_ms_5s = format_args!(

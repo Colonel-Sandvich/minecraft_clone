@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use avian3d::prelude::Collider;
 use bevy::prelude::*;
 
@@ -7,7 +9,8 @@ use crate::{
         chunk::{
             ChunkColumn, ChunkContentCounts, ChunkInvalidationPlan, ChunkLight,
             ChunkNeedsColliderRebuild, ChunkNeedsFluidStep, ChunkNeedsLightRebuild,
-            ChunkNeedsRenderLightUpload, ChunkNeedsSave, ChunkPos, ChunkPosition,
+            ChunkNeedsRenderLightUpload, ChunkNeedsSave, ChunkPerfCounters, ChunkPos,
+            ChunkPosition,
         },
         generation::WorldMetadata,
         loading::load_or_generate_column,
@@ -17,6 +20,7 @@ use crate::{
 
 use super::{
     ColumnActivationBudget, ColumnExposure, ColumnLighting, ColumnLoadBudget, ColumnStagingBudget,
+    CompletedColumnLoad,
 };
 use crate::world::dimension::{
     Active, ChunkTaskPool, DesiredColumnView, Dimension, ViewDistance, apply_chunk_invalidations,
@@ -121,6 +125,7 @@ pub(crate) fn maintain_column_residency(
 
 pub(crate) fn finish_column_loads(
     mut commands: Commands,
+    mut perf: Option<ResMut<ChunkPerfCounters>>,
     dimension: Single<(&mut Dimension, Entity), With<Active>>,
     desired_view: Res<DesiredColumnView>,
     staging_budget: Res<ColumnStagingBudget>,
@@ -141,7 +146,8 @@ pub(crate) fn finish_column_loads(
         }
     }
 
-    for (ticket, result) in completed {
+    for (ticket, completed) in completed {
+        record_column_load_perf(perf.as_deref_mut(), &completed);
         if ticket.view_revision() != desired_view.revision() {
             trace!(
                 column = ?ticket.column(),
@@ -150,7 +156,7 @@ pub(crate) fn finish_column_loads(
                 "Accepting a still-desired column from an older view revision"
             );
         }
-        let loaded = match result {
+        let loaded = match completed.result {
             Ok(loaded) => loaded,
             Err(error) => {
                 warn!(%error, column = ?ticket.column(), "Failed to load chunk column");
@@ -271,11 +277,44 @@ pub(crate) fn start_column_loads(
         if dimension
             .stream_mut()
             .start_load(column, desired_view.revision(), || {
-                task_pool.spawn(async move { load_or_generate_column(column, repository) })
+                let submitted_at = Instant::now();
+                task_pool.spawn(async move {
+                    let queue_elapsed = submitted_at.elapsed();
+                    let worker_started = Instant::now();
+                    let result = load_or_generate_column(column, repository);
+                    let completed_at = Instant::now();
+                    CompletedColumnLoad {
+                        result,
+                        submitted_at,
+                        completed_at,
+                        queue_elapsed,
+                        worker_elapsed: completed_at.duration_since(worker_started),
+                    }
+                })
             })
             .is_some()
         {
             started += 1;
         }
     }
+}
+
+fn record_column_load_perf(perf: Option<&mut ChunkPerfCounters>, completed: &CompletedColumnLoad) {
+    let Some(perf) = perf else { return };
+    let picked_up_at = Instant::now();
+    let pickup_lag = picked_up_at.duration_since(completed.completed_at);
+    let latency = picked_up_at.duration_since(completed.submitted_at);
+    perf.column_loads += 1;
+    perf.column_load_worker_elapsed += completed.worker_elapsed;
+    perf.column_load_max_worker_elapsed = perf
+        .column_load_max_worker_elapsed
+        .max(completed.worker_elapsed);
+    perf.column_load_queue_elapsed += completed.queue_elapsed;
+    perf.column_load_max_queue_elapsed = perf
+        .column_load_max_queue_elapsed
+        .max(completed.queue_elapsed);
+    perf.column_load_pickup_lag += pickup_lag;
+    perf.column_load_max_pickup_lag = perf.column_load_max_pickup_lag.max(pickup_lag);
+    perf.column_load_latency += latency;
+    perf.column_load_max_latency = perf.column_load_max_latency.max(latency);
 }
