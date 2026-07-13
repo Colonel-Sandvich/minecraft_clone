@@ -204,6 +204,10 @@ impl DimensionStreamState {
         self.load_tasks.len()
     }
 
+    pub(crate) fn awaits_load_progress(&self, column: ChunkColumn) -> bool {
+        self.ledger.awaits_load_progress(column)
+    }
+
     pub(crate) fn stats(&self) -> ColumnLoadTaskStats {
         let residency = self.ledger.stats();
         ColumnLoadTaskStats {

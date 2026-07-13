@@ -12,7 +12,7 @@ use crate::world::{
 };
 
 use super::{
-    Active, ChunkTaskPool, ColumnLightBudget, DesiredColumnView, Dimension,
+    Active, ChunkTaskPool, ColumnLightBudget, ColumnLoadBudget, DesiredColumnView, Dimension,
     apply_chunk_invalidations,
     light_patch::{InitialLightColumnState, LightPatchPlan},
     light_task::{
@@ -32,6 +32,7 @@ pub(crate) fn rebuild_chunk_light(
     metadata: Res<WorldMetadata>,
     desired_view: Option<Res<DesiredColumnView>>,
     patch_budget: Option<Res<ColumnLightBudget>>,
+    load_budget: Option<Res<ColumnLoadBudget>>,
     task_pool: Option<Res<ChunkTaskPool>>,
 ) {
     let mut dimension = dimension.into_inner();
@@ -45,6 +46,7 @@ pub(crate) fn rebuild_chunk_light(
             patch_budget
                 .as_deref()
                 .map_or(usize::MAX, |budget| budget.0),
+            load_budget.as_deref().is_none_or(|budget| budget.0 == 0),
             &task_pool,
         );
     }
@@ -171,6 +173,7 @@ fn process_streamed_column_light(
     all_chunks: &Query<(&ChunkPosition, &Chunk, &ChunkLight, &ChunkHeightmap)>,
     desired_view: &DesiredColumnView,
     target_budget: usize,
+    load_admission_paused: bool,
     task_pool: &ChunkTaskPool,
 ) {
     cancel_unclaimed_light_task(dimension, perf.as_deref_mut());
@@ -200,7 +203,13 @@ fn process_streamed_column_light(
 
     let height_chunks = dimension.height().chunks();
     let plan_started = Instant::now();
-    let plan = next_light_patch_plan(dimension, desired_view, height_chunks, target_budget);
+    let plan = next_light_patch_plan(
+        dimension,
+        desired_view,
+        height_chunks,
+        target_budget,
+        load_admission_paused,
+    );
     if let Some(perf) = perf.as_deref_mut() {
         let elapsed = plan_started.elapsed();
         perf.light_patch_plan_elapsed += elapsed;
@@ -239,6 +248,7 @@ fn next_light_patch_plan(
     desired_view: &DesiredColumnView,
     height_chunks: usize,
     target_budget: usize,
+    load_admission_paused: bool,
 ) -> LightPatchPlan {
     let runtime = LightPatchPlan::build(
         desired_view.visible_columns(),
@@ -258,19 +268,23 @@ fn next_light_patch_plan(
         return LightPatchPlan::default();
     };
     let initial =
-        LightPatchPlan::build_initial_tile(desired_view.visible_columns(), center, |column| {
+        LightPatchPlan::build_initial_patch(desired_view.visible_columns(), center, |column| {
             classify_initial_light_column(dimension, column)
         });
     if !initial.is_empty() {
         return initial;
     }
 
-    if dimension.stream().loading_count() != 0 {
+    let awaiting_resident_data = desired_view
+        .resident_columns()
+        .iter()
+        .any(|&column| dimension.stream().awaits_load_progress(column));
+    if !load_admission_paused && awaiting_resident_data {
         return LightPatchPlan::default();
     }
 
-    // A failed or deliberately paused load must not strand unrelated ready
-    // cores behind its tile. Once loading is quiescent, make bounded progress.
+    // Failed loads and deliberately paused admission must not strand unrelated
+    // ready cores behind an incomplete tile.
     LightPatchPlan::build(
         desired_view.visible_columns(),
         height_chunks,

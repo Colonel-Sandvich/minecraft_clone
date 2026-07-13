@@ -45,6 +45,13 @@ pub use self::{
 pub(crate) use invalidation::apply_chunk_invalidations;
 pub(crate) use streaming::{ColumnEvictionTicket, ColumnLoadTaskStats, ColumnLoadTicket};
 
+/// Update-phase boundary after dimension streaming and publication complete.
+///
+/// Visual consumers run after this set so publication markers can be consumed
+/// before the frame is extracted for rendering.
+#[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct DimensionStreamingSet;
+
 #[derive(Resource)]
 pub(crate) struct ChunkTaskPool(ChunkTaskPoolInner);
 
@@ -494,12 +501,13 @@ impl Plugin for DimensionPlugin {
                 refresh_desired_column_view,
                 maintain_column_residency,
                 finish_column_loads,
-                start_column_loads,
                 rebuild_chunk_light,
                 publish_lit_columns,
+                start_column_loads,
             )
                 .chain()
-                .in_set(Playing),
+                .in_set(Playing)
+                .in_set(DimensionStreamingSet),
         );
         app.add_systems(
             PostUpdate,

@@ -625,6 +625,13 @@ impl ColumnResidencyLedger {
         self.states.get(&column)
     }
 
+    pub(crate) fn awaits_load_progress(&self, column: ChunkColumn) -> bool {
+        matches!(
+            self.states.get(&column),
+            None | Some(ColumnResidency::Loading { .. })
+        )
+    }
+
     pub(crate) fn loading_ticket(&self, column: ChunkColumn) -> Option<ColumnLoadTicket> {
         match self.states.get(&column) {
             Some(ColumnResidency::Loading { ticket, .. }) => Some(*ticket),
@@ -801,6 +808,25 @@ mod tests {
             ledger.resident_state(column),
             Some(ResidentColumnState::STAGED_PENDING)
         );
+    }
+
+    #[test]
+    fn only_missing_and_loading_columns_await_load_progress() {
+        let mut ledger = ColumnResidencyLedger::new(Entity::PLACEHOLDER);
+        let missing = ChunkColumn::new(0, 0);
+        let loading = ChunkColumn::new(1, 0);
+        let resident = ChunkColumn::new(2, 0);
+        let failed = ChunkColumn::new(3, 0);
+
+        assert!(ledger.awaits_load_progress(missing));
+        ledger.begin_load(loading, 1).unwrap();
+        load_resident(&mut ledger, resident, 1);
+        let failed_ticket = ledger.begin_load(failed, 1).unwrap();
+        assert!(ledger.fail_load(failed_ticket, transient_error()));
+
+        assert!(ledger.awaits_load_progress(loading));
+        assert!(!ledger.awaits_load_progress(resident));
+        assert!(!ledger.awaits_load_progress(failed));
     }
 
     #[test]

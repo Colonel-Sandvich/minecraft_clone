@@ -90,9 +90,9 @@ fn staged_lighting_app(height_chunks: usize) -> (App, Entity, Entity) {
                 refresh_desired_column_view,
                 maintain_column_residency,
                 finish_column_loads,
-                start_column_loads,
                 rebuild_chunk_light,
                 publish_lit_columns,
+                start_column_loads,
             )
                 .chain(),
         );
@@ -830,7 +830,7 @@ fn leaving_residency_cancels_a_patch_that_reads_the_outgoing_scratch_column() {
 }
 
 #[test]
-fn initial_tiles_commit_compact_visible_groups_and_runtime_relight_stays_prompt() {
+fn initial_bootstrap_commits_nearby_columns_before_runtime_relight() {
     let height_chunks = 2;
     let (mut app, dimension, _) = streaming_app(height_chunks);
     *app.world_mut().resource_mut::<ViewDistance>() = ViewDistance::new(2);
@@ -894,9 +894,9 @@ fn initial_tiles_commit_compact_visible_groups_and_runtime_relight_stays_prompt(
     }
 
     let perf = world.resource::<crate::world::chunk::ChunkPerfCounters>();
-    assert_eq!(perf.light_patch_runs, 3);
-    assert_eq!(perf.light_patch_calculation_chunks, 42 * height_chunks);
-    assert_eq!(perf.light_patch_scratch_chunks, 33 * height_chunks);
+    assert_eq!(perf.light_patch_runs, 2);
+    assert_eq!(perf.light_patch_calculation_chunks, 34 * height_chunks);
+    assert_eq!(perf.light_patch_scratch_chunks, 25 * height_chunks);
     assert_eq!(perf.light_patch_committed_columns, 9);
     assert_eq!(perf.light_patch_stale_results, 0);
     assert_eq!(perf.light_patch_cancelled, 0);
@@ -990,9 +990,9 @@ fn initial_tiles_commit_compact_visible_groups_and_runtime_relight_stays_prompt(
     assert_eq!(packed & 0x0F, 15);
 
     let perf = world.resource::<crate::world::chunk::ChunkPerfCounters>();
-    assert_eq!(perf.light_patch_runs, 4);
-    assert_eq!(perf.light_patch_calculation_chunks, 51 * height_chunks);
-    assert_eq!(perf.light_patch_scratch_chunks, 41 * height_chunks);
+    assert_eq!(perf.light_patch_runs, 3);
+    assert_eq!(perf.light_patch_calculation_chunks, 43 * height_chunks);
+    assert_eq!(perf.light_patch_scratch_chunks, 33 * height_chunks);
     assert_eq!(perf.light_patch_committed_columns, 10);
     assert_eq!(perf.light_patch_stale_results, 0);
     assert_eq!(perf.light_patch_cancelled, 0);

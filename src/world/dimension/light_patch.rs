@@ -6,6 +6,7 @@ use bevy::{
 use crate::world::chunk::ChunkColumn;
 
 const INITIAL_LIGHT_TILE_WIDTH: i32 = 6;
+const INITIAL_LIGHT_BOOTSTRAP_RADII: [i32; 2] = [1, 2];
 
 /// Soft target for subchunks admitted to one asynchronous lighting patch.
 ///
@@ -65,13 +66,14 @@ impl InitialLightTile {
 }
 
 impl LightPatchPlan {
-    /// Builds one compact dependency-complete initial-light patch.
+    /// Builds one progressive, dependency-complete initial-light patch.
     ///
-    /// Tiles are anchored to the world chunk grid rather than the current
-    /// view. A tile is admitted only after every waiting column in its visible
-    /// intersection becomes ready. Columns outside the circular visible view
-    /// do not hold up a partial edge tile.
-    pub(crate) fn build_initial_tile(
+    /// The view center is admitted first. Complete view-centered radius-one
+    /// and radius-two bootstrap rings follow before work moves to tiles
+    /// anchored to the world chunk grid. A bootstrap ring or tile is admitted
+    /// only after every waiting column in its visible intersection becomes
+    /// ready. Columns outside the circular visible view do not hold up work.
+    pub(crate) fn build_initial_patch(
         visible_nearest_first: &[ChunkColumn],
         desired_view_center: ChunkColumn,
         mut state: impl FnMut(ChunkColumn) -> InitialLightColumnState,
@@ -82,20 +84,51 @@ impl LightPatchPlan {
             return Self::from_initial_commits(vec![desired_view_center]);
         }
 
+        let classified = visible_nearest_first
+            .iter()
+            .copied()
+            .map(|column| {
+                let column_state = if column == desired_view_center {
+                    center_state.expect("visible center state must be classified")
+                } else {
+                    state(column)
+                };
+                (column, column_state)
+            })
+            .collect::<Vec<_>>();
+
+        if center_is_visible {
+            for radius in INITIAL_LIGHT_BOOTSTRAP_RADII {
+                let mut ready = Vec::new();
+                let mut waiting = false;
+                for &(column, column_state) in &classified {
+                    if column_chebyshev_distance(column, desired_view_center) > i64::from(radius) {
+                        continue;
+                    }
+                    match column_state {
+                        InitialLightColumnState::Ready => ready.push(column),
+                        InitialLightColumnState::Waiting => waiting = true,
+                        InitialLightColumnState::Excluded => {}
+                    }
+                }
+                if waiting {
+                    return Self::default();
+                }
+                if !ready.is_empty() {
+                    return Self::from_initial_commits(ready);
+                }
+            }
+        }
+
         let mut tiles_nearest_first = Vec::<(InitialLightTile, InitialLightTileCandidates)>::new();
         let mut tile_indexes = HashMap::new();
-        for &column in visible_nearest_first {
+        for (column, column_state) in classified {
             let tile = InitialLightTile::containing(column);
             let tile_index = *tile_indexes.entry(tile).or_insert_with(|| {
                 let index = tiles_nearest_first.len();
                 tiles_nearest_first.push((tile, InitialLightTileCandidates::default()));
                 index
             });
-            let column_state = if column == desired_view_center {
-                center_state.expect("visible center state must be classified")
-            } else {
-                state(column)
-            };
             let candidates = &mut tiles_nearest_first[tile_index].1;
             match column_state {
                 InitialLightColumnState::Ready => candidates.ready.push(column),
@@ -216,6 +249,12 @@ impl LightPatchPlan {
     }
 }
 
+fn column_chebyshev_distance(left: ChunkColumn, right: ChunkColumn) -> i64 {
+    (i64::from(left.x()) - i64::from(right.x()))
+        .abs()
+        .max((i64::from(left.z()) - i64::from(right.z())).abs())
+}
+
 fn columns_touch(left: ChunkColumn, right: ChunkColumn) -> bool {
     (i64::from(left.x()) - i64::from(right.x())).abs() <= 1
         && (i64::from(left.z()) - i64::from(right.z())).abs() <= 1
@@ -258,7 +297,7 @@ mod tests {
         let center = ChunkColumn::new(2, -3);
         let visible = circle_nearest_first(center, 4);
         let mut classified = Vec::new();
-        let plan = LightPatchPlan::build_initial_tile(&visible, center, |column| {
+        let plan = LightPatchPlan::build_initial_patch(&visible, center, |column| {
             classified.push(column);
             InitialLightColumnState::Ready
         });
@@ -272,11 +311,93 @@ mod tests {
     }
 
     #[test]
+    fn view_centered_bootstrap_rings_cross_negative_world_tile_boundaries() {
+        let center = ChunkColumn::new(-6, -1);
+        let visible = circle_nearest_first(center, 4);
+        let excluded_neighbor = ChunkColumn::new(center.x() + 1, center.z());
+        let radius_one = LightPatchPlan::build_initial_patch(&visible, center, |column| {
+            if column == center || column == excluded_neighbor {
+                InitialLightColumnState::Excluded
+            } else if column_chebyshev_distance(column, center) <= 1 {
+                InitialLightColumnState::Ready
+            } else {
+                InitialLightColumnState::Waiting
+            }
+        });
+
+        let expected_radius_one = visible
+            .iter()
+            .copied()
+            .filter(|&column| {
+                column != center
+                    && column != excluded_neighbor
+                    && column_chebyshev_distance(column, center) <= 1
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(radius_one.commit_columns(), expected_radius_one);
+        assert_eq!(radius_one.calculation_columns().len(), 25);
+        assert!(radius_one.commit_columns().iter().any(|&column| {
+            InitialLightTile::containing(column) != InitialLightTile::containing(center)
+        }));
+
+        let radius_two = LightPatchPlan::build_initial_patch(&visible, center, |column| {
+            match column_chebyshev_distance(column, center) {
+                0 | 1 => InitialLightColumnState::Excluded,
+                2 => InitialLightColumnState::Ready,
+                _ => InitialLightColumnState::Waiting,
+            }
+        });
+        let expected_radius_two = visible
+            .iter()
+            .copied()
+            .filter(|&column| column_chebyshev_distance(column, center) == 2)
+            .collect::<Vec<_>>();
+        assert_eq!(radius_two.commit_columns(), expected_radius_two);
+        assert_eq!(radius_two.commit_columns().len(), 16);
+        assert_eq!(radius_two.calculation_columns().len(), 48);
+    }
+
+    #[test]
+    fn waiting_bootstrap_member_blocks_farther_ready_work() {
+        let center = ChunkColumn::new(-1, 0);
+        let visible = circle_nearest_first(center, 4);
+        let waiting_radius_one = ChunkColumn::new(center.x() - 1, center.z());
+        let farther_ready = ChunkColumn::new(center.x() + 3, center.z());
+        let blocked_radius_one = LightPatchPlan::build_initial_patch(&visible, center, |column| {
+            if column == center {
+                InitialLightColumnState::Excluded
+            } else if column == waiting_radius_one {
+                InitialLightColumnState::Waiting
+            } else if column_chebyshev_distance(column, center) <= 1 || column == farther_ready {
+                InitialLightColumnState::Ready
+            } else {
+                InitialLightColumnState::Excluded
+            }
+        });
+        assert!(blocked_radius_one.is_empty());
+
+        let waiting_radius_two = ChunkColumn::new(center.x() - 2, center.z());
+        let blocked_radius_two = LightPatchPlan::build_initial_patch(&visible, center, |column| {
+            let distance = column_chebyshev_distance(column, center);
+            if distance <= 1 {
+                InitialLightColumnState::Excluded
+            } else if column == waiting_radius_two {
+                InitialLightColumnState::Waiting
+            } else if distance == 2 || column == farther_ready {
+                InitialLightColumnState::Ready
+            } else {
+                InitialLightColumnState::Excluded
+            }
+        });
+        assert!(blocked_radius_two.is_empty());
+    }
+
+    #[test]
     fn initial_tiles_are_world_stable_across_zero_and_negative_coordinates() {
         let left = ChunkColumn::new(-1, 0);
         let right = ChunkColumn::new(0, 0);
         let center = ChunkColumn::new(20, 20);
-        let plan = LightPatchPlan::build_initial_tile(&[left, right], center, |_| {
+        let plan = LightPatchPlan::build_initial_patch(&[left, right], center, |_| {
             InitialLightColumnState::Ready
         });
 
@@ -285,7 +406,7 @@ mod tests {
         assert_eq!(plan.calculation_columns().len(), 9);
 
         let negative_tile = rectangle(-6, -1, -6, -1);
-        let plan = LightPatchPlan::build_initial_tile(&negative_tile, center, |_| {
+        let plan = LightPatchPlan::build_initial_patch(&negative_tile, center, |_| {
             InitialLightColumnState::Ready
         });
         assert_eq!(plan.commit_columns(), negative_tile.as_slice());
@@ -302,7 +423,7 @@ mod tests {
         let published_runtime_pending = ChunkColumn::new(0, 1);
         let visible = [ready, waiting, published_runtime_pending];
 
-        let blocked = LightPatchPlan::build_initial_tile(&visible, center, |column| {
+        let blocked = LightPatchPlan::build_initial_patch(&visible, center, |column| {
             if column == waiting {
                 InitialLightColumnState::Waiting
             } else if column == published_runtime_pending {
@@ -313,7 +434,7 @@ mod tests {
         });
         assert!(blocked.is_empty());
 
-        let plan = LightPatchPlan::build_initial_tile(&visible, center, |column| {
+        let plan = LightPatchPlan::build_initial_patch(&visible, center, |column| {
             if column == published_runtime_pending {
                 InitialLightColumnState::Excluded
             } else {
@@ -342,7 +463,7 @@ mod tests {
         assert!(!expected.is_empty());
         assert!(expected.len() < (INITIAL_LIGHT_TILE_WIDTH * INITIAL_LIGHT_TILE_WIDTH) as usize);
 
-        let plan = LightPatchPlan::build_initial_tile(&visible, center, |column| {
+        let plan = LightPatchPlan::build_initial_patch(&visible, center, |column| {
             if InitialLightTile::containing(column) == edge_tile {
                 InitialLightColumnState::Ready
             } else {
@@ -380,7 +501,7 @@ mod tests {
         let mut max_calculation_columns = 0;
 
         while !pending.is_empty() {
-            let plan = LightPatchPlan::build_initial_tile(&visible, center, |column| {
+            let plan = LightPatchPlan::build_initial_patch(&visible, center, |column| {
                 if pending.contains(&column) {
                     InitialLightColumnState::Ready
                 } else {
@@ -398,11 +519,11 @@ mod tests {
         }
 
         assert_eq!(visible.len(), 1_793);
-        assert_eq!(patch_runs, 63);
-        assert_eq!(calculation_columns, 3_373);
-        assert_eq!(scratch_columns, 1_580);
+        assert_eq!(patch_runs, 65);
+        assert_eq!(calculation_columns, 3_422);
+        assert_eq!(scratch_columns, 1_629);
         assert_eq!(max_calculation_columns, 64);
-        assert_eq!(calculation_columns * 5, 16_865);
+        assert_eq!(calculation_columns * 5, 17_110);
     }
 
     #[test]
