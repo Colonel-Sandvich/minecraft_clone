@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use avian3d::PhysicsPlugins;
 #[cfg(debug_assertions)]
@@ -20,14 +20,18 @@ use crate::{
     light::LightPlugin,
     memory::{MemoryTrackingPlugin, memory_profiler_enabled},
     mob::MobControllerPlugin,
-    player::{PlayerPlugin, cam::MouseSettings},
+    player::{Player, PlayerPlugin, cam::MouseSettings},
     textures::BlockTexturePlugin,
     ui::UIPlugin,
     world::chunk::{
-        Chunk, ChunkNeedsLightRebuild, ChunkNeedsMeshRebuild, ChunkNeedsRenderLightUpload,
-        ChunkPerfCounters, ChunkPosition, mesh::ChunkMeshLayer,
+        Chunk, ChunkColumn, ChunkNeedsLightRebuild, ChunkNeedsMeshRebuild,
+        ChunkNeedsRenderLightUpload, ChunkPerfCounters, ChunkPos, ChunkPosition,
+        mesh::ChunkMeshLayer,
     },
-    world::{WorldConfig, WorldMetadata, WorldPlugin, dimension::ViewDistance},
+    world::{
+        WorldConfig, WorldMetadata, WorldPlugin,
+        dimension::{Active, DesiredColumnView, Dimension, ViewDistance},
+    },
 };
 
 pub const FIXED_TICK_RATE_HZ: f64 = 20.0;
@@ -85,10 +89,146 @@ impl Plugin for AppPlugin {
         if memory_profiler_enabled() {
             app.add_plugins(MemoryTrackingPlugin);
         }
+        if std::env::var_os("MINECRAFT_CLONE_STREAM_TIMINGS").is_some() {
+            app.add_systems(Last, log_streaming_startup_milestones);
+        }
         // .insert_resource(FramepaceSettings {
         //     limiter: Limiter::from_framerate(60.0),
         // })
     }
+}
+
+#[derive(Default)]
+struct StreamingStartupTrace {
+    started: Option<Instant>,
+    updates: u64,
+    completed: u16,
+}
+
+fn log_streaming_startup_milestones(
+    dimension: Option<Single<&Dimension, With<Active>>>,
+    desired_view: Option<Res<DesiredColumnView>>,
+    dirty_meshes: Query<(), With<ChunkNeedsMeshRebuild>>,
+    player: Option<Single<&Transform, With<Player>>>,
+    mut trace: Local<StreamingStartupTrace>,
+) {
+    const MILESTONE_COUNT: usize = 10;
+    const ALL_MILESTONES: u16 = (1 << MILESTONE_COUNT) - 1;
+
+    if trace.completed == ALL_MILESTONES {
+        return;
+    }
+    trace.started.get_or_insert_with(Instant::now);
+    trace.updates += 1;
+    let Some(dimension) = dimension else {
+        return;
+    };
+    let Some(desired_view) = desired_view else {
+        return;
+    };
+    let Some(center) = desired_view.center() else {
+        return;
+    };
+    let dimension = dimension.into_inner();
+
+    let center_loaded = dimension.has_complete_loaded_column(center);
+    let dependencies_loaded = dimension.has_complete_resident_light_neighborhood(center);
+    let center_light_submitted = dimension
+        .resident_column_state(center)
+        .is_some_and(|state| state.light_patch_ticket().is_some() || state.is_lit());
+    let center_published = column_is_published(dimension, center);
+    let center_cpu_meshed = column_has_finished_cpu_mesh(dimension, center, &dirty_meshes);
+    let player_chunk =
+        player.map(|transform| ChunkPos::containing_translation(transform.translation));
+    let player_chunk_cpu_meshed = player_chunk
+        .is_some_and(|position| chunk_has_finished_cpu_mesh(dimension, position, &dirty_meshes));
+    let near_columns = center.chebyshev_neighborhood(1).collect::<Vec<_>>();
+    let near_published = near_columns
+        .iter()
+        .all(|&column| column_is_published(dimension, column));
+    let near_cpu_meshed = near_columns
+        .iter()
+        .all(|&column| column_has_finished_cpu_mesh(dimension, column, &dirty_meshes));
+    let local_columns = center.chebyshev_neighborhood(2).collect::<Vec<_>>();
+    let local_published = local_columns
+        .iter()
+        .all(|&column| column_is_published(dimension, column));
+    let local_cpu_meshed = local_columns
+        .iter()
+        .all(|&column| column_has_finished_cpu_mesh(dimension, column, &dirty_meshes));
+
+    for (index, (name, reached)) in [
+        ("center_loaded", center_loaded),
+        ("center_dependencies_loaded", dependencies_loaded),
+        ("center_light_submitted", center_light_submitted),
+        ("center_published", center_published),
+        ("center_cpu_meshed", center_cpu_meshed),
+        ("player_chunk_cpu_meshed", player_chunk_cpu_meshed),
+        ("near_3x3_published", near_published),
+        ("near_3x3_cpu_meshed", near_cpu_meshed),
+        ("local_5x5_published", local_published),
+        ("local_5x5_cpu_meshed", local_cpu_meshed),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let bit = 1 << index;
+        if !reached || trace.completed & bit != 0 {
+            continue;
+        }
+        trace.completed |= bit;
+        info!(
+            target: "perf",
+            milestone = name,
+            elapsed_ms = format_args!(
+                "{:.3}",
+                trace.started.expect("startup trace must be initialized").elapsed().as_secs_f64()
+                    * 1_000.0
+            ),
+            updates = trace.updates,
+            loaded_chunks = dimension.loaded_chunk_count(),
+            published_chunks = dimension.published_chunk_count(),
+            player_chunk = ?player_chunk,
+            "streaming startup milestone"
+        );
+    }
+}
+
+fn chunk_has_finished_cpu_mesh(
+    dimension: &Dimension,
+    position: ChunkPos,
+    dirty_meshes: &Query<(), With<ChunkNeedsMeshRebuild>>,
+) -> bool {
+    if !dimension.contains_published_chunk(position) {
+        return false;
+    }
+    let Some(entity) = dimension.loaded_chunk_entity(position) else {
+        return false;
+    };
+    dirty_meshes.get(entity).is_err()
+}
+
+fn column_is_published(dimension: &Dimension, column: ChunkColumn) -> bool {
+    dimension.contains_published_chunk(column.chunk(0))
+}
+
+fn column_has_finished_cpu_mesh(
+    dimension: &Dimension,
+    column: ChunkColumn,
+    dirty_meshes: &Query<(), With<ChunkNeedsMeshRebuild>>,
+) -> bool {
+    if !column_is_published(dimension, column) {
+        return false;
+    }
+    let Some(chunks) = dimension.complete_loaded_column(column) else {
+        return false;
+    };
+    for (_, entity) in chunks {
+        if dirty_meshes.get(entity).is_ok() {
+            return false;
+        }
+    }
+    true
 }
 
 pub fn run() {
@@ -171,6 +311,39 @@ fn log_frame_perf(
         dirty_light_rebuild = dirty_light_rebuild_positions.len(),
         dirty_light_rebuild_sample = %dirty_light_rebuild_sample,
         mesh_rebuilds_5s = chunk_perf.mesh_rebuilds,
+        mesh_rebuild_runs_5s = chunk_perf.mesh_rebuild_runs,
+        mesh_rebuild_ms_5s = format_args!(
+            "{:.3}",
+            chunk_perf.mesh_rebuild_elapsed.as_secs_f64() * 1_000.0
+        ),
+        mesh_rebuild_max_ms_5s = format_args!(
+            "{:.3}",
+            chunk_perf.mesh_rebuild_max_elapsed.as_secs_f64() * 1_000.0
+        ),
+        mesh_context_ms_5s = format_args!(
+            "{:.3}",
+            chunk_perf.mesh_context_elapsed.as_secs_f64() * 1_000.0
+        ),
+        mesh_context_max_ms_5s = format_args!(
+            "{:.3}",
+            chunk_perf.mesh_context_max_elapsed.as_secs_f64() * 1_000.0
+        ),
+        mesh_build_ms_5s = format_args!(
+            "{:.3}",
+            chunk_perf.mesh_build_elapsed.as_secs_f64() * 1_000.0
+        ),
+        mesh_build_max_ms_5s = format_args!(
+            "{:.3}",
+            chunk_perf.mesh_build_max_elapsed.as_secs_f64() * 1_000.0
+        ),
+        mesh_apply_ms_5s = format_args!(
+            "{:.3}",
+            chunk_perf.mesh_apply_elapsed.as_secs_f64() * 1_000.0
+        ),
+        mesh_apply_max_ms_5s = format_args!(
+            "{:.3}",
+            chunk_perf.mesh_apply_max_elapsed.as_secs_f64() * 1_000.0
+        ),
         light_rebuild_targets_5s = chunk_perf.light_rebuild_targets,
         light_patch_submitted_5s = chunk_perf.light_patch_runs,
         light_patch_accepted_5s = chunk_perf.light_patch_accepted_results,
