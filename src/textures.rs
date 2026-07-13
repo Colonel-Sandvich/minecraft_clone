@@ -1,6 +1,9 @@
 use bevy::{
-    asset::{AssetId, LoadedFolder, RenderAssetUsages},
-    image::{ImageAddressMode, ImageFilterMode, ImageSampler, ImageSamplerDescriptor},
+    asset::RenderAssetUsages,
+    image::{
+        ImageAddressMode, ImageFilterMode, ImageLoaderSettings, ImageSampler,
+        ImageSamplerDescriptor,
+    },
     platform::collections::HashMap,
     prelude::*,
     render::render_resource::{
@@ -40,38 +43,47 @@ impl Plugin for BlockTexturePlugin {
     }
 }
 
-#[derive(Resource, Default)]
-struct BlockTextureFolder(Handle<LoadedFolder>);
+#[derive(Resource)]
+struct BlockTextureSources(Vec<(&'static str, Handle<Image>)>);
 
 fn load_textures(mut commands: Commands, asset_server: Res<AssetServer>) {
-    commands.insert_resource(BlockTextureFolder(
-        asset_server.load_folder("textures/block"),
-    ));
+    let sources = used_terrain_texture_paths()
+        .into_iter()
+        .map(|path| {
+            let handle: Handle<Image> = asset_server
+                .load_builder()
+                .with_settings(|settings: &mut ImageLoaderSettings| {
+                    settings.asset_usage = RenderAssetUsages::MAIN_WORLD;
+                })
+                .load(path);
+            (path, handle)
+        })
+        .collect();
+    commands.insert_resource(BlockTextureSources(sources));
 }
 
 fn check_textures(
     mut next_state: ResMut<NextState<TextureState>>,
-    block_texture_folder: Res<BlockTextureFolder>,
-    mut messages: MessageReader<AssetEvent<LoadedFolder>>,
+    sources: Res<BlockTextureSources>,
+    asset_server: Res<AssetServer>,
 ) {
-    for message in messages.read() {
-        if message.is_loaded_with_dependencies(&block_texture_folder.0) {
-            next_state.set(TextureState::Finished);
-            info!("Textures loaded.");
-        }
+    if sources
+        .0
+        .iter()
+        .all(|(_, handle)| asset_server.is_loaded_with_dependencies(handle.id()))
+    {
+        next_state.set(TextureState::Finished);
+        info!(count = sources.0.len(), "Textures loaded.");
     }
 }
 
 fn setup(
     mut commands: Commands,
-    block_texture_handles: Res<BlockTextureFolder>,
-    asset_server: Res<AssetServer>,
-    loaded_folders: Res<Assets<LoadedFolder>>,
+    sources: Res<BlockTextureSources>,
     mut textures: ResMut<Assets<Image>>,
 ) {
-    let loaded_folder = loaded_folders.get(&block_texture_handles.0).unwrap();
     let (block_texture_map, terrain_texture, tile_size, mip_level_count) =
-        create_terrain_texture_array(loaded_folder, &asset_server, &mut textures);
+        create_terrain_texture_array(&sources, &mut textures);
 
     info!(
         "Terrain texture array: {} layers, {}x{}, {} mip levels, {}x anisotropy",
@@ -86,6 +98,7 @@ fn setup(
         terrain: terrain_texture,
     });
     commands.insert_resource(BlockTextureMap(block_texture_map));
+    commands.remove_resource::<BlockTextureSources>();
 }
 
 #[derive(Resource)]
@@ -103,8 +116,7 @@ impl BlockTextures {
 }
 
 fn create_terrain_texture_array(
-    loaded_folder: &LoadedFolder,
-    asset_server: &AssetServer,
+    sources: &BlockTextureSources,
     textures: &mut Assets<Image>,
 ) -> (
     HashMap<String, BlockTextureAnimation>,
@@ -112,20 +124,14 @@ fn create_terrain_texture_array(
     UVec2,
     u32,
 ) {
-    let used_paths = used_terrain_texture_paths();
-    let images_by_path = loaded_images_by_path(loaded_folder, asset_server);
-
-    let mut layers = HashMap::with_capacity(used_paths.len());
-    let mut source_layers = Vec::with_capacity(used_paths.len());
+    let mut layers = HashMap::with_capacity(sources.0.len());
+    let mut source_layers = Vec::with_capacity(sources.0.len());
     let mut source_size = None;
     let mut source_format = None;
 
-    for path in used_paths {
-        let id = images_by_path
-            .get(path)
-            .unwrap_or_else(|| panic!("terrain texture was not loaded: {path}"));
+    for (path, handle) in &sources.0 {
         let image = textures
-            .get(*id)
+            .get(handle)
             .unwrap_or_else(|| panic!("terrain texture asset is missing: {path}"));
         let data = image
             .data
@@ -174,7 +180,7 @@ fn create_terrain_texture_array(
         let base_layer = BlockTextureLayer::new(source_layers.len() as u32);
         let frame_count = append_source_texture_frames(&mut source_layers, data, size, tile_size);
         layers.insert(
-            path.to_owned(),
+            (*path).to_owned(),
             BlockTextureAnimation::new(base_layer, frame_count),
         );
     }
@@ -253,21 +259,6 @@ fn append_source_texture_frames(
     }
 
     frame_count
-}
-
-fn loaded_images_by_path(
-    loaded_folder: &LoadedFolder,
-    asset_server: &AssetServer,
-) -> HashMap<String, AssetId<Image>> {
-    let mut images_by_path = HashMap::with_capacity(loaded_folder.handles.len());
-    for handle in loaded_folder.handles.iter() {
-        let id = handle.id().typed_debug_checked::<Image>();
-        let Some(path) = asset_server.get_path(id) else {
-            continue;
-        };
-        images_by_path.insert(path.to_string(), id);
-    }
-    images_by_path
 }
 
 fn used_terrain_texture_paths() -> Vec<&'static str> {
