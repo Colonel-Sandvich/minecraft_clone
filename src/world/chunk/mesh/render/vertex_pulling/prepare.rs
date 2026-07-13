@@ -534,11 +534,8 @@ mod tests {
             .add_systems(Update, count_pending_face_payloads);
 
         let faces = ChunkMeshFaces::new(Vec::new());
-        let mesh = ChunkMeshLayer::new(
-            crate::block::BlockMaterialLayer::Opaque,
-            Vec3::ZERO,
-            &faces,
-        );
+        let mesh =
+            ChunkMeshLayer::new(crate::block::BlockMaterialLayer::Opaque, Vec3::ZERO, &faces);
         app.world_mut().spawn((mesh, faces, AlreadyPrepared));
 
         app.update();
