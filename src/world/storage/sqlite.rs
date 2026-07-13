@@ -5,15 +5,17 @@ use std::{
 
 use rusqlite::{Connection, OptionalExtension, params};
 
+use crate::player::PlayerId;
 use crate::world::{
-    chunk::{Chunk, ChunkHeightmap},
-    definition::{ChunkAddress, ColumnAddress},
+    chunk::{Chunk, ChunkHeightmap, ChunkPos},
+    definition::{ChunkAddress, ColumnAddress, DimensionId},
     generation::{WorldHeight, WorldMetadata},
 };
 
 use super::{
     ChunkStore, ChunkStoreResult, SQL_CREATE_WORLD_METADATA, SQL_INSERT_METADATA_VALUE,
-    SQL_SELECT_METADATA_VALUE, StoredChunk, StoredColumn, metadata_entries,
+    SQL_SELECT_METADATA_VALUE, StoredChunk, StoredColumn, StoredPlayer, StoredPlayerPosition,
+    metadata_entries,
 };
 
 const SQLITE_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -52,6 +54,35 @@ const SQL_UPSERT_COLUMN_HEIGHTMAP: &str =
     VALUES (?1, ?2, ?3, ?4)
     ON CONFLICT(dimension, x, z) DO UPDATE SET heightmap = excluded.heightmap";
 
+const SQL_CREATE_PLAYERS: &str = "CREATE TABLE IF NOT EXISTS players (
+    id INTEGER NOT NULL,
+    dimension INTEGER NOT NULL,
+    chunk_x INTEGER NOT NULL,
+    chunk_z INTEGER NOT NULL,
+    chunk_y INTEGER NOT NULL,
+    local_x REAL NOT NULL CHECK (local_x >= 0.0 AND local_x < 16.0),
+    local_z REAL NOT NULL CHECK (local_z >= 0.0 AND local_z < 16.0),
+    local_y REAL NOT NULL CHECK (local_y >= 0.0 AND local_y < 16.0),
+    PRIMARY KEY (id)
+) WITHOUT ROWID";
+const SQL_CREATE_PLAYERS_POSITION_INDEX: &str =
+    "CREATE INDEX IF NOT EXISTS players_by_chunk_position
+    ON players (dimension, chunk_x, chunk_z, chunk_y)";
+const SQL_SELECT_PLAYER: &str = "SELECT
+    dimension, chunk_x, chunk_z, chunk_y, local_x, local_z, local_y
+    FROM players WHERE id = ?1";
+const SQL_UPSERT_PLAYER: &str = "INSERT INTO players (
+    id, dimension, chunk_x, chunk_z, chunk_y, local_x, local_z, local_y
+) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+ON CONFLICT(id) DO UPDATE SET
+    dimension = excluded.dimension,
+    chunk_x = excluded.chunk_x,
+    chunk_z = excluded.chunk_z,
+    chunk_y = excluded.chunk_y,
+    local_x = excluded.local_x,
+    local_z = excluded.local_z,
+    local_y = excluded.local_y";
+
 pub struct SqliteChunkStore {
     path: PathBuf,
     metadata: WorldMetadata,
@@ -88,6 +119,8 @@ impl SqliteChunkStore {
         }
         connection.execute(SQL_CREATE_CHUNKS, [])?;
         connection.execute(SQL_CREATE_COLUMN_HEIGHTMAPS, [])?;
+        connection.execute(SQL_CREATE_PLAYERS, [])?;
+        connection.execute(SQL_CREATE_PLAYERS_POSITION_INDEX, [])?;
 
         Ok(())
     }
@@ -179,6 +212,60 @@ impl ChunkStore for SqliteChunkStore {
         save_column_heightmap(&tx, address.column(), heightmap)?;
         tx.commit()?;
 
+        Ok(())
+    }
+
+    fn load_player(&self, id: PlayerId) -> ChunkStoreResult<Option<StoredPlayer>> {
+        let connection = self.open_connection()?;
+        let row = connection
+            .query_row(SQL_SELECT_PLAYER, params![id.get()], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i32>(1)?,
+                    row.get::<_, i32>(2)?,
+                    row.get::<_, i32>(3)?,
+                    row.get::<_, f64>(4)?,
+                    row.get::<_, f64>(5)?,
+                    row.get::<_, f64>(6)?,
+                ))
+            })
+            .optional()?;
+
+        let Some((dimension, chunk_x, chunk_z, chunk_y, local_x, local_z, local_y)) = row else {
+            return Ok(None);
+        };
+        let dimension = u32::try_from(dimension)
+            .map(DimensionId::new)
+            .map_err(|_| super::ChunkStoreError::InvalidPlayerDimension {
+                player: id,
+                value: dimension,
+            })?;
+        let position = StoredPlayerPosition::try_new(
+            dimension,
+            ChunkPos::new(chunk_x, chunk_y, chunk_z),
+            bevy::math::DVec3::new(local_x, local_y, local_z),
+        )?;
+        Ok(Some(StoredPlayer::new(id, position)))
+    }
+
+    fn save_player(&self, player: &StoredPlayer) -> ChunkStoreResult<()> {
+        let connection = self.open_connection()?;
+        let position = player.position();
+        let chunk = position.chunk();
+        let local = position.local();
+        connection.execute(
+            SQL_UPSERT_PLAYER,
+            params![
+                player.id().get(),
+                i64::from(position.dimension().get()),
+                chunk.x(),
+                chunk.z(),
+                chunk.y(),
+                local.x,
+                local.z,
+                local.y,
+            ],
+        )?;
         Ok(())
     }
 }

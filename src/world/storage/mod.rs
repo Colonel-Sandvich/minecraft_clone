@@ -10,11 +10,12 @@ mod turso_backend;
 
 use std::{io::ErrorKind, sync::Arc};
 
-use bevy::prelude::*;
+use bevy::{math::DVec3, prelude::*};
 use rusqlite::ErrorCode;
 
+use crate::player::PlayerId;
 use crate::world::{
-    chunk::{Chunk, ChunkColumn, ChunkDecodeError, ChunkHeightmap, ChunkPos},
+    chunk::{CHUNK_SIZE, Chunk, ChunkColumn, ChunkDecodeError, ChunkHeightmap, ChunkPos},
     definition::{ChunkAddress, ColumnAddress, DimensionCatalog, DimensionId},
     generation::{WorldHeight, WorldMetadata},
 };
@@ -45,6 +46,123 @@ pub(crate) const SQL_SELECT_METADATA_VALUE: &str =
     "SELECT value FROM world_metadata WHERE key = ?1";
 pub(crate) const SQL_INSERT_METADATA_VALUE: &str =
     "INSERT INTO world_metadata (key, value) VALUES (?1, ?2)";
+
+/// A precision-preserving player position at the persistence boundary.
+///
+/// The chunk coordinate carries the large-scale position while the f64 `local`
+/// stays within one chunk. The wider local type preserves f32 runtime values
+/// immediately below negative chunk boundaries instead of rounding them up to
+/// 16. Keeping these parts separate also avoids tying a player row to the sparse
+/// `chunks` table and leaves room for independently persisted actor state.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct StoredPlayerPosition {
+    dimension: DimensionId,
+    chunk: ChunkPos,
+    local: DVec3,
+}
+
+impl StoredPlayerPosition {
+    pub fn try_new(
+        dimension: DimensionId,
+        chunk: ChunkPos,
+        local: DVec3,
+    ) -> Result<Self, InvalidStoredPlayerPosition> {
+        let chunk_size = CHUNK_SIZE as f64;
+        if !local.is_finite()
+            || local
+                .to_array()
+                .into_iter()
+                .any(|coordinate| !(0.0..chunk_size).contains(&coordinate))
+        {
+            return Err(InvalidStoredPlayerPosition::InvalidLocal {
+                bits: local.to_array().map(f64::to_bits),
+            });
+        }
+
+        Ok(Self {
+            dimension,
+            chunk,
+            local,
+        })
+    }
+
+    pub fn from_translation(
+        dimension: DimensionId,
+        translation: Vec3,
+    ) -> Result<Self, InvalidStoredPlayerPosition> {
+        if !translation.is_finite() {
+            return Err(InvalidStoredPlayerPosition::NonFiniteTranslation {
+                bits: translation.to_array().map(f32::to_bits),
+            });
+        }
+
+        let chunk = ChunkPos::containing_translation(translation);
+        let origin = chunk.as_ivec3().as_dvec3() * CHUNK_SIZE as f64;
+        Self::try_new(dimension, chunk, translation.as_dvec3() - origin)
+    }
+
+    pub const fn dimension(self) -> DimensionId {
+        self.dimension
+    }
+
+    pub const fn chunk(self) -> ChunkPos {
+        self.chunk
+    }
+
+    pub const fn local(self) -> DVec3 {
+        self.local
+    }
+
+    pub fn translation(self) -> Vec3 {
+        (self.chunk.as_ivec3().as_dvec3() * CHUNK_SIZE as f64 + self.local).as_vec3()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InvalidStoredPlayerPosition {
+    NonFiniteTranslation { bits: [u32; 3] },
+    InvalidLocal { bits: [u64; 3] },
+}
+
+impl std::fmt::Display for InvalidStoredPlayerPosition {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NonFiniteTranslation { bits } => {
+                write!(f, "player translation is not finite ({bits:08x?})")
+            }
+            Self::InvalidLocal { bits } => write!(
+                f,
+                "player local coordinates must be finite and within one chunk ({bits:016x?})"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for InvalidStoredPlayerPosition {}
+
+/// The independently persisted state for one player.
+///
+/// Future scalar profile fields can be added to this record and inventory can
+/// use a separate table keyed by `id`, without coupling either to chunk saves.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StoredPlayer {
+    id: PlayerId,
+    position: StoredPlayerPosition,
+}
+
+impl StoredPlayer {
+    pub const fn new(id: PlayerId, position: StoredPlayerPosition) -> Self {
+        Self { id, position }
+    }
+
+    pub const fn id(&self) -> PlayerId {
+        self.id
+    }
+
+    pub const fn position(&self) -> StoredPlayerPosition {
+        self.position
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoredChunk {
@@ -250,6 +368,17 @@ pub trait ChunkStore: Send + Sync + 'static {
         chunk: &Chunk,
         heightmap: &ChunkHeightmap,
     ) -> ChunkStoreResult<()>;
+
+    /// Loads one player record. The default preserves lightweight test stores
+    /// and backends that intentionally discard all persistence.
+    fn load_player(&self, _id: PlayerId) -> ChunkStoreResult<Option<StoredPlayer>> {
+        Ok(None)
+    }
+
+    /// Saves one player record. Concrete durable stores override this method.
+    fn save_player(&self, _player: &StoredPlayer) -> ChunkStoreResult<()> {
+        Ok(())
+    }
 }
 
 #[derive(Resource, Clone)]
@@ -303,6 +432,25 @@ impl ChunkRepository {
         self.store.save_chunk(address, chunk, heightmap)
     }
 
+    pub fn load_player(&self, id: PlayerId) -> ChunkStoreResult<Option<StoredPlayer>> {
+        let Some(player) = self.store.load_player(id)? else {
+            return Ok(None);
+        };
+        if player.id() != id {
+            return Err(ChunkStoreError::PlayerIdMismatch {
+                requested: id,
+                returned: player.id(),
+            });
+        }
+        self.validate_player_position(player.position())?;
+        Ok(Some(player))
+    }
+
+    pub fn save_player(&self, player: &StoredPlayer) -> ChunkStoreResult<()> {
+        self.validate_player_position(player.position())?;
+        self.store.save_player(player)
+    }
+
     pub fn dimension_height(&self, dimension: DimensionId) -> ChunkStoreResult<WorldHeight> {
         self.catalog
             .get(dimension)
@@ -314,6 +462,15 @@ impl ChunkRepository {
         let height = self.dimension_height(address.dimension())?;
         if !height.contains_chunk(address.position()) {
             return Err(ChunkStoreError::ChunkAddressOutOfRange { address, height });
+        }
+        Ok(())
+    }
+
+    fn validate_player_position(&self, position: StoredPlayerPosition) -> ChunkStoreResult<()> {
+        if self.catalog.get(position.dimension()).is_none() {
+            return Err(ChunkStoreError::UnknownDimension {
+                dimension: position.dimension(),
+            });
         }
         Ok(())
     }
@@ -403,6 +560,15 @@ pub enum ChunkStoreError {
         address: ChunkAddress,
         height: WorldHeight,
     },
+    InvalidPlayerPosition(InvalidStoredPlayerPosition),
+    PlayerIdMismatch {
+        requested: PlayerId,
+        returned: PlayerId,
+    },
+    InvalidPlayerDimension {
+        player: PlayerId,
+        value: i64,
+    },
     WorldMetadataMismatch {
         key: String,
         expected: String,
@@ -438,6 +604,21 @@ impl std::fmt::Display for ChunkStoreError {
                 f,
                 "chunk {address:?} is outside configured height 0..{}",
                 height.chunks()
+            ),
+            Self::InvalidPlayerPosition(error) => write!(f, "invalid player position: {error}"),
+            Self::PlayerIdMismatch {
+                requested,
+                returned,
+            } => write!(
+                f,
+                "store returned player {} for requested player {}",
+                returned.get(),
+                requested.get()
+            ),
+            Self::InvalidPlayerDimension { player, value } => write!(
+                f,
+                "stored player {} has invalid dimension id {value}",
+                player.get()
             ),
             Self::WorldMetadataMismatch {
                 key,
@@ -521,6 +702,12 @@ impl From<ChunkDecodeError> for ChunkStoreError {
 impl From<StoredColumnError> for ChunkStoreError {
     fn from(value: StoredColumnError) -> Self {
         Self::InvalidStoredColumn(value)
+    }
+}
+
+impl From<InvalidStoredPlayerPosition> for ChunkStoreError {
+    fn from(value: InvalidStoredPlayerPosition) -> Self {
+        Self::InvalidPlayerPosition(value)
     }
 }
 

@@ -1,12 +1,15 @@
 use std::{collections::HashMap, sync::Mutex};
 
+use crate::player::PlayerId;
 use crate::world::{
     chunk::{Chunk, ChunkHeightmap},
     definition::{ChunkAddress, ColumnAddress},
     generation::{WorldHeight, WorldMetadata},
 };
 
-use super::{ChunkStore, ChunkStoreError, ChunkStoreResult, StoredChunk, StoredColumn};
+use super::{
+    ChunkStore, ChunkStoreError, ChunkStoreResult, StoredChunk, StoredColumn, StoredPlayer,
+};
 
 pub struct InMemoryChunkStore {
     metadata: WorldMetadata,
@@ -16,6 +19,7 @@ pub struct InMemoryChunkStore {
 #[derive(Default)]
 struct InMemoryChunkStoreInner {
     columns: HashMap<ColumnAddress, InMemoryStoredColumn>,
+    players: HashMap<PlayerId, StoredPlayer>,
 }
 
 #[derive(Default)]
@@ -125,6 +129,27 @@ impl ChunkStore for InMemoryChunkStore {
         column.heightmap = heightmap.to_bytes();
         Ok(())
     }
+
+    fn load_player(&self, id: PlayerId) -> ChunkStoreResult<Option<StoredPlayer>> {
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| ChunkStoreError::LockPoisoned {
+                store: "in-memory chunk store",
+            })?;
+        Ok(inner.players.get(&id).cloned())
+    }
+
+    fn save_player(&self, player: &StoredPlayer) -> ChunkStoreResult<()> {
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| ChunkStoreError::LockPoisoned {
+                store: "in-memory chunk store",
+            })?;
+        inner.players.insert(player.id(), player.clone());
+        Ok(())
+    }
 }
 
 pub struct NoopChunkStore {
@@ -169,6 +194,14 @@ impl ChunkStore for NoopChunkStore {
         _chunk: &Chunk,
         _heightmap: &ChunkHeightmap,
     ) -> ChunkStoreResult<()> {
+        Ok(())
+    }
+
+    fn load_player(&self, _id: PlayerId) -> ChunkStoreResult<Option<StoredPlayer>> {
+        Ok(None)
+    }
+
+    fn save_player(&self, _player: &StoredPlayer) -> ChunkStoreResult<()> {
         Ok(())
     }
 }

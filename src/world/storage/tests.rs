@@ -6,9 +6,11 @@ use std::{
 
 use super::*;
 use crate::block::BlockType;
+use crate::player::PlayerId;
 use crate::world::chunk::{ChunkColumn, ChunkHeightmap, ChunkPos};
 use crate::world::definition::{ChunkAddress, ColumnAddress, DimensionId};
 use crate::world::generation::WorldHeight;
+use bevy::math::{DVec2, DVec3};
 
 static NEXT_TEST_STORE_ID: AtomicU64 = AtomicU64::new(0);
 
@@ -102,6 +104,42 @@ fn chunk_address(position: ChunkPos) -> ChunkAddress {
 
 fn column_address(column: ChunkColumn) -> ColumnAddress {
     ColumnAddress::new(TEST_DIMENSION, column)
+}
+
+fn stored_player(id: PlayerId, dimension: DimensionId, translation: Vec3) -> StoredPlayer {
+    StoredPlayer::new(
+        id,
+        StoredPlayerPosition::from_translation(dimension, translation).unwrap(),
+    )
+}
+
+fn assert_player_store_contract(store: &impl ChunkStore) {
+    let first_id = PlayerId::LOCAL;
+    let second_id = PlayerId::new(2);
+    let first = stored_player(
+        first_id,
+        DimensionId::OVERWORLD,
+        Vec3::new(-0.25, 31.5, 16.75),
+    );
+    let second = stored_player(
+        second_id,
+        DimensionId::GRASS_FLOOR,
+        Vec3::new(64.125, 4.75, -32.5),
+    );
+
+    store.save_player(&first).unwrap();
+    store.save_player(&second).unwrap();
+    assert_eq!(store.load_player(first_id).unwrap(), Some(first.clone()));
+    assert_eq!(store.load_player(second_id).unwrap(), Some(second.clone()));
+
+    let moved = stored_player(
+        first_id,
+        DimensionId::CENTER_GLASS_PLATFORM,
+        Vec3::new(17.5, 8.25, -0.125),
+    );
+    store.save_player(&moved).unwrap();
+    assert_eq!(store.load_player(first_id).unwrap(), Some(moved));
+    assert_eq!(store.load_player(second_id).unwrap(), Some(second));
 }
 
 fn assert_addressed_store_contract(store: &impl ChunkStore, height: WorldHeight) {
@@ -217,6 +255,109 @@ fn sqlite_store_roundtrips_full_chunks() {
 }
 
 #[test]
+fn stored_player_positions_preserve_fractional_and_negative_coordinates() {
+    for (translation, expected_chunk) in [
+        (Vec3::ZERO, ChunkPos::ZERO),
+        (Vec3::splat(16.0), ChunkPos::new(1, 1, 1)),
+        (Vec3::splat(-16.0), ChunkPos::new(-1, -1, -1)),
+        (Vec3::new(-0.25, 31.5, 16.75), ChunkPos::new(-1, 1, 1)),
+        (Vec3::new(-16.0, -0.125, -16.001), ChunkPos::new(-1, -1, -2)),
+        (Vec3::new(15.999, 0.0, 32.5), ChunkPos::new(0, 0, 2)),
+        (Vec3::splat(-f32::EPSILON), ChunkPos::new(-1, -1, -1)),
+    ] {
+        let position =
+            StoredPlayerPosition::from_translation(DimensionId::OVERWORLD, translation).unwrap();
+        assert_eq!(position.chunk(), expected_chunk);
+        assert_eq!(position.translation(), translation);
+        assert!(
+            position
+                .local()
+                .to_array()
+                .into_iter()
+                .all(|coordinate| (0.0..16.0).contains(&coordinate))
+        );
+    }
+
+    let negative = StoredPlayerPosition::from_translation(
+        DimensionId::OVERWORLD,
+        Vec3::new(-0.25, -16.0, -16.001),
+    )
+    .unwrap();
+    assert_eq!(negative.chunk(), ChunkPos::new(-1, -1, -2));
+    assert_eq!(negative.local().xy(), DVec2::new(15.75, 0.0));
+    assert!((negative.local().z - 15.999).abs() < 0.000_01);
+    for invalid in [Vec3::NAN, Vec3::INFINITY, Vec3::NEG_INFINITY] {
+        assert!(StoredPlayerPosition::from_translation(DimensionId::OVERWORLD, invalid).is_err());
+    }
+    for invalid_local in [
+        DVec3::new(16.0, 0.0, 0.0),
+        DVec3::new(-f64::EPSILON, 0.0, 0.0),
+        DVec3::NAN,
+        DVec3::INFINITY,
+    ] {
+        assert!(
+            StoredPlayerPosition::try_new(DimensionId::OVERWORLD, ChunkPos::ZERO, invalid_local,)
+                .is_err()
+        );
+    }
+}
+
+#[test]
+fn sqlite_store_roundtrips_and_upserts_independent_player_rows() {
+    let metadata = WorldMetadata::with_seed(42);
+    let store = test_sqlite_store(&metadata);
+
+    assert_player_store_contract(&*store);
+    assert_eq!(
+        store.load_chunk(chunk_address(ChunkPos::ZERO)).unwrap(),
+        None
+    );
+}
+
+#[test]
+fn sqlite_player_position_index_uses_dimension_x_z_y_chunk_order() {
+    let metadata = WorldMetadata::with_seed(42);
+    let store = test_sqlite_store(&metadata);
+    let connection = rusqlite::Connection::open(&store.path).unwrap();
+    let mut statement = connection
+        .prepare("PRAGMA index_info('players_by_chunk_position')")
+        .unwrap();
+    let columns = statement
+        .query_map([], |row| row.get::<_, String>(2))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+
+    assert_eq!(columns, ["dimension", "chunk_x", "chunk_z", "chunk_y"]);
+}
+
+#[test]
+fn sqlite_open_adds_player_schema_to_an_existing_world() {
+    let metadata = WorldMetadata::with_seed(42);
+    let store = test_sqlite_store(&metadata);
+    let address = chunk_address(ChunkPos::new(2, 1, -3));
+    let chunk = chunk_with_block(BlockType::Stone);
+    store
+        .save_chunk(address, &chunk, &default_heightmap())
+        .unwrap();
+    let connection = rusqlite::Connection::open(&store.path).unwrap();
+    connection.execute("DROP TABLE players", []).unwrap();
+    drop(connection);
+
+    let reopened = SqliteChunkStore::open(&store.path, &metadata).unwrap();
+
+    assert_eq!(
+        reopened
+            .load_chunk(address)
+            .unwrap()
+            .map(|(chunk, _)| chunk),
+        Some(chunk)
+    );
+    assert_eq!(reopened.load_player(PlayerId::LOCAL).unwrap(), None);
+    assert_player_store_contract(&reopened);
+}
+
+#[test]
 fn sqlite_store_isolates_dimensions_at_equal_coordinates() {
     let metadata = WorldMetadata::with_seed(42);
     let store = test_sqlite_store(&metadata);
@@ -287,6 +428,13 @@ fn in_memory_store_loads_columns_by_xz() {
 }
 
 #[test]
+fn in_memory_store_roundtrips_independent_player_rows() {
+    let store = InMemoryChunkStore::new(WorldMetadata::with_seed(42));
+
+    assert_player_store_contract(&store);
+}
+
+#[test]
 fn in_memory_store_isolates_dimensions_at_equal_coordinates() {
     let metadata = WorldMetadata::with_seed(42);
     let store = InMemoryChunkStore::new(metadata.clone());
@@ -318,6 +466,20 @@ fn noop_store_discards_chunks() {
     );
 }
 
+#[test]
+fn noop_store_discards_players() {
+    let store = NoopChunkStore::new(WorldMetadata::with_seed(42));
+    let player = stored_player(
+        PlayerId::LOCAL,
+        DimensionId::OVERWORLD,
+        Vec3::new(8.0, 24.0, 8.0),
+    );
+
+    store.save_player(&player).unwrap();
+
+    assert_eq!(store.load_player(PlayerId::LOCAL).unwrap(), None);
+}
+
 #[cfg(feature = "turso-store")]
 #[test]
 fn turso_store_roundtrips_full_chunks() {
@@ -333,6 +495,56 @@ fn turso_store_roundtrips_full_chunks() {
 
     let (loaded, _h) = store.load_chunk(address).unwrap().unwrap();
     assert_eq!(loaded, chunk);
+}
+
+#[cfg(feature = "turso-store")]
+#[test]
+fn turso_store_roundtrips_and_upserts_independent_player_rows() {
+    let metadata = WorldMetadata::with_seed(42);
+    let store = test_turso_store(&metadata);
+
+    assert_player_store_contract(&*store);
+    assert_eq!(
+        store.load_chunk(chunk_address(ChunkPos::ZERO)).unwrap(),
+        None
+    );
+}
+
+#[cfg(feature = "turso-store")]
+#[test]
+fn turso_player_position_index_uses_dimension_x_z_y_chunk_order() {
+    let metadata = WorldMetadata::with_seed(42);
+    let store = test_turso_store(&metadata);
+
+    assert_eq!(
+        store.player_position_index_columns_for_test().unwrap(),
+        ["dimension", "chunk_x", "chunk_z", "chunk_y"]
+    );
+}
+
+#[cfg(feature = "turso-store")]
+#[test]
+fn turso_open_adds_player_schema_to_an_existing_world() {
+    let metadata = WorldMetadata::with_seed(42);
+    let store = test_turso_store(&metadata);
+    let address = chunk_address(ChunkPos::new(2, 1, -3));
+    let chunk = chunk_with_block(BlockType::Stone);
+    store
+        .save_chunk(address, &chunk, &default_heightmap())
+        .unwrap();
+    store.drop_player_schema_for_test().unwrap();
+
+    let reopened = TursoChunkStore::open(&store.path, &metadata).unwrap();
+
+    assert_eq!(
+        reopened
+            .load_chunk(address)
+            .unwrap()
+            .map(|(chunk, _)| chunk),
+        Some(chunk)
+    );
+    assert_eq!(reopened.load_player(PlayerId::LOCAL).unwrap(), None);
+    assert_player_store_contract(&reopened);
 }
 
 #[cfg(feature = "turso-store")]
@@ -610,6 +822,18 @@ fn repository_rejects_unknown_dimensions() {
     ));
     assert!(matches!(
         repository.load_stored_column(ColumnAddress::new(unknown, ChunkColumn::new(0, 0))),
+        Err(ChunkStoreError::UnknownDimension { dimension }) if dimension == unknown
+    ));
+}
+
+#[test]
+fn repository_rejects_player_positions_in_unknown_dimensions() {
+    let repository = ChunkRepository::default();
+    let unknown = DimensionId::new(u32::MAX);
+    let player = stored_player(PlayerId::LOCAL, unknown, Vec3::new(1.0, 2.0, 3.0));
+
+    assert!(matches!(
+        repository.save_player(&player),
         Err(ChunkStoreError::UnknownDimension { dimension }) if dimension == unknown
     ));
 }

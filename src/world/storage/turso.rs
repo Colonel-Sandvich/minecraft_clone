@@ -3,16 +3,17 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use crate::player::PlayerId;
 use crate::world::{
-    chunk::{Chunk, ChunkHeightmap},
-    definition::{ChunkAddress, ColumnAddress},
+    chunk::{Chunk, ChunkHeightmap, ChunkPos},
+    definition::{ChunkAddress, ColumnAddress, DimensionId},
     generation::{WorldHeight, WorldMetadata},
 };
 
 use super::{
     ChunkStore, ChunkStoreError, ChunkStoreResult, SQL_CREATE_WORLD_METADATA,
-    SQL_INSERT_METADATA_VALUE, SQL_SELECT_METADATA_VALUE, StoredChunk, StoredColumn,
-    metadata_entries,
+    SQL_INSERT_METADATA_VALUE, SQL_SELECT_METADATA_VALUE, StoredChunk, StoredColumn, StoredPlayer,
+    StoredPlayerPosition, metadata_entries,
 };
 
 const SQL_CREATE_CHUNKS: &str = "CREATE TABLE IF NOT EXISTS chunks (
@@ -48,6 +49,35 @@ const SQL_UPSERT_COLUMN_HEIGHTMAP: &str =
     "INSERT INTO column_heightmaps (dimension, x, z, heightmap)
     VALUES (?1, ?2, ?3, ?4)
     ON CONFLICT(dimension, x, z) DO UPDATE SET heightmap = excluded.heightmap";
+
+const SQL_CREATE_PLAYERS: &str = "CREATE TABLE IF NOT EXISTS players (
+    id INTEGER NOT NULL,
+    dimension INTEGER NOT NULL,
+    chunk_x INTEGER NOT NULL,
+    chunk_z INTEGER NOT NULL,
+    chunk_y INTEGER NOT NULL,
+    local_x REAL NOT NULL CHECK (local_x >= 0.0 AND local_x < 16.0),
+    local_z REAL NOT NULL CHECK (local_z >= 0.0 AND local_z < 16.0),
+    local_y REAL NOT NULL CHECK (local_y >= 0.0 AND local_y < 16.0),
+    PRIMARY KEY (id)
+)";
+const SQL_CREATE_PLAYERS_POSITION_INDEX: &str =
+    "CREATE INDEX IF NOT EXISTS players_by_chunk_position
+    ON players (dimension, chunk_x, chunk_z, chunk_y)";
+const SQL_SELECT_PLAYER: &str = "SELECT
+    dimension, chunk_x, chunk_z, chunk_y, local_x, local_z, local_y
+    FROM players WHERE id = ?1";
+const SQL_UPSERT_PLAYER: &str = "INSERT INTO players (
+    id, dimension, chunk_x, chunk_z, chunk_y, local_x, local_z, local_y
+) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+ON CONFLICT(id) DO UPDATE SET
+    dimension = excluded.dimension,
+    chunk_x = excluded.chunk_x,
+    chunk_z = excluded.chunk_z,
+    chunk_y = excluded.chunk_y,
+    local_x = excluded.local_x,
+    local_z = excluded.local_z,
+    local_y = excluded.local_y";
 
 pub struct TursoChunkStore {
     database: turso::Database,
@@ -92,6 +122,10 @@ impl TursoChunkStore {
         }
         connection.execute(SQL_CREATE_CHUNKS, ()).await?;
         connection.execute(SQL_CREATE_COLUMN_HEIGHTMAPS, ()).await?;
+        connection.execute(SQL_CREATE_PLAYERS, ()).await?;
+        connection
+            .execute(SQL_CREATE_PLAYERS_POSITION_INDEX, ())
+            .await?;
 
         Ok(())
     }
@@ -108,6 +142,30 @@ impl TursoChunkStore {
                 .await
                 .expect("test metadata update must succeed");
         });
+    }
+
+    #[cfg(test)]
+    pub(super) fn drop_player_schema_for_test(&self) -> ChunkStoreResult<()> {
+        self.runtime.block_on(async {
+            let connection = self.database.connect()?;
+            connection.execute("DROP TABLE players", ()).await?;
+            Ok(())
+        })
+    }
+
+    #[cfg(test)]
+    pub(super) fn player_position_index_columns_for_test(&self) -> ChunkStoreResult<Vec<String>> {
+        self.runtime.block_on(async {
+            let connection = self.database.connect()?;
+            let mut rows = connection
+                .query("PRAGMA index_info('players_by_chunk_position')", ())
+                .await?;
+            let mut columns = Vec::new();
+            while let Some(row) = rows.next().await? {
+                columns.push(row.get::<String>(2)?);
+            }
+            Ok(columns)
+        })
     }
 }
 
@@ -216,6 +274,53 @@ impl ChunkStore for TursoChunkStore {
             save_column_heightmap(&transaction, address.column(), &heightmap_bytes).await?;
             transaction.commit().await?;
 
+            Ok(())
+        })
+    }
+
+    fn load_player(&self, id: PlayerId) -> ChunkStoreResult<Option<StoredPlayer>> {
+        self.runtime.block_on(async {
+            let connection = self.database.connect()?;
+            let mut rows = connection.query(SQL_SELECT_PLAYER, (id.get(),)).await?;
+            let Some(row) = rows.next().await? else {
+                return Ok(None);
+            };
+            let dimension_value = row.get::<i64>(0)?;
+            let dimension = u32::try_from(dimension_value)
+                .map(DimensionId::new)
+                .map_err(|_| ChunkStoreError::InvalidPlayerDimension {
+                    player: id,
+                    value: dimension_value,
+                })?;
+            let chunk = ChunkPos::new(row.get::<i32>(1)?, row.get::<i32>(3)?, row.get::<i32>(2)?);
+            let local =
+                bevy::math::DVec3::new(row.get::<f64>(4)?, row.get::<f64>(6)?, row.get::<f64>(5)?);
+            let position = StoredPlayerPosition::try_new(dimension, chunk, local)?;
+            Ok(Some(StoredPlayer::new(id, position)))
+        })
+    }
+
+    fn save_player(&self, player: &StoredPlayer) -> ChunkStoreResult<()> {
+        self.runtime.block_on(async {
+            let connection = self.database.connect()?;
+            let position = player.position();
+            let chunk = position.chunk();
+            let local = position.local();
+            connection
+                .execute(
+                    SQL_UPSERT_PLAYER,
+                    (
+                        player.id().get(),
+                        i64::from(position.dimension().get()),
+                        chunk.x(),
+                        chunk.z(),
+                        chunk.y(),
+                        local.x,
+                        local.z,
+                        local.y,
+                    ),
+                )
+                .await?;
             Ok(())
         })
     }
