@@ -2,7 +2,7 @@ use bevy::{platform::collections::HashSet, prelude::*};
 
 use crate::world::chunk::{
     ChunkColumn, ChunkInvalidationPlan, ChunkNeedsColliderRebuild, ChunkNeedsFluidStep,
-    ChunkNeedsLightRebuild, ChunkNeedsMeshRebuild, ChunkNeedsRenderLightUpload, ChunkNeedsSave,
+    ChunkNeedsLightRebuild, ChunkNeedsSave,
 };
 
 use super::Dimension;
@@ -21,13 +21,16 @@ pub(crate) fn apply_chunk_invalidations(
         let Some(entity) = dimension.published_chunk_entity(position) else {
             continue;
         };
+        if effects.needs_mesh_rebuild() {
+            dimension.enqueue_mesh_rebuild(position);
+        }
+        if effects.needs_render_light_upload() {
+            dimension.enqueue_render_light_upload(position);
+        }
         let mut entity = commands.entity(entity);
 
         if effects.needs_save() {
             entity.insert(ChunkNeedsSave);
-        }
-        if effects.needs_mesh_rebuild() {
-            entity.insert(ChunkNeedsMeshRebuild);
         }
         if effects.needs_collider_rebuild() {
             entity.insert(ChunkNeedsColliderRebuild);
@@ -37,9 +40,6 @@ pub(crate) fn apply_chunk_invalidations(
         }
         if effects.needs_fluid_step() {
             entity.insert(ChunkNeedsFluidStep);
-        }
-        if effects.needs_render_light_upload() {
-            entity.insert(ChunkNeedsRenderLightUpload);
         }
     }
 
@@ -94,11 +94,11 @@ mod tests {
         dimension.register_published_chunk(origin, own);
         dimension.register_published_chunk(origin.offset(IVec3::Y), upper);
         dimension.register_published_chunk(origin.offset(IVec3::X), adjacent_column);
-        app.world_mut().spawn((dimension, Active));
+        let active_dimension = app.world_mut().spawn((dimension, Active)).id();
 
         let mut other_dimension = Dimension::default();
         other_dimension.register_published_chunk(origin, foreign_same_position);
-        app.world_mut().spawn(other_dimension);
+        let other_dimension = app.world_mut().spawn(other_dimension).id();
 
         let mut plan = ChunkInvalidationPlan::new();
         plan.record_cell_delta(
@@ -114,7 +114,19 @@ mod tests {
 
         let world = app.world();
         assert!(world.get::<ChunkNeedsSave>(own).is_some());
-        assert!(world.get::<ChunkNeedsMeshRebuild>(own).is_some());
+        assert!(
+            world
+                .get::<Dimension>(active_dimension)
+                .unwrap()
+                .has_pending_mesh_rebuild(origin)
+        );
+        assert_eq!(
+            world
+                .get::<Dimension>(active_dimension)
+                .unwrap()
+                .pending_mesh_rebuild_count(),
+            1
+        );
         assert!(world.get::<ChunkNeedsColliderRebuild>(own).is_some());
         assert!(world.get::<ChunkNeedsLightRebuild>(own).is_some());
         assert!(world.get::<ChunkNeedsFluidStep>(own).is_some());
@@ -122,7 +134,6 @@ mod tests {
         for entity in [upper, adjacent_column] {
             assert!(world.get::<ChunkNeedsLightRebuild>(entity).is_some());
             assert!(world.get::<ChunkNeedsSave>(entity).is_none());
-            assert!(world.get::<ChunkNeedsMeshRebuild>(entity).is_none());
         }
 
         assert!(world.get::<ChunkNeedsSave>(foreign_same_position).is_none());
@@ -130,6 +141,12 @@ mod tests {
             world
                 .get::<ChunkNeedsLightRebuild>(foreign_same_position)
                 .is_none()
+        );
+        assert!(
+            !world
+                .get::<Dimension>(other_dimension)
+                .unwrap()
+                .has_pending_mesh_rebuild(origin)
         );
     }
 }

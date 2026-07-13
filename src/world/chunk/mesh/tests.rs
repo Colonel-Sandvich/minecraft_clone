@@ -11,8 +11,7 @@ use crate::quad::Direction;
 use crate::textures::TextureState;
 use crate::world::chunk::mesh::mesher::{build, build_reference};
 use crate::world::chunk::{
-    CHUNK_ISIZE, CHUNK_SIZE, Chunk, ChunkCell, ChunkLight, ChunkNeedsMeshRebuild,
-    ChunkNeedsRenderLightUpload, ChunkPos, ChunkPosition, LocalBlockPos,
+    CHUNK_ISIZE, CHUNK_SIZE, Chunk, ChunkCell, ChunkLight, ChunkPos, ChunkPosition, LocalBlockPos,
 };
 use crate::world::dimension::{Active, Dimension, DimensionStreamingSet};
 
@@ -332,25 +331,22 @@ fn indexed_face_ao_matches_reference_corner_order_for_all_directions() {
 }
 
 #[test]
-fn mesh_rebuild_marker_is_removed_after_rebuild() {
+fn queued_mesh_rebuild_is_consumed_after_rebuild() {
     let mut app = mesh_rebuild_app();
 
     let mut chunk = Chunk::default();
     chunk.set_cell_xyz(0, 0, 0, block_cell(BlockType::Stone));
     let chunk_entity = app
         .world_mut()
-        .spawn((
-            ChunkPosition::from(IVec3::ZERO),
-            chunk,
-            ChunkNeedsMeshRebuild,
-        ))
+        .spawn((ChunkPosition::from(IVec3::ZERO), chunk))
         .id();
     register_active_chunk(&mut app, ChunkPos::ZERO, chunk_entity);
+    enqueue_active_mesh_rebuild(&mut app, ChunkPos::ZERO);
 
     app.update();
 
     let world = app.world();
-    assert!(world.get::<ChunkNeedsMeshRebuild>(chunk_entity).is_none());
+    assert!(!active_dimension(world).has_pending_mesh_rebuild(ChunkPos::ZERO));
     let children = world.get::<Children>(chunk_entity).unwrap();
     let mesh_child_count = children
         .iter()
@@ -363,18 +359,18 @@ fn mesh_rebuild_marker_is_removed_after_rebuild() {
 struct PublishedThisUpdate;
 
 fn record_test_publication(
-    mut commands: Commands,
-    published: Query<Entity, With<PublishedThisUpdate>>,
+    dimension: Single<&mut Dimension, With<Active>>,
+    published: Query<&ChunkPosition, With<PublishedThisUpdate>>,
 ) {
-    for entity in &published {
-        commands
-            .entity(entity)
-            .insert((ChunkNeedsMeshRebuild, ChunkNeedsRenderLightUpload));
+    let mut dimension = dimension.into_inner();
+    for position in &published {
+        dimension.enqueue_mesh_rebuild(position.chunk_pos());
+        dimension.enqueue_render_light_upload(position.chunk_pos());
     }
 }
 
 #[test]
-fn publication_markers_are_consumed_by_visual_work_in_the_same_update() {
+fn publication_work_is_consumed_by_visual_systems_in_the_same_update() {
     let mut app = App::new();
     app.add_plugins(MinimalPlugins)
         .add_plugins(StatesPlugin)
@@ -406,12 +402,8 @@ fn publication_markers_are_consumed_by_visual_work_in_the_same_update() {
     app.update();
 
     let world = app.world();
-    assert!(world.get::<ChunkNeedsMeshRebuild>(chunk_entity).is_none());
-    assert!(
-        world
-            .get::<ChunkNeedsRenderLightUpload>(chunk_entity)
-            .is_none()
-    );
+    assert!(!active_dimension(world).has_pending_mesh_rebuild(ChunkPos::ZERO));
+    assert!(!active_dimension(world).has_pending_render_light_upload(ChunkPos::ZERO));
     let mesh_children = world
         .get::<Children>(chunk_entity)
         .unwrap()
@@ -419,6 +411,51 @@ fn publication_markers_are_consumed_by_visual_work_in_the_same_update() {
         .filter(|child| world.get::<ChunkMeshLayer>(*child).is_some())
         .count();
     assert_eq!(mesh_children, 1);
+}
+
+#[test]
+fn visual_work_waits_until_texture_assets_are_ready() {
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins)
+        .add_plugins(StatesPlugin)
+        .init_state::<TextureState>();
+    super::systems::install(&mut app);
+    add_active_dimension(&mut app);
+
+    let mut chunk = Chunk::default();
+    chunk.set_cell_xyz(0, 0, 0, block_cell(BlockType::Stone));
+    let entity = app
+        .world_mut()
+        .spawn((
+            ChunkPosition::from(ChunkPos::ZERO),
+            chunk,
+            ChunkLight::default(),
+        ))
+        .id();
+    register_active_chunk(&mut app, ChunkPos::ZERO, entity);
+    enqueue_active_mesh_rebuild(&mut app, ChunkPos::ZERO);
+    enqueue_active_light_upload(&mut app, ChunkPos::ZERO);
+
+    app.update();
+
+    assert!(
+        active_dimension(app.world()).has_pending_mesh_rebuild(ChunkPos::ZERO),
+        "disabled consumers must leave queued mesh work intact"
+    );
+    assert!(
+        active_dimension(app.world()).has_pending_render_light_upload(ChunkPos::ZERO),
+        "disabled consumers must leave queued light uploads intact"
+    );
+    assert!(app.world().get::<Children>(entity).is_none());
+
+    app.world_mut()
+        .resource_mut::<NextState<TextureState>>()
+        .set(TextureState::Finished);
+    app.update();
+
+    assert!(!active_dimension(app.world()).has_pending_mesh_rebuild(ChunkPos::ZERO));
+    assert!(!active_dimension(app.world()).has_pending_render_light_upload(ChunkPos::ZERO));
+    assert!(app.world().get::<Children>(entity).is_some());
 }
 
 #[test]
@@ -433,10 +470,10 @@ fn mesh_rebuild_reuses_layer_entity_and_uploads_same_count_topology_changes() {
             ChunkPosition::from(IVec3::ZERO),
             chunk,
             Transform::from_xyz(16.0, 0.0, 0.0),
-            ChunkNeedsMeshRebuild,
         ))
         .id();
     register_active_chunk(&mut app, ChunkPos::ZERO, chunk_entity);
+    enqueue_active_mesh_rebuild(&mut app, ChunkPos::ZERO);
 
     app.update();
 
@@ -462,8 +499,8 @@ fn mesh_rebuild_reuses_layer_entity_and_uploads_same_count_topology_changes() {
             chunk.set_cell_xyz(1, 0, 0, block_cell(BlockType::Stone));
         }
         entity.get_mut::<Transform>().unwrap().translation = Vec3::new(32.0, 0.0, 0.0);
-        entity.insert(ChunkNeedsMeshRebuild);
     }
+    enqueue_active_mesh_rebuild(&mut app, ChunkPos::ZERO);
 
     app.update();
 
@@ -498,13 +535,10 @@ fn consecutive_mesh_rebuild_preserves_changed_count_face_payload() {
     chunk.set_cell_xyz(0, 0, 0, block_cell(BlockType::Stone));
     let chunk_entity = app
         .world_mut()
-        .spawn((
-            ChunkPosition::from(IVec3::ZERO),
-            chunk,
-            ChunkNeedsMeshRebuild,
-        ))
+        .spawn((ChunkPosition::from(IVec3::ZERO), chunk))
         .id();
     register_active_chunk(&mut app, ChunkPos::ZERO, chunk_entity);
+    enqueue_active_mesh_rebuild(&mut app, ChunkPos::ZERO);
 
     app.update();
 
@@ -524,8 +558,8 @@ fn consecutive_mesh_rebuild_preserves_changed_count_face_payload() {
             .get_mut::<Chunk>()
             .unwrap()
             .set_cell_xyz(1, 0, 0, block_cell(BlockType::Stone));
-        entity.insert(ChunkNeedsMeshRebuild);
     }
+    enqueue_active_mesh_rebuild(&mut app, ChunkPos::ZERO);
 
     app.update();
 
@@ -560,13 +594,10 @@ fn mesh_rebuild_despawns_material_layers_no_longer_emitted() {
     chunk.set_cell_xyz(1, 0, 0, block_cell(BlockType::Glass));
     let chunk_entity = app
         .world_mut()
-        .spawn((
-            ChunkPosition::from(IVec3::ZERO),
-            chunk,
-            ChunkNeedsMeshRebuild,
-        ))
+        .spawn((ChunkPosition::from(IVec3::ZERO), chunk))
         .id();
     register_active_chunk(&mut app, ChunkPos::ZERO, chunk_entity);
+    enqueue_active_mesh_rebuild(&mut app, ChunkPos::ZERO);
 
     app.update();
 
@@ -585,8 +616,8 @@ fn mesh_rebuild_despawns_material_layers_no_longer_emitted() {
             .get_mut::<Chunk>()
             .unwrap()
             .set_cell_xyz(1, 0, 0, ChunkCell::EMPTY);
-        entity.insert(ChunkNeedsMeshRebuild);
     }
+    enqueue_active_mesh_rebuild(&mut app, ChunkPos::ZERO);
 
     app.update();
 
@@ -616,11 +647,7 @@ fn mesh_rebuild_is_scoped_to_active_dimension_with_duplicate_coordinates() {
     active_center_chunk.set_cell_xyz(15, 0, 0, block_cell(BlockType::Stone));
     let active_center = app
         .world_mut()
-        .spawn((
-            ChunkPosition::from(center),
-            active_center_chunk,
-            ChunkNeedsMeshRebuild,
-        ))
+        .spawn((ChunkPosition::from(center), active_center_chunk))
         .id();
     let active_right = app
         .world_mut()
@@ -631,11 +658,7 @@ fn mesh_rebuild_is_scoped_to_active_dimension_with_duplicate_coordinates() {
     foreign_center_chunk.set_cell_xyz(15, 0, 0, block_cell(BlockType::Stone));
     let foreign_center = app
         .world_mut()
-        .spawn((
-            ChunkPosition::from(center),
-            foreign_center_chunk,
-            ChunkNeedsMeshRebuild,
-        ))
+        .spawn((ChunkPosition::from(center), foreign_center_chunk))
         .id();
     let mut foreign_right_chunk = Chunk::default();
     foreign_right_chunk.set_cell_xyz(0, 0, 0, block_cell(BlockType::Stone));
@@ -648,12 +671,14 @@ fn mesh_rebuild_is_scoped_to_active_dimension_with_duplicate_coordinates() {
     register_dimension_chunk(&mut app, active_dimension, right, active_right);
     register_dimension_chunk(&mut app, foreign_dimension, center, foreign_center);
     register_dimension_chunk(&mut app, foreign_dimension, right, foreign_right);
+    enqueue_dimension_mesh_rebuild(&mut app, active_dimension, center);
+    enqueue_dimension_mesh_rebuild(&mut app, foreign_dimension, center);
 
     app.update();
 
     let world = app.world();
-    assert!(world.get::<ChunkNeedsMeshRebuild>(active_center).is_none());
-    assert!(world.get::<ChunkNeedsMeshRebuild>(foreign_center).is_some());
+    assert!(!dimension(world, active_dimension).has_pending_mesh_rebuild(center));
+    assert!(dimension(world, foreign_dimension).has_pending_mesh_rebuild(center));
     assert!(world.get::<Children>(foreign_center).is_none());
     let active_layer = world.get::<Children>(active_center).unwrap()[0];
     assert_eq!(
@@ -666,7 +691,41 @@ fn mesh_rebuild_is_scoped_to_active_dimension_with_duplicate_coordinates() {
 }
 
 #[test]
-fn light_upload_marker_updates_existing_chunk_mesh_light() {
+fn replacement_chunk_rejects_stale_visual_work_and_reenters_at_the_new_entity() {
+    let mut app = mesh_rebuild_app();
+    let position = ChunkPos::ZERO;
+
+    let mut old_chunk = Chunk::default();
+    old_chunk.set_cell_xyz(0, 0, 0, block_cell(BlockType::Stone));
+    let old_entity = app
+        .world_mut()
+        .spawn((ChunkPosition::from(position), old_chunk))
+        .id();
+    register_active_chunk(&mut app, position, old_entity);
+    enqueue_active_mesh_rebuild(&mut app, position);
+
+    let mut replacement_chunk = Chunk::default();
+    replacement_chunk.set_cell_xyz(1, 0, 0, block_cell(BlockType::Glass));
+    let replacement_entity = app
+        .world_mut()
+        .spawn((ChunkPosition::from(position), replacement_chunk))
+        .id();
+    register_active_chunk(&mut app, position, replacement_entity);
+    enqueue_active_mesh_rebuild(&mut app, position);
+
+    app.update();
+
+    assert!(app.world().get::<Children>(old_entity).is_none());
+    let replacement_children = app
+        .world()
+        .get::<Children>(replacement_entity)
+        .expect("replacement work must target the replacement entity");
+    assert_eq!(replacement_children.len(), 1);
+    assert!(!active_dimension(app.world()).has_pending_mesh_rebuild(position));
+}
+
+#[test]
+fn queued_light_upload_updates_existing_chunk_mesh_light() {
     let mut app = light_upload_app();
 
     let mut chunk_light = ChunkLight::default();
@@ -683,22 +742,18 @@ fn light_upload_marker_updates_existing_chunk_mesh_light() {
             ChunkPosition::from(IVec3::ZERO),
             Chunk::default(),
             chunk_light,
-            ChunkNeedsRenderLightUpload,
         ))
         .id();
     register_active_chunk(&mut app, ChunkPos::ZERO, chunk_entity);
+    enqueue_active_light_upload(&mut app, ChunkPos::ZERO);
     let child_entity = spawn_light_child(app.world_mut(), chunk_entity, empty_light_data());
     let sibling_child_entity = spawn_light_child(app.world_mut(), chunk_entity, empty_light_data());
 
     app.update();
 
     let world = app.world();
-    assert!(
-        world
-            .get::<ChunkNeedsRenderLightUpload>(chunk_entity)
-            .is_none()
-    );
-    assert!(world.get::<ChunkNeedsMeshRebuild>(chunk_entity).is_none());
+    assert!(!active_dimension(world).has_pending_render_light_upload(ChunkPos::ZERO));
+    assert!(!active_dimension(world).has_pending_mesh_rebuild(ChunkPos::ZERO));
     let child_light = world.get::<ChunkMeshLight>(child_entity).unwrap();
     let sibling_child_light = world.get::<ChunkMeshLight>(sibling_child_entity).unwrap();
     assert_eq!(child_light.data(), expected_light_data.as_ref());
@@ -728,10 +783,10 @@ fn light_upload_prefers_the_authoritative_prepared_patch_payload() {
             Chunk::default(),
             ChunkLight::default(),
             PreparedChunkMeshLight::new(prepared_data.clone()),
-            ChunkNeedsRenderLightUpload,
         ))
         .id();
     register_active_chunk(&mut app, ChunkPos::ZERO, chunk_entity);
+    enqueue_active_light_upload(&mut app, ChunkPos::ZERO);
     let child = spawn_light_child(app.world_mut(), chunk_entity, empty_light_data());
 
     app.update();
@@ -774,11 +829,7 @@ fn light_upload_is_scoped_to_active_dimension_with_duplicate_coordinates() {
 
     let active_center = app
         .world_mut()
-        .spawn((
-            ChunkPosition::from(center),
-            active_center_light,
-            ChunkNeedsRenderLightUpload,
-        ))
+        .spawn((ChunkPosition::from(center), active_center_light))
         .id();
     let active_neighbor = app
         .world_mut()
@@ -786,11 +837,7 @@ fn light_upload_is_scoped_to_active_dimension_with_duplicate_coordinates() {
         .id();
     let foreign_center = app
         .world_mut()
-        .spawn((
-            ChunkPosition::from(center),
-            foreign_center_light,
-            ChunkNeedsRenderLightUpload,
-        ))
+        .spawn((ChunkPosition::from(center), foreign_center_light))
         .id();
     let foreign_neighbor = app
         .world_mut()
@@ -801,6 +848,8 @@ fn light_upload_is_scoped_to_active_dimension_with_duplicate_coordinates() {
     register_dimension_chunk(&mut app, active_dimension, right, active_neighbor);
     register_dimension_chunk(&mut app, foreign_dimension, center, foreign_center);
     register_dimension_chunk(&mut app, foreign_dimension, right, foreign_neighbor);
+    enqueue_dimension_light_upload(&mut app, active_dimension, center);
+    enqueue_dimension_light_upload(&mut app, foreign_dimension, center);
 
     let active_child = spawn_light_child(app.world_mut(), active_center, empty_light_data());
     let foreign_initial: Arc<[u32]> = Arc::from([0xDEAD_BEEF]);
@@ -809,16 +858,8 @@ fn light_upload_is_scoped_to_active_dimension_with_duplicate_coordinates() {
     app.update();
 
     let world = app.world();
-    assert!(
-        world
-            .get::<ChunkNeedsRenderLightUpload>(active_center)
-            .is_none()
-    );
-    assert!(
-        world
-            .get::<ChunkNeedsRenderLightUpload>(foreign_center)
-            .is_some()
-    );
+    assert!(!dimension(world, active_dimension).has_pending_render_light_upload(center));
+    assert!(dimension(world, foreign_dimension).has_pending_render_light_upload(center));
     assert_eq!(
         world.get::<ChunkMeshLight>(active_child).unwrap().data(),
         expected_active.as_ref()
@@ -840,13 +881,10 @@ fn mesh_rebuild_new_layer_child_reuses_existing_light_data() {
 
     let chunk_entity = app
         .world_mut()
-        .spawn((
-            ChunkPosition::from(IVec3::ZERO),
-            chunk,
-            ChunkNeedsMeshRebuild,
-        ))
+        .spawn((ChunkPosition::from(IVec3::ZERO), chunk))
         .id();
     register_active_chunk(&mut app, ChunkPos::ZERO, chunk_entity);
+    enqueue_active_mesh_rebuild(&mut app, ChunkPos::ZERO);
     spawn_mesh_layer_child(
         app.world_mut(),
         chunk_entity,
@@ -857,7 +895,7 @@ fn mesh_rebuild_new_layer_child_reuses_existing_light_data() {
     app.update();
 
     let world = app.world();
-    assert!(world.get::<ChunkNeedsMeshRebuild>(chunk_entity).is_none());
+    assert!(!active_dimension(world).has_pending_mesh_rebuild(ChunkPos::ZERO));
     let children = world.get::<Children>(chunk_entity).unwrap();
     let child_light_data = children
         .iter()
@@ -909,6 +947,46 @@ fn register_dimension_chunk(app: &mut App, dimension: Entity, position: ChunkPos
         .get_mut::<Dimension>()
         .unwrap()
         .register_published_chunk(position, chunk);
+}
+
+fn dimension(world: &World, entity: Entity) -> &Dimension {
+    world
+        .get::<Dimension>(entity)
+        .expect("test dimension must exist")
+}
+
+fn active_dimension(world: &World) -> &Dimension {
+    dimension(world, world.resource::<TestDimension>().0)
+}
+
+fn enqueue_active_mesh_rebuild(app: &mut App, position: ChunkPos) {
+    let dimension = app.world().resource::<TestDimension>().0;
+    enqueue_dimension_mesh_rebuild(app, dimension, position);
+}
+
+fn enqueue_dimension_mesh_rebuild(app: &mut App, dimension: Entity, position: ChunkPos) {
+    assert!(
+        app.world_mut()
+            .entity_mut(dimension)
+            .get_mut::<Dimension>()
+            .unwrap()
+            .enqueue_mesh_rebuild(position)
+    );
+}
+
+fn enqueue_active_light_upload(app: &mut App, position: ChunkPos) {
+    let dimension = app.world().resource::<TestDimension>().0;
+    enqueue_dimension_light_upload(app, dimension, position);
+}
+
+fn enqueue_dimension_light_upload(app: &mut App, dimension: Entity, position: ChunkPos) {
+    assert!(
+        app.world_mut()
+            .entity_mut(dimension)
+            .get_mut::<Dimension>()
+            .unwrap()
+            .enqueue_render_light_upload(position)
+    );
 }
 
 fn empty_light_data() -> Arc<[u32]> {

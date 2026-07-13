@@ -8,9 +8,8 @@ use crate::{
     world::{
         chunk::{
             ChunkColumn, ChunkContentCounts, ChunkInvalidationPlan, ChunkLight,
-            ChunkNeedsColliderRebuild, ChunkNeedsFluidStep, ChunkNeedsLightRebuild,
-            ChunkNeedsRenderLightUpload, ChunkNeedsSave, ChunkPerfCounters, ChunkPos,
-            ChunkPosition,
+            ChunkNeedsColliderRebuild, ChunkNeedsFluidStep, ChunkNeedsLightRebuild, ChunkNeedsSave,
+            ChunkPerfCounters, ChunkPos, ChunkPosition,
         },
         definition::ColumnAddress,
         loading::load_or_generate_column,
@@ -85,7 +84,6 @@ pub(crate) fn maintain_column_residency(
                 ChunkNeedsColliderRebuild,
                 ChunkNeedsFluidStep,
                 ChunkNeedsLightRebuild,
-                ChunkNeedsRenderLightUpload,
             )>();
             if let Ok(children) = children.get(entity) {
                 for child in children {

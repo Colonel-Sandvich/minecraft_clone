@@ -8,8 +8,8 @@ use crate::{
     player::{Player, PlayerDimension},
     world::{
         chunk::{
-            CHUNK_SIZE, Chunk, ChunkColumn, ChunkHeightmap, ChunkLight, ChunkNeedsMeshRebuild,
-            ChunkNeedsSave, ChunkPos, LocalBlockPos,
+            CHUNK_SIZE, Chunk, ChunkColumn, ChunkHeightmap, ChunkLight, ChunkNeedsSave, ChunkPos,
+            LocalBlockPos,
             mesh::{PreparedChunkMeshLight, padded_chunk_index},
         },
         definition::{DimensionCatalog, DimensionDefinition, DimensionId, GeneratorProfile},
@@ -1156,8 +1156,10 @@ fn outgoing_published_column_becomes_hidden_lit_support_without_relighting() {
     assert!(dimension_ref.contains_loaded_chunk(center.chunk(0)));
     assert!(!dimension_ref.contains_published_chunk(center.chunk(0)));
     assert_eq!(world.get::<Visibility>(root), Some(&Visibility::Hidden));
-    let center_entity = dimension_ref.loaded_chunk_entity(center.chunk(0)).unwrap();
-    assert!(world.get::<ChunkNeedsMeshRebuild>(center_entity).is_some());
+    assert!(
+        !dimension_ref.has_pending_mesh_rebuild(center.chunk(0)),
+        "hidden support must not retain visual work"
+    );
     let perf = world.resource::<crate::world::chunk::ChunkPerfCounters>();
     assert_eq!(perf.light_patch_runs, 1);
     assert_eq!(perf.light_patch_calculation_chunks, 9);

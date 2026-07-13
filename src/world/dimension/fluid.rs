@@ -194,9 +194,7 @@ fn snapshot_chunks_for_sources(
 mod tests {
     use super::*;
     use crate::block::BlockType;
-    use crate::world::chunk::{
-        CHUNK_SIZE, ChunkCell, ChunkNeedsMeshRebuild, ChunkNeedsSave, ChunkPosition,
-    };
+    use crate::world::chunk::{CHUNK_SIZE, ChunkCell, ChunkNeedsSave, ChunkPos, ChunkPosition};
 
     #[derive(Resource)]
     struct TestDimension(Entity);
@@ -244,7 +242,12 @@ mod tests {
 
         let world = app.world();
         assert!(world.get::<ChunkNeedsSave>(entity).is_some());
-        assert!(world.get::<ChunkNeedsMeshRebuild>(entity).is_some());
+        assert!(
+            world
+                .get::<Dimension>(world.resource::<TestDimension>().0)
+                .unwrap()
+                .has_pending_mesh_rebuild(ChunkPos::ZERO)
+        );
         let chunk = world.get::<Chunk>(entity).unwrap();
         let counts = *world.get::<ChunkContentCounts>(entity).unwrap();
         assert_eq!(counts, chunk.compute_content_counts());
@@ -469,16 +472,21 @@ mod tests {
     }
 
     fn clear_mesh_dirty_markers_for_world(world: &mut World) {
-        let mut query = world.query_filtered::<Entity, With<ChunkNeedsMeshRebuild>>();
-        let dirty_entities: Vec<Entity> = query.iter(world).collect();
-        for entity in dirty_entities {
-            world.entity_mut(entity).remove::<ChunkNeedsMeshRebuild>();
-        }
+        let dimension = world.resource::<TestDimension>().0;
+        world
+            .get_mut::<Dimension>(dimension)
+            .unwrap()
+            .take_mesh_rebuilds();
     }
 
     fn dirty_chunk_positions(world: &mut World) -> Vec<IVec3> {
-        let mut query = world.query_filtered::<&ChunkPosition, With<ChunkNeedsMeshRebuild>>();
-        query.iter(world).map(|pos| pos.as_ivec3()).collect()
+        let dimension = world.resource::<TestDimension>().0;
+        world
+            .get::<Dimension>(dimension)
+            .unwrap()
+            .pending_mesh_rebuilds()
+            .map(|work| work.position().as_ivec3())
+            .collect()
     }
 
     fn active_fluid_chunk_positions(world: &mut World) -> Vec<IVec3> {

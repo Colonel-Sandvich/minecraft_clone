@@ -1,15 +1,17 @@
 use std::{sync::Arc, time::Instant};
 
-use bevy::{camera::primitives::Aabb, platform::collections::HashMap, prelude::*, utils::Parallel};
+use bevy::{
+    camera::primitives::Aabb,
+    platform::collections::HashMap,
+    prelude::*,
+    tasks::{ComputeTaskPool, ParallelSlice},
+};
 
 use crate::block::BlockMaterialLayer;
 use crate::textures::TextureState;
 use crate::world::dimension::{Active, Dimension, DimensionStreamingSet};
 
-use super::super::{
-    CHUNK_SIZE, Chunk, ChunkLight, ChunkNeedsMeshRebuild, ChunkNeedsRenderLightUpload,
-    ChunkPerfCounters, ChunkPos, ChunkPosition,
-};
+use super::super::{CHUNK_SIZE, Chunk, ChunkLight, ChunkPerfCounters, ChunkPos, ChunkPosition};
 use super::{
     ChunkMeshBlocks, ChunkMeshFaces, ChunkMeshLayer, ChunkMeshLight, PreparedChunkMeshLight,
     mesher::{self, LayerMesh},
@@ -41,32 +43,41 @@ pub(super) fn drop_uploaded_faces(
 pub(super) fn rebuild_chunk_meshes(
     mut commands: Commands,
     mut perf: Option<ResMut<ChunkPerfCounters>>,
-    dirty_chunks_q: Query<(&ChunkPosition, Entity), (With<Chunk>, With<ChunkNeedsMeshRebuild>)>,
-    all_chunks_q: Query<(&ChunkPosition, &Chunk)>,
+    all_chunks_q: Query<(Entity, &ChunkPosition, &Chunk)>,
     light_q: Query<(&ChunkPosition, &ChunkLight)>,
     children_q: Query<&Children>,
     mut mesh_q: Query<&mut ChunkMeshLayer>,
     mesh_light_q: Query<&ChunkMeshLight>,
     prepared_light_q: Query<&PreparedChunkMeshLight>,
     chunk_transform_q: Query<&Transform>,
-    dimension: Option<Single<&Dimension, With<Active>>>,
+    dimension: Option<Single<&mut Dimension, With<Active>>>,
 ) {
-    if dirty_chunks_q.is_empty() {
+    let Some(mut dimension) = dimension else {
+        return;
+    };
+    let pending = dimension.take_mesh_rebuilds();
+    if pending.is_empty() {
         return;
     }
 
-    let Some(dimension) = dimension else {
-        return;
-    };
-    let dimension = dimension.into_inner();
     let rebuild_started = Instant::now();
-    let active_dirty = dimension
-        .iter_published_chunks()
-        .filter_map(|(registered, entity)| {
-            let (actual, _) = dirty_chunks_q.get(entity).ok()?;
-            (actual.chunk_pos() == registered).then_some((entity, registered))
-        })
-        .collect::<HashMap<_, _>>();
+    let mut active_dirty = Vec::with_capacity(pending.len());
+    for work in pending {
+        let position = work.position();
+        let expected_entity = work.expected_entity();
+        if dimension.published_chunk_entity(position) != Some(expected_entity) {
+            continue;
+        }
+        let Ok((actual_entity, actual_position, _)) = all_chunks_q.get(expected_entity) else {
+            dimension.requeue_mesh_rebuild(work);
+            continue;
+        };
+        if actual_entity != expected_entity || actual_position.chunk_pos() != position {
+            dimension.requeue_mesh_rebuild(work);
+            continue;
+        }
+        active_dirty.push((expected_entity, position));
+    }
     if active_dirty.is_empty() {
         return;
     }
@@ -74,7 +85,7 @@ pub(super) fn rebuild_chunk_meshes(
     let context_started = Instant::now();
     let mut chunks_by_pos = HashMap::with_capacity(dimension.loaded_chunk_count());
     for (registered, entity) in dimension.iter_loaded_chunks() {
-        let Ok((actual, chunk)) = all_chunks_q.get(entity) else {
+        let Ok((_, actual, chunk)) = all_chunks_q.get(entity) else {
             continue;
         };
         if actual.chunk_pos() == registered {
@@ -84,8 +95,8 @@ pub(super) fn rebuild_chunk_meshes(
 
     let mut lights_by_pos = HashMap::default();
     if active_dirty
-        .keys()
-        .any(|&entity| prepared_light_q.get(entity).is_err())
+        .iter()
+        .any(|(entity, _)| prepared_light_q.get(*entity).is_err())
     {
         lights_by_pos.reserve(dimension.loaded_chunk_count());
         for (registered, entity) in dimension.iter_loaded_chunks() {
@@ -100,25 +111,23 @@ pub(super) fn rebuild_chunk_meshes(
     let context_elapsed = context_started.elapsed();
 
     let build_started = Instant::now();
-    let mut build_queue = Parallel::<Vec<ChunkMeshBuild>>::default();
-    dirty_chunks_q.par_iter().for_each_init(
-        || build_queue.borrow_local_mut(),
-        |builds, (chunk_pos, chunk_entity)| {
-            let Some(&position) = active_dirty.get(&chunk_entity) else {
-                return;
-            };
-            debug_assert_eq!(chunk_pos.chunk_pos(), position);
-            let blocks = ChunkMeshBlocks::from_chunks(position.as_ivec3(), &chunks_by_pos);
-            builds.push(ChunkMeshBuild {
-                entity: chunk_entity,
-                chunk_pos: position,
-                layers: mesher::build(&blocks),
-            });
-        },
-    );
-
-    let mut builds = Vec::new();
-    build_queue.drain_into(&mut builds);
+    let builds = active_dirty
+        .par_splat_map(ComputeTaskPool::get(), None, |_, targets| {
+            targets
+                .iter()
+                .map(|&(entity, position)| {
+                    let blocks = ChunkMeshBlocks::from_chunks(position.as_ivec3(), &chunks_by_pos);
+                    ChunkMeshBuild {
+                        entity,
+                        chunk_pos: position,
+                        layers: mesher::build(&blocks),
+                    }
+                })
+                .collect::<Vec<_>>()
+        })
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
     let build_elapsed = build_started.elapsed();
     let rebuilt_count = builds.len();
     let apply_started = Instant::now();
@@ -139,9 +148,6 @@ pub(super) fn rebuild_chunk_meshes(
             &mesh_light_q,
             prepared_light_q.get(build.entity).ok(),
         );
-        commands
-            .entity(build.entity)
-            .remove::<ChunkNeedsMeshRebuild>();
     }
     let apply_elapsed = apply_started.elapsed();
     let rebuild_elapsed = rebuild_started.elapsed();
@@ -263,30 +269,38 @@ fn light_data_for_new_mesh_child(
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn upload_chunk_lights(
-    mut commands: Commands,
     mut perf: Option<ResMut<ChunkPerfCounters>>,
-    dirty_chunks_q: Query<(&ChunkPosition, Entity), With<ChunkNeedsRenderLightUpload>>,
     light_q: Query<(&ChunkPosition, &ChunkLight)>,
     prepared_light_q: Query<&PreparedChunkMeshLight>,
     children_q: Query<&Children>,
     mut mesh_light_q: Query<&mut ChunkMeshLight>,
-    dimension: Option<Single<&Dimension, With<Active>>>,
+    dimension: Option<Single<&mut Dimension, With<Active>>>,
 ) {
-    if dirty_chunks_q.is_empty() {
+    let Some(mut dimension) = dimension else {
+        return;
+    };
+    let pending = dimension.take_render_light_uploads();
+    if pending.is_empty() {
         return;
     }
 
-    let Some(dimension) = dimension else {
-        return;
-    };
-    let dimension = dimension.into_inner();
-    let dirty_chunks = dimension
-        .iter_published_chunks()
-        .filter_map(|(registered, entity)| {
-            let (actual, _) = dirty_chunks_q.get(entity).ok()?;
-            (actual.chunk_pos() == registered).then_some((registered, entity))
-        })
-        .collect::<Vec<_>>();
+    let mut dirty_chunks = Vec::with_capacity(pending.len());
+    for work in pending {
+        let position = work.position();
+        let expected_entity = work.expected_entity();
+        if dimension.published_chunk_entity(position) != Some(expected_entity) {
+            continue;
+        }
+        let Ok((actual_position, _)) = light_q.get(expected_entity) else {
+            dimension.requeue_render_light_upload(work);
+            continue;
+        };
+        if actual_position.chunk_pos() != position {
+            dimension.requeue_render_light_upload(work);
+            continue;
+        }
+        dirty_chunks.push((position, expected_entity));
+    }
     if dirty_chunks.is_empty() {
         return;
     }
@@ -322,10 +336,6 @@ pub(super) fn upload_chunk_lights(
                 }
             }
         }
-
-        commands
-            .entity(chunk_entity)
-            .remove::<ChunkNeedsRenderLightUpload>();
     }
 
     if let Some(perf) = perf.as_deref_mut() {

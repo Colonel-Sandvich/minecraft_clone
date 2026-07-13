@@ -4,8 +4,8 @@ use bevy::{platform::collections::HashSet, prelude::*};
 
 use crate::world::chunk::{
     Chunk, ChunkColumn, ChunkHeightmap, ChunkInvalidationPlan, ChunkLight, ChunkNeedsLightRebuild,
-    ChunkNeedsRenderLightUpload, ChunkPerfCounters, ChunkPos, ChunkPosition,
-    light::ChunkLightRegion, mesh::PreparedChunkMeshLight,
+    ChunkPerfCounters, ChunkPos, ChunkPosition, light::ChunkLightRegion,
+    mesh::PreparedChunkMeshLight,
 };
 
 use super::{
@@ -433,7 +433,7 @@ fn apply_finished_light_patch(
         let mut entity_commands = commands.entity(entity);
         entity_commands.insert(PreparedChunkMeshLight::new(prepared.data));
         if dimension.contains_published_chunk(prepared.position) {
-            entity_commands.insert(ChunkNeedsRenderLightUpload);
+            dimension.enqueue_render_light_upload(prepared.position);
         }
     }
 
@@ -602,10 +602,7 @@ mod tests {
     use crate::{
         block::BlockType,
         world::{
-            chunk::{
-                CHUNK_SIZE, ChunkCell, ChunkNeedsLightRebuild, ChunkNeedsMeshRebuild,
-                ChunkNeedsRenderLightUpload, LocalBlockPos,
-            },
+            chunk::{CHUNK_SIZE, ChunkCell, ChunkNeedsLightRebuild, LocalBlockPos},
             generation::WorldMetadata,
         },
     };
@@ -740,22 +737,12 @@ mod tests {
                 .sky_light(LocalBlockPos::new(8, 8, 8)),
             15
         );
-        assert!(
-            world
-                .get::<ChunkNeedsRenderLightUpload>(neighbor_entity)
-                .is_some()
-        );
-        assert!(
-            world
-                .get::<ChunkNeedsRenderLightUpload>(center_entity)
-                .is_some()
-        );
-        assert!(world.get::<ChunkNeedsMeshRebuild>(center_entity).is_none());
-        assert!(
-            world
-                .get::<ChunkNeedsMeshRebuild>(neighbor_entity)
-                .is_none()
-        );
+        let dimension = world
+            .get::<Dimension>(world.resource::<TestDimension>().0)
+            .unwrap();
+        assert!(dimension.has_pending_render_light_upload(ChunkPos::from_ivec3(IVec3::X)));
+        assert!(dimension.has_pending_render_light_upload(ChunkPos::ZERO));
+        assert_eq!(dimension.pending_mesh_rebuild_count(), 0);
     }
 
     #[test]

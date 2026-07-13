@@ -24,9 +24,8 @@ use crate::{
     textures::BlockTexturePlugin,
     ui::UIPlugin,
     world::chunk::{
-        Chunk, ChunkColumn, ChunkContentCounts, ChunkNeedsLightRebuild, ChunkNeedsMeshRebuild,
-        ChunkNeedsRenderLightUpload, ChunkPerfCounters, ChunkPos, ChunkPosition,
-        mesh::ChunkMeshLayer,
+        Chunk, ChunkColumn, ChunkContentCounts, ChunkNeedsLightRebuild, ChunkPerfCounters,
+        ChunkPos, ChunkPosition, mesh::ChunkMeshLayer,
     },
     world::{
         WorldConfig, WorldMetadata, WorldPlugin,
@@ -133,7 +132,6 @@ fn finish_streaming_startup_frame(mut trace: ResMut<StreamingStartupTrace>) {
 
 fn log_streaming_startup_milestones(
     dimension: Option<Single<(&Dimension, &DesiredColumnView), With<Active>>>,
-    dirty_meshes: Query<(), With<ChunkNeedsMeshRebuild>>,
     chunk_contents: Query<&ChunkContentCounts>,
     player: Option<Single<&Transform, With<Player>>>,
     perf: Option<Res<ChunkPerfCounters>>,
@@ -158,25 +156,25 @@ fn log_streaming_startup_milestones(
         .resident_column_state(center)
         .is_some_and(|state| state.light_patch_ticket().is_some() || state.is_lit());
     let center_published = column_is_published(dimension, center);
-    let center_cpu_meshed = column_has_finished_cpu_mesh(dimension, center, &dirty_meshes);
+    let center_cpu_meshed = column_has_finished_cpu_mesh(dimension, center);
     let player_chunk =
         player.map(|transform| ChunkPos::containing_translation(transform.translation));
-    let player_chunk_cpu_meshed = player_chunk
-        .is_some_and(|position| chunk_has_finished_cpu_mesh(dimension, position, &dirty_meshes));
+    let player_chunk_cpu_meshed =
+        player_chunk.is_some_and(|position| chunk_has_finished_cpu_mesh(dimension, position));
     let near_columns = center.chebyshev_neighborhood(1).collect::<Vec<_>>();
     let near_published = near_columns
         .iter()
         .all(|&column| column_is_published(dimension, column));
     let near_cpu_meshed = near_columns
         .iter()
-        .all(|&column| column_has_finished_cpu_mesh(dimension, column, &dirty_meshes));
+        .all(|&column| column_has_finished_cpu_mesh(dimension, column));
     let local_columns = center.chebyshev_neighborhood(2).collect::<Vec<_>>();
     let local_published = local_columns
         .iter()
         .all(|&column| column_is_published(dimension, column));
     let local_cpu_meshed = local_columns
         .iter()
-        .all(|&column| column_has_finished_cpu_mesh(dimension, column, &dirty_meshes));
+        .all(|&column| column_has_finished_cpu_mesh(dimension, column));
 
     for (index, (name, reached)) in [
         ("center_loaded", center_loaded),
@@ -333,37 +331,26 @@ fn log_streaming_startup_milestones(
     }
 }
 
-fn chunk_has_finished_cpu_mesh(
-    dimension: &Dimension,
-    position: ChunkPos,
-    dirty_meshes: &Query<(), With<ChunkNeedsMeshRebuild>>,
-) -> bool {
+fn chunk_has_finished_cpu_mesh(dimension: &Dimension, position: ChunkPos) -> bool {
     if !dimension.contains_published_chunk(position) {
         return false;
     }
-    let Some(entity) = dimension.loaded_chunk_entity(position) else {
-        return false;
-    };
-    dirty_meshes.get(entity).is_err()
+    !dimension.has_pending_mesh_rebuild(position)
 }
 
 fn column_is_published(dimension: &Dimension, column: ChunkColumn) -> bool {
     dimension.contains_published_chunk(column.chunk(0))
 }
 
-fn column_has_finished_cpu_mesh(
-    dimension: &Dimension,
-    column: ChunkColumn,
-    dirty_meshes: &Query<(), With<ChunkNeedsMeshRebuild>>,
-) -> bool {
+fn column_has_finished_cpu_mesh(dimension: &Dimension, column: ChunkColumn) -> bool {
     if !column_is_published(dimension, column) {
         return false;
     }
     let Some(chunks) = dimension.complete_loaded_column(column) else {
         return false;
     };
-    for (_, entity) in chunks {
-        if dirty_meshes.get(entity).is_ok() {
+    for (position, _) in chunks {
+        if dimension.has_pending_mesh_rebuild(position) {
             return false;
         }
     }
@@ -388,11 +375,7 @@ fn log_frame_perf(
     time: Res<Time>,
     diagnostics: Res<DiagnosticsStore>,
     chunks: Query<(), With<Chunk>>,
-    dirty_mesh_chunks: Query<&ChunkPosition, (With<Chunk>, With<ChunkNeedsMeshRebuild>)>,
-    dirty_light_upload_chunks: Query<
-        &ChunkPosition,
-        (With<Chunk>, With<ChunkNeedsRenderLightUpload>),
-    >,
+    dimension: Option<Single<&Dimension, With<Active>>>,
     dirty_light_rebuild_chunks: Query<&ChunkPosition, (With<Chunk>, With<ChunkNeedsLightRebuild>)>,
     chunk_mesh_layers: Query<&ChunkMeshLayer>,
     mut chunk_perf: Option<ResMut<ChunkPerfCounters>>,
@@ -418,14 +401,24 @@ fn log_frame_perf(
         mesh_layers += 1;
         mesh_faces += u64::from(layer.face_count());
     }
-    let dirty_mesh_positions = dirty_mesh_chunks
-        .iter()
-        .map(|pos| pos.as_ivec3())
-        .collect::<Vec<_>>();
-    let dirty_light_upload_positions = dirty_light_upload_chunks
-        .iter()
-        .map(|pos| pos.as_ivec3())
-        .collect::<Vec<_>>();
+    let dirty_mesh_positions = dimension
+        .as_deref()
+        .map(|dimension| {
+            dimension
+                .pending_mesh_rebuilds()
+                .map(|work| work.position().as_ivec3())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let dirty_light_upload_positions = dimension
+        .as_deref()
+        .map(|dimension| {
+            dimension
+                .pending_render_light_uploads()
+                .map(|work| work.position().as_ivec3())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
     let dirty_light_rebuild_positions = dirty_light_rebuild_chunks
         .iter()
         .map(|pos| pos.as_ivec3())

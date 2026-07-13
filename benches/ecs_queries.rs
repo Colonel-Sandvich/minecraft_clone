@@ -13,8 +13,7 @@ use minecraft_clone::{
         chunk::{
             CHUNK_SIZE, Chunk, ChunkCell, ChunkColumn, ChunkContentCounts, ChunkHeightmap,
             ChunkLight, ChunkNeedsColliderRebuild, ChunkNeedsFluidStep, ChunkNeedsLightRebuild,
-            ChunkNeedsMeshRebuild, ChunkNeedsRenderLightUpload, ChunkNeedsSave, ChunkPos,
-            ChunkPosition, FluidProfile, FluidState,
+            ChunkNeedsSave, ChunkPos, ChunkPosition, FluidProfile, FluidState,
             light::ChunkLightRegion,
             mesh::{ChunkMeshBlocks, ChunkMeshLight, mesher::build},
         },
@@ -22,6 +21,12 @@ use minecraft_clone::{
         generation::generate_chunk,
     },
 };
+
+#[derive(Component)]
+struct ChunkNeedsMeshRebuild;
+
+#[derive(Component)]
+struct ChunkNeedsRenderLightUpload;
 
 const MESH_REBUILD_SIDE: i32 = 16;
 const MESH_REBUILD_HEIGHT: i32 = 4;

@@ -15,13 +15,13 @@ use minecraft_clone::{
             ChunkMeshBlocks, ChunkMeshLight,
             mesher::{LayerMesh, benchmark_binary_floor, build, build_reference},
         },
-        chunk::{
-            CHUNK_SIZE, Chunk, ChunkCell, ChunkLight, ChunkNeedsMeshRebuild, ChunkPos,
-            ChunkPosition, LocalBlockPos,
-        },
+        chunk::{CHUNK_SIZE, Chunk, ChunkCell, ChunkLight, ChunkPos, ChunkPosition, LocalBlockPos},
         generation::generate_chunk,
     },
 };
+
+#[derive(Component)]
+struct ChunkNeedsMeshRebuild;
 
 // ---------------------------------------------------------------------------
 // Bench scenario

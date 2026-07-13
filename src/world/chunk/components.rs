@@ -172,13 +172,6 @@ impl From<ChunkPosition> for ChunkPos {
 pub struct ChunkNeedsSave;
 
 #[derive(Component, Debug, Clone, Copy)]
-pub struct ChunkNeedsMeshRebuild;
-
-/// Marks render-mesh light payloads that must be refreshed from `ChunkLight`.
-#[derive(Component, Debug, Clone, Copy)]
-pub struct ChunkNeedsRenderLightUpload;
-
-#[derive(Component, Debug, Clone, Copy)]
 pub struct ChunkNeedsColliderRebuild;
 
 #[derive(Component, Debug, Clone, Copy)]

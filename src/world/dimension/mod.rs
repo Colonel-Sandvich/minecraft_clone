@@ -1,9 +1,8 @@
-// The queue is populated by follow-up, behavior-changing consumer migrations.
 #[cfg_attr(
     not(test),
-    expect(
+    allow(
         dead_code,
-        reason = "consumer migration follows in the next atomic change"
+        reason = "queue lifecycle helpers support staged consumer and dimension-switch migrations"
     )
 )]
 mod derived_work;
@@ -29,7 +28,7 @@ use crate::game_state::{GameState, Playing};
 use core::future::Future;
 
 use self::{
-    derived_work::DimensionDerivedWork,
+    derived_work::{ChunkDerivedEffects, ChunkDerivedWorkKind, DimensionDerivedWork},
     fluid::DimensionFluidPlugin,
     light::{cancel_inactive_dimension_light_tasks, rebuild_chunk_light},
     light_task::DimensionLightTasks,
@@ -49,6 +48,7 @@ use super::{
 #[cfg(test)]
 use super::definition::GeneratorProfile;
 
+pub(crate) use self::derived_work::ChunkDerivedWork;
 pub(crate) use self::persistence::ChunkSaveTasks;
 pub use self::{
     light_patch::ColumnLightBudget,
@@ -106,10 +106,6 @@ pub struct Dimension {
     definition: DimensionDefinition,
     stream: DimensionStreamState,
     light_tasks: DimensionLightTasks,
-    #[expect(
-        dead_code,
-        reason = "consumer migration follows in the next atomic change"
-    )]
     derived_work: DimensionDerivedWork,
 }
 
@@ -239,6 +235,9 @@ impl Dimension {
             previous_published,
             "loaded and published test registrations must remain aligned"
         );
+        if let Some(previous) = previous {
+            self.discard_chunk_derived_work(position, previous);
+        }
         self.loaded_chunks.insert(position, entity);
         self.published_chunks.insert(position);
         previous
@@ -260,6 +259,9 @@ impl Dimension {
             published,
             "loaded and published test registrations must remain aligned"
         );
+        if let Some(entity) = loaded {
+            self.discard_chunk_derived_work(position, entity);
+        }
         self.loaded_chunks.remove(&position);
         self.published_chunks.remove(&position);
         loaded
@@ -316,20 +318,135 @@ impl Dimension {
         &mut self.light_tasks
     }
 
-    #[expect(
-        dead_code,
-        reason = "consumer migration follows in the next atomic change"
-    )]
-    pub(crate) const fn derived_work(&self) -> &DimensionDerivedWork {
-        &self.derived_work
+    pub fn enqueue_mesh_rebuild(&mut self, position: ChunkPos) -> bool {
+        self.enqueue_published_derived_work(position, ChunkDerivedWorkKind::MeshRebuild)
     }
 
-    #[expect(
-        dead_code,
-        reason = "consumer migration follows in the next atomic change"
+    pub fn enqueue_render_light_upload(&mut self, position: ChunkPos) -> bool {
+        self.enqueue_published_derived_work(position, ChunkDerivedWorkKind::RenderLightUpload)
+    }
+
+    pub(crate) fn take_mesh_rebuilds(&mut self) -> Vec<ChunkDerivedWork> {
+        self.derived_work
+            .take_up_to(ChunkDerivedWorkKind::MeshRebuild, usize::MAX)
+    }
+
+    pub(crate) fn take_render_light_uploads(&mut self) -> Vec<ChunkDerivedWork> {
+        self.derived_work
+            .take_up_to(ChunkDerivedWorkKind::RenderLightUpload, usize::MAX)
+    }
+
+    pub(crate) fn requeue_mesh_rebuild(&mut self, work: ChunkDerivedWork) -> bool {
+        self.requeue_published_derived_work(work, ChunkDerivedWorkKind::MeshRebuild)
+    }
+
+    pub(crate) fn requeue_render_light_upload(&mut self, work: ChunkDerivedWork) -> bool {
+        self.requeue_published_derived_work(work, ChunkDerivedWorkKind::RenderLightUpload)
+    }
+
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "used by diagnostics and lifecycle tests")
     )]
-    pub(crate) fn derived_work_mut(&mut self) -> &mut DimensionDerivedWork {
-        &mut self.derived_work
+    pub(crate) fn pending_mesh_rebuild_count(&self) -> usize {
+        self.derived_work
+            .effect_count(ChunkDerivedWorkKind::MeshRebuild)
+    }
+
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "used by diagnostics and lifecycle tests")
+    )]
+    pub(crate) fn pending_render_light_upload_count(&self) -> usize {
+        self.derived_work
+            .effect_count(ChunkDerivedWorkKind::RenderLightUpload)
+    }
+
+    pub(crate) fn pending_mesh_rebuilds(&self) -> impl Iterator<Item = ChunkDerivedWork> + '_ {
+        self.derived_work.pending(ChunkDerivedWorkKind::MeshRebuild)
+    }
+
+    pub(crate) fn pending_render_light_uploads(
+        &self,
+    ) -> impl Iterator<Item = ChunkDerivedWork> + '_ {
+        self.derived_work
+            .pending(ChunkDerivedWorkKind::RenderLightUpload)
+    }
+
+    pub(crate) fn has_pending_mesh_rebuild(&self, position: ChunkPos) -> bool {
+        self.has_pending_derived_work(position, ChunkDerivedWorkKind::MeshRebuild)
+    }
+
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "used by diagnostics and lifecycle tests")
+    )]
+    pub(crate) fn has_pending_render_light_upload(&self, position: ChunkPos) -> bool {
+        self.has_pending_derived_work(position, ChunkDerivedWorkKind::RenderLightUpload)
+    }
+
+    /// Drops every disposable task owned by this dimension.
+    ///
+    /// Durable save obligations live outside this queue and are unaffected.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "dimension switching consumes this lifecycle boundary"
+        )
+    )]
+    pub(crate) fn clear_disposable_work(&mut self) {
+        self.derived_work.clear();
+    }
+
+    fn enqueue_published_derived_work(
+        &mut self,
+        position: ChunkPos,
+        kind: ChunkDerivedWorkKind,
+    ) -> bool {
+        let Some(expected_entity) = self.published_chunk_entity(position) else {
+            return false;
+        };
+        self.derived_work
+            .record(position, expected_entity, kind.into())
+    }
+
+    fn requeue_published_derived_work(
+        &mut self,
+        work: ChunkDerivedWork,
+        kind: ChunkDerivedWorkKind,
+    ) -> bool {
+        assert_eq!(
+            work.effects(),
+            ChunkDerivedEffects::only(kind),
+            "consumer must requeue only the effect it took"
+        );
+        if self.published_chunk_entity(work.position()) != Some(work.expected_entity()) {
+            return false;
+        }
+        self.derived_work.record(
+            work.position(),
+            work.expected_entity(),
+            ChunkDerivedEffects::only(kind),
+        )
+    }
+
+    fn has_pending_derived_work(&self, position: ChunkPos, kind: ChunkDerivedWorkKind) -> bool {
+        let Some(work) = self.derived_work.get(position) else {
+            return false;
+        };
+        self.published_chunk_entity(position) == Some(work.expected_entity())
+            && work.effects().contains(kind)
+    }
+
+    fn discard_visual_work(&mut self, position: ChunkPos, expected_entity: Entity) {
+        let visual = ChunkDerivedEffects::only(ChunkDerivedWorkKind::MeshRebuild)
+            .with(ChunkDerivedWorkKind::RenderLightUpload);
+        self.derived_work.take(position, expected_entity, visual);
+    }
+
+    fn discard_chunk_derived_work(&mut self, position: ChunkPos, expected_entity: Entity) {
+        self.derived_work.remove(position, expected_entity);
     }
 
     pub(crate) fn assert_stream_owner(&self, owner: Entity) {
@@ -506,6 +623,12 @@ impl Dimension {
         {
             return false;
         }
+        let chunks = self
+            .complete_loaded_column(column)
+            .expect("unpublished column must remain complete");
+        for (position, entity) in chunks {
+            self.discard_visual_work(position, entity);
+        }
         assert!(
             self.hide_loaded_column(column),
             "unpublished resident column must have been exposed"
@@ -533,6 +656,7 @@ impl Dimension {
             return None;
         }
         for (position, entity) in &chunks {
+            self.discard_chunk_derived_work(*position, *entity);
             self.published_chunks.remove(position);
             assert_eq!(self.loaded_chunks.remove(position), Some(*entity));
         }
@@ -647,9 +771,20 @@ mod tests {
             dimension.iter_published_chunks().collect::<Vec<_>>(),
             vec![(position, entity)]
         );
+        assert!(dimension.enqueue_mesh_rebuild(position));
+        assert!(dimension.enqueue_render_light_upload(position));
+        assert_eq!(dimension.pending_mesh_rebuild_count(), 1);
+        assert_eq!(dimension.pending_render_light_upload_count(), 1);
+        dimension.clear_disposable_work();
+        assert_eq!(dimension.pending_mesh_rebuild_count(), 0);
+        assert_eq!(dimension.pending_render_light_upload_count(), 0);
+        assert!(dimension.enqueue_mesh_rebuild(position));
+        assert!(dimension.enqueue_render_light_upload(position));
         assert_eq!(dimension.unregister_published_chunk(position), Some(entity));
         assert!(!dimension.contains_loaded_chunk(position));
         assert!(!dimension.contains_published_chunk(position));
+        assert_eq!(dimension.pending_mesh_rebuild_count(), 0);
+        assert_eq!(dimension.pending_render_light_upload_count(), 0);
     }
 
     #[test]
