@@ -646,6 +646,18 @@ impl ColumnResidencyLedger {
         }
     }
 
+    pub(crate) fn retains_loaded_column(&self, column: ChunkColumn) -> bool {
+        self.retained_column_state(column).is_some()
+    }
+
+    pub(crate) fn retained_column_state(&self, column: ChunkColumn) -> Option<ResidentColumnState> {
+        match self.states.get(&column) {
+            Some(ColumnResidency::Resident(resident))
+            | Some(ColumnResidency::Evicting { resident, .. }) => Some(*resident),
+            _ => None,
+        }
+    }
+
     pub(crate) fn light_patch_ticket(&self, column: ChunkColumn) -> Option<LightPatchTicket> {
         match self.states.get(&column) {
             Some(ColumnResidency::Resident(resident))
@@ -673,6 +685,10 @@ impl ColumnResidencyLedger {
         &self,
     ) -> impl ExactSizeIterator<Item = (ChunkColumn, &ColumnResidency)> + '_ {
         self.states.iter().map(|(&column, state)| (column, state))
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.states.is_empty() && self.light_patches.is_empty()
     }
 
     pub(crate) fn stats(&self) -> ColumnResidencyStats {

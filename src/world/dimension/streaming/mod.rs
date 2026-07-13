@@ -103,6 +103,21 @@ impl DimensionStreamState {
         self.ledger.mark_undesired(column)
     }
 
+    /// Cancels all nonresident attempts and turns every resident into an
+    /// immediately committable eviction without replacing the ledger.
+    pub(crate) fn mark_all_undesired(&mut self) -> Vec<ColumnEvictionTicket> {
+        let columns = self.columns().collect::<Vec<_>>();
+        let tickets = columns
+            .into_iter()
+            .filter_map(|column| self.mark_undesired(column))
+            .collect();
+        assert!(
+            self.load_tasks.is_empty(),
+            "drained stream state must not retain orphaned load tasks"
+        );
+        tickets
+    }
+
     fn start_load(
         &mut self,
         column: ChunkColumn,
@@ -175,6 +190,14 @@ impl DimensionStreamState {
         self.ledger.resident_state(column)
     }
 
+    pub(crate) fn retains_loaded_column(&self, column: ChunkColumn) -> bool {
+        self.ledger.retains_loaded_column(column)
+    }
+
+    pub(crate) fn retained_column_state(&self, column: ChunkColumn) -> Option<ResidentColumnState> {
+        self.ledger.retained_column_state(column)
+    }
+
     pub(crate) fn column_lighting(&self, column: ChunkColumn) -> Option<ColumnLighting> {
         self.resident_state(column)
             .map(ResidentColumnState::lighting)
@@ -210,6 +233,10 @@ impl DimensionStreamState {
         self.ledger.states().map(|(column, _)| column)
     }
 
+    pub(crate) fn is_empty(&self) -> bool {
+        self.load_tasks.is_empty() && self.ledger.is_empty()
+    }
+
     pub(crate) fn eviction_tickets(&self) -> impl Iterator<Item = ColumnEvictionTicket> + '_ {
         self.ledger.states().filter_map(|(_, state)| match state {
             ColumnResidency::Evicting { ticket, .. } => Some(*ticket),
@@ -241,7 +268,10 @@ impl DimensionStreamState {
 
 #[cfg(test)]
 mod light_patch_authority_tests {
+    use std::io::ErrorKind;
+
     use super::*;
+    use crate::world::{loading::ChunkLoadError, storage::ChunkStoreError};
 
     fn activate(stream: &mut DimensionStreamState, column: ChunkColumn) {
         let ticket = stream.ledger.begin_load(column, 1).unwrap();
@@ -291,5 +321,29 @@ mod light_patch_authority_tests {
             stream.column_lighting(second),
             Some(ColumnLighting::Pending)
         );
+    }
+
+    #[test]
+    fn bulk_drain_discards_attempts_and_failures_without_resetting_versions() {
+        let loading = ChunkColumn::new(1, 2);
+        let failed = ChunkColumn::new(3, 4);
+        let mut stream = DimensionStreamState::new(Entity::PLACEHOLDER);
+        let loading_ticket = stream.ledger.begin_load(loading, 7).unwrap();
+        let failed_ticket = stream.ledger.begin_load(failed, 7).unwrap();
+        assert!(stream.ledger.fail_load(
+            failed_ticket,
+            ChunkLoadError::transient(ChunkStoreError::Io {
+                kind: ErrorKind::TimedOut,
+                message: "retry later".into(),
+            })
+        ));
+
+        assert!(stream.mark_all_undesired().is_empty());
+        assert!(stream.is_empty());
+
+        let fresh = stream.ledger.begin_load(failed, 8).unwrap();
+        assert!(fresh.version() > loading_ticket.version());
+        assert!(fresh.version() > failed_ticket.version());
+        assert_eq!(fresh.view_revision(), 8);
     }
 }

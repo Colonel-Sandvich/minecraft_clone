@@ -22,7 +22,8 @@ use super::{
     CompletedColumnLoad,
 };
 use crate::world::dimension::{
-    Active, ChunkTaskPool, DesiredColumnView, Dimension, ViewDistance, apply_chunk_invalidations,
+    Active, ChunkSaveTasks, ChunkTaskPool, DesiredColumnView, Dimension, ViewDistance,
+    apply_chunk_invalidations,
 };
 
 #[derive(Component)]
@@ -247,6 +248,7 @@ pub(crate) fn publish_lit_columns(
 pub(crate) fn start_column_loads(
     dimension: Single<(&mut Dimension, &DesiredColumnView, Entity), With<Active>>,
     repository: Res<ChunkRepository>,
+    save_tasks: Res<ChunkSaveTasks>,
     load_budget: Res<ColumnLoadBudget>,
     task_pool: Res<ChunkTaskPool>,
 ) {
@@ -257,7 +259,7 @@ pub(crate) fn start_column_loads(
         Some(dimension.definition()),
         "dimension root definition must match the repository catalog"
     );
-    if load_budget.0 == 0 {
+    if load_budget.0 == 0 || save_tasks.has_uncommitted_dimension(dimension.id()) {
         return;
     }
 

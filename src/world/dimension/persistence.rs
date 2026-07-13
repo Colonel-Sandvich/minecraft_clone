@@ -35,6 +35,13 @@ impl ChunkSaveTasks {
             .any(|address| address.dimension() == dimension)
     }
 
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "manual permanent-save recovery is not exposed in the UI yet"
+        )
+    )]
     pub(crate) fn retry_permanent_failure(&mut self, address: ChunkAddress) -> bool {
         let Some(failure) = self.failures.get_mut(&address) else {
             return false;
@@ -44,6 +51,29 @@ impl ChunkSaveTasks {
         }
         failure.retry_after_updates = Some(0);
         true
+    }
+
+    #[cfg(test)]
+    pub(crate) fn retain_detached_snapshot_for_test(&mut self, address: ChunkAddress) {
+        let sequence = self.next_sequence;
+        self.next_sequence = self
+            .next_sequence
+            .checked_add(1)
+            .expect("chunk save test sequence exhausted");
+        self.pending.insert(
+            address,
+            PendingChunkSave {
+                snapshot: OwnedChunkSaveSnapshot {
+                    sequence,
+                    payload: Arc::new(ChunkSavePayload {
+                        chunk: Chunk::default(),
+                        heightmap: ChunkHeightmap::default(),
+                    }),
+                    source: None,
+                },
+                eviction_priority: true,
+            },
+        );
     }
 
     pub(crate) fn stats(&self) -> ChunkSaveTaskStats {

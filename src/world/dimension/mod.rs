@@ -114,6 +114,7 @@ struct LoadedColumnHandle {
     incarnation: Entity,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct EvictedColumn {
     pub(crate) incarnation: Entity,
 }
@@ -690,6 +691,97 @@ impl Dimension {
         assert_eq!(handle.incarnation, incarnation);
         Some(EvictedColumn { incarnation })
     }
+
+    /// Removes all streamed runtime data while retaining this logical
+    /// dimension and its monotonic stream authority.
+    ///
+    /// Dirty chunks must be captured by persistence before calling this. The
+    /// returned incarnation roots still own the ECS entities and must be
+    /// despawned by the caller.
+    pub(crate) fn drain_streamed_columns(&mut self) -> Vec<EvictedColumn> {
+        assert!(
+            self.loaded_chunks
+                .keys()
+                .all(|position| self.loaded_columns.contains_key(&position.column())),
+            "dimension drain only supports chunks owned by streamed column incarnations"
+        );
+        assert!(
+            self.published_chunks
+                .iter()
+                .all(|position| self.loaded_columns.contains_key(&position.column())),
+            "dimension drain only supports published streamed columns"
+        );
+        assert!(
+            self.loaded_columns.keys().all(|&column| {
+                self.complete_loaded_column(column)
+                    .is_some_and(|chunks| chunks.len() == self.height().chunks())
+                    && self.stream.retains_loaded_column(column)
+            }),
+            "dimension drain requires every streamed column to remain complete and resident"
+        );
+        assert!(
+            self.stream.columns().all(|column| {
+                !self.stream.retains_loaded_column(column)
+                    || self.loaded_columns.contains_key(&column)
+            }),
+            "dimension drain requires resident stream state to retain its column incarnation"
+        );
+        assert!(
+            self.loaded_columns.keys().all(|&column| {
+                let published = (0..self.height().chunks_i32())
+                    .filter(|&y| self.published_chunks.contains(&column.chunk(y)))
+                    .count();
+                match self
+                    .stream
+                    .retained_column_state(column)
+                    .map(ResidentColumnState::exposure)
+                {
+                    Some(ColumnExposure::Published) => published == self.height().chunks(),
+                    Some(ColumnExposure::Staged) => published == 0,
+                    None => false,
+                }
+            }),
+            "dimension drain requires registry publication to match stream exposure"
+        );
+
+        if let Some(ticket) = self.light_tasks.active_ticket() {
+            self.cancel_column_light_patch(ticket);
+        }
+
+        let published = self
+            .stream
+            .columns()
+            .filter(|&column| self.column_exposure(column) == Some(ColumnExposure::Published))
+            .collect::<Vec<_>>();
+        for column in published {
+            assert!(
+                self.unpublish_column(column),
+                "published streamed column must unpublish during drain"
+            );
+        }
+
+        let eviction_tickets = self.stream.mark_all_undesired();
+        let mut evicted = Vec::with_capacity(eviction_tickets.len());
+        for ticket in eviction_tickets {
+            evicted.push(
+                self.evict_column(ticket)
+                    .expect("current streamed eviction must commit during drain"),
+            );
+        }
+        self.clear_disposable_work();
+
+        assert!(
+            self.stream.is_empty(),
+            "dimension stream ledger must be empty after drain"
+        );
+        assert!(
+            self.loaded_columns.is_empty()
+                && self.loaded_chunks.is_empty()
+                && self.published_chunks.is_empty(),
+            "dimension registries must be empty after drain"
+        );
+        evicted
+    }
 }
 
 pub struct DimensionPlugin;
@@ -736,9 +828,7 @@ impl Plugin for DimensionPlugin {
         );
         app.add_systems(
             PostUpdate,
-            (finish_chunk_save_tasks, start_chunk_save_tasks)
-                .chain()
-                .run_if(in_state(GameState::Playing)),
+            (finish_chunk_save_tasks, start_chunk_save_tasks).chain(),
         );
     }
 }
@@ -819,6 +909,17 @@ mod tests {
             ChunkPos::new(0, dimension.height().chunks_i32(), 0),
             Entity::PLACEHOLDER,
         );
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "dimension drain only supports chunks owned by streamed column incarnations"
+    )]
+    fn dimension_drain_rejects_independently_registered_chunks() {
+        let mut dimension = Dimension::default();
+        dimension.register_published_chunk(ChunkPos::ZERO, Entity::PLACEHOLDER);
+
+        dimension.drain_streamed_columns();
     }
 
     #[test]

@@ -1,4 +1,4 @@
-use std::thread;
+use std::{collections::HashSet, thread};
 
 use avian3d::prelude::Collider;
 use bevy::prelude::*;
@@ -13,9 +13,12 @@ use crate::{
             ChunkNeedsSave, ChunkPos, LocalBlockPos,
             mesh::{PreparedChunkMeshLight, padded_chunk_index},
         },
-        definition::{DimensionCatalog, DimensionDefinition, DimensionId, GeneratorProfile},
+        definition::{
+            ChunkAddress, DimensionCatalog, DimensionDefinition, DimensionId, GeneratorProfile,
+        },
         dimension::{
-            Active, ChunkTaskPool, ColumnLightBudget, DesiredColumnView, Dimension, ViewDistance,
+            Active, ChunkSaveTasks, ChunkTaskPool, ColumnLightBudget, DesiredColumnView, Dimension,
+            ViewDistance,
             light::{cancel_inactive_dimension_light_tasks, rebuild_chunk_light},
         },
         generation::WorldMetadata,
@@ -72,6 +75,7 @@ fn streaming_app(height_chunks: usize) -> (App, Entity, Entity) {
         .insert_resource(metadata.clone())
         .insert_resource(repository)
         .insert_resource(ChunkTaskPool::new_for_test())
+        .init_resource::<ChunkSaveTasks>()
         .insert_resource(ColumnLoadBudget(1))
         .insert_resource(ColumnStagingBudget(1))
         .insert_resource(ColumnActivationBudget(1))
@@ -106,6 +110,7 @@ fn staged_lighting_app(height_chunks: usize) -> (App, Entity, Entity) {
         .insert_resource(metadata.clone())
         .insert_resource(repository)
         .insert_resource(ChunkTaskPool::new_for_test())
+        .init_resource::<ChunkSaveTasks>()
         .insert_resource(ColumnLoadBudget(9))
         .insert_resource(ColumnStagingBudget(1))
         .insert_resource(ColumnActivationBudget(9))
@@ -201,6 +206,7 @@ fn streaming_generation_uses_the_root_dimension_definition() {
     app.add_plugins(MinimalPlugins)
         .insert_resource(repository)
         .insert_resource(ChunkTaskPool::new_for_test())
+        .init_resource::<ChunkSaveTasks>()
         .insert_resource(ColumnLoadBudget(9))
         .insert_resource(ColumnStagingBudget(1))
         .insert_resource(ColumnActivationBudget(1))
@@ -260,6 +266,7 @@ fn streaming_rejects_a_same_id_definition_that_is_not_from_the_catalog() {
     app.add_plugins(MinimalPlugins)
         .insert_resource(repository)
         .insert_resource(ChunkTaskPool::new_for_test())
+        .init_resource::<ChunkSaveTasks>()
         .insert_resource(ColumnLoadBudget(1))
         .add_systems(Update, start_column_loads);
     spawn_defined_dimension(&mut app, mismatched, true);
@@ -304,6 +311,163 @@ fn load_completion_remains_bound_to_the_dimension_that_started_it() {
 
     assert_eq!(loaded_in_column(app.world(), first, center), height_chunks);
     assert_eq!(loaded_in_column(app.world(), second, center), 0);
+}
+
+#[test]
+fn detached_saves_block_reloading_their_dimension() {
+    let center = ChunkColumn::new(0, 0);
+    let (mut app, dimension, _) = streaming_app(2);
+    app.world_mut()
+        .resource_mut::<ChunkSaveTasks>()
+        .retain_detached_snapshot_for_test(ChunkAddress::new(
+            DimensionId::OVERWORLD,
+            center.chunk(0),
+        ));
+
+    app.update();
+    {
+        let dimension = app.world().get::<Dimension>(dimension).unwrap();
+        assert_eq!(dimension.stream().loading_count(), 0);
+        assert!(dimension.stream().is_empty());
+    }
+
+    app.world_mut().insert_resource(ChunkSaveTasks::default());
+    app.update();
+    assert_eq!(
+        app.world()
+            .get::<Dimension>(dimension)
+            .unwrap()
+            .stream()
+            .loading_count(),
+        9
+    );
+}
+
+#[test]
+fn draining_load_attempts_is_idempotent_and_preserves_ticket_monotonicity() {
+    let center = ChunkColumn::new(0, 0);
+    let (mut app, dimension, _) = streaming_app(2);
+
+    app.update();
+    let first = {
+        let dimension = app.world().get::<Dimension>(dimension).unwrap();
+        let Some(ColumnResidency::Loading { ticket, .. }) = dimension.stream().state(center) else {
+            panic!("center must have an active bootstrap load");
+        };
+        *ticket
+    };
+    {
+        let mut dimension = app.world_mut().get_mut::<Dimension>(dimension).unwrap();
+        assert!(dimension.drain_streamed_columns().is_empty());
+        assert!(dimension.stream().is_empty());
+        assert!(dimension.drain_streamed_columns().is_empty());
+    }
+
+    app.update();
+    let dimension = app.world().get::<Dimension>(dimension).unwrap();
+    let Some(ColumnResidency::Loading { ticket: fresh, .. }) = dimension.stream().state(center)
+    else {
+        panic!("center must restart after stream drain");
+    };
+    assert!(fresh.version() > first.version());
+}
+
+#[test]
+fn drain_cancels_an_active_staged_light_patch_and_returns_every_incarnation() {
+    let (mut app, dimension, _) = staged_lighting_app(2);
+    app.world_mut().resource_mut::<ColumnLightBudget>().0 = 0;
+    app.update();
+    app.world_mut().resource_mut::<ColumnLoadBudget>().0 = 0;
+    update_until(&mut app, |world| {
+        world
+            .get::<Dimension>(dimension)
+            .unwrap()
+            .loaded_chunk_count()
+            == 18
+    });
+
+    app.world_mut().resource_mut::<ColumnLightBudget>().0 = 100;
+    app.update();
+    let (ticket, incarnations) = {
+        let dimension = app.world().get::<Dimension>(dimension).unwrap();
+        let ticket = dimension
+            .light_tasks()
+            .active_ticket()
+            .expect("staged dependency closure must start an async light patch");
+        let incarnations = dimension
+            .stream()
+            .columns()
+            .map(|column| dimension.column_incarnation(column).unwrap())
+            .collect::<HashSet<_>>();
+        assert_eq!(incarnations.len(), 9);
+        assert_eq!(dimension.published_chunk_count(), 0);
+        (ticket, incarnations)
+    };
+
+    let drained = {
+        let mut dimension = app.world_mut().get_mut::<Dimension>(dimension).unwrap();
+        let drained = dimension.drain_streamed_columns();
+        assert_eq!(dimension.light_tasks().active_ticket(), Some(ticket));
+        assert_eq!(dimension.light_tasks_mut().take_cancelled_count(), 1);
+        assert!(dimension.stream().light_patch_columns(ticket).is_none());
+        assert!(dimension.stream().is_empty());
+        assert!(dimension.derived_work.is_empty());
+        drained
+    };
+    assert_eq!(
+        drained
+            .iter()
+            .map(|column| column.incarnation)
+            .collect::<HashSet<_>>(),
+        incarnations
+    );
+    assert!(
+        drained
+            .iter()
+            .all(|column| app.world().get_entity(column.incarnation).is_ok())
+    );
+}
+
+#[test]
+fn drain_unpublishes_and_clears_all_disposable_work() {
+    let center = ChunkColumn::new(0, 0);
+    let (mut app, dimension, _) = staged_lighting_app(2);
+    app.update();
+    app.world_mut().resource_mut::<ColumnLoadBudget>().0 = 0;
+    update_until(&mut app, |world| {
+        world
+            .get::<Dimension>(dimension)
+            .unwrap()
+            .contains_published_chunk(center.chunk(0))
+    });
+
+    let incarnations = {
+        let dimension = app.world().get::<Dimension>(dimension).unwrap();
+        assert_eq!(dimension.published_chunk_count(), 2);
+        assert!(!dimension.derived_work.is_empty());
+        dimension
+            .stream()
+            .columns()
+            .map(|column| dimension.column_incarnation(column).unwrap())
+            .collect::<HashSet<_>>()
+    };
+    let drained = app
+        .world_mut()
+        .get_mut::<Dimension>(dimension)
+        .unwrap()
+        .drain_streamed_columns();
+    let dimension = app.world().get::<Dimension>(dimension).unwrap();
+    assert_eq!(dimension.loaded_chunk_count(), 0);
+    assert_eq!(dimension.published_chunk_count(), 0);
+    assert!(dimension.stream().is_empty());
+    assert!(dimension.derived_work.is_empty());
+    assert_eq!(
+        drained
+            .iter()
+            .map(|column| column.incarnation)
+            .collect::<HashSet<_>>(),
+        incarnations
+    );
 }
 
 #[test]
