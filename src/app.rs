@@ -24,7 +24,7 @@ use crate::{
     textures::BlockTexturePlugin,
     ui::UIPlugin,
     world::chunk::{
-        Chunk, ChunkColumn, ChunkNeedsLightRebuild, ChunkNeedsMeshRebuild,
+        Chunk, ChunkColumn, ChunkContentCounts, ChunkNeedsLightRebuild, ChunkNeedsMeshRebuild,
         ChunkNeedsRenderLightUpload, ChunkPerfCounters, ChunkPos, ChunkPosition,
         mesh::ChunkMeshLayer,
     },
@@ -135,6 +135,7 @@ fn log_streaming_startup_milestones(
     dimension: Option<Single<&Dimension, With<Active>>>,
     desired_view: Option<Res<DesiredColumnView>>,
     dirty_meshes: Query<(), With<ChunkNeedsMeshRebuild>>,
+    chunk_contents: Query<&ChunkContentCounts>,
     player: Option<Single<&Transform, With<Player>>>,
     perf: Option<Res<ChunkPerfCounters>>,
     mut trace: ResMut<StreamingStartupTrace>,
@@ -269,10 +270,22 @@ fn log_streaming_startup_milestones(
         if name == "center_cpu_meshed"
             && let Some(perf) = perf.as_deref()
         {
+            let rendered_cells_by_y = dimension
+                .complete_loaded_column(center)
+                .into_iter()
+                .flatten()
+                .filter_map(|(position, entity)| {
+                    chunk_contents
+                        .get(entity)
+                        .ok()
+                        .map(|contents| (position.y(), contents.rendered))
+                })
+                .collect::<Vec<_>>();
             info!(
                 target: "perf",
+                rendered_cells_by_y = ?rendered_cells_by_y,
                 mesh_runs = perf.mesh_rebuild_runs,
-                mesh_chunks = perf.mesh_rebuilds,
+                mesh_rebuilt_chunks = perf.mesh_rebuilds,
                 mesh_total_ms = format_args!(
                     "{:.3}",
                     perf.mesh_rebuild_elapsed.as_secs_f64() * 1_000.0
