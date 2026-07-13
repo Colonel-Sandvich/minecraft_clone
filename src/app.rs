@@ -419,12 +419,22 @@ fn log_frame_perf(
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
+    let dirty_collider_positions = dimension
+        .as_deref()
+        .map(|dimension| {
+            dimension
+                .pending_collider_rebuilds()
+                .map(|work| work.position().as_ivec3())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
     let dirty_light_rebuild_positions = dirty_light_rebuild_chunks
         .iter()
         .map(|pos| pos.as_ivec3())
         .collect::<Vec<_>>();
     let dirty_mesh_sample = format_position_sample(&dirty_mesh_positions);
     let dirty_light_upload_sample = format_position_sample(&dirty_light_upload_positions);
+    let dirty_collider_sample = format_position_sample(&dirty_collider_positions);
     let dirty_light_rebuild_sample = format_position_sample(&dirty_light_rebuild_positions);
     let chunk_perf = chunk_perf
         .as_deref_mut()
@@ -440,6 +450,8 @@ fn log_frame_perf(
         dirty_mesh_sample = %dirty_mesh_sample,
         dirty_light_upload = dirty_light_upload_positions.len(),
         dirty_light_upload_sample = %dirty_light_upload_sample,
+        dirty_collider = dirty_collider_positions.len(),
+        dirty_collider_sample = %dirty_collider_sample,
         dirty_light_rebuild = dirty_light_rebuild_positions.len(),
         dirty_light_rebuild_sample = %dirty_light_rebuild_sample,
         column_loads_5s = chunk_perf.column_loads,

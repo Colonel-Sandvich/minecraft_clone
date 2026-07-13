@@ -8,8 +8,8 @@ use crate::{
     world::{
         chunk::{
             ChunkColumn, ChunkContentCounts, ChunkInvalidationPlan, ChunkLight,
-            ChunkNeedsColliderRebuild, ChunkNeedsFluidStep, ChunkNeedsLightRebuild, ChunkNeedsSave,
-            ChunkPerfCounters, ChunkPos, ChunkPosition,
+            ChunkNeedsFluidStep, ChunkNeedsLightRebuild, ChunkNeedsSave, ChunkPerfCounters,
+            ChunkPos, ChunkPosition,
         },
         definition::ColumnAddress,
         loading::load_or_generate_column,
@@ -80,11 +80,9 @@ pub(crate) fn maintain_column_residency(
             .complete_loaded_column(column)
             .expect("unpublished column must remain complete");
         for (_, entity) in chunks {
-            commands.entity(entity).remove::<(
-                ChunkNeedsColliderRebuild,
-                ChunkNeedsFluidStep,
-                ChunkNeedsLightRebuild,
-            )>();
+            commands
+                .entity(entity)
+                .remove::<(ChunkNeedsFluidStep, ChunkNeedsLightRebuild)>();
             if let Ok(children) = children.get(entity) {
                 for child in children {
                     if colliders.get(*child).is_ok() {

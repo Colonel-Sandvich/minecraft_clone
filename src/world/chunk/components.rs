@@ -172,9 +172,6 @@ impl From<ChunkPosition> for ChunkPos {
 pub struct ChunkNeedsSave;
 
 #[derive(Component, Debug, Clone, Copy)]
-pub struct ChunkNeedsColliderRebuild;
-
-#[derive(Component, Debug, Clone, Copy)]
 pub struct ChunkNeedsLightRebuild;
 
 /// Marks a chunk that has pending fluid simulation work.

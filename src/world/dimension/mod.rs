@@ -326,6 +326,10 @@ impl Dimension {
         self.enqueue_published_derived_work(position, ChunkDerivedWorkKind::RenderLightUpload)
     }
 
+    pub(crate) fn enqueue_collider_rebuild(&mut self, position: ChunkPos) -> bool {
+        self.enqueue_published_derived_work(position, ChunkDerivedWorkKind::ColliderRebuild)
+    }
+
     pub(crate) fn take_mesh_rebuilds(&mut self) -> Vec<ChunkDerivedWork> {
         self.derived_work
             .take_up_to(ChunkDerivedWorkKind::MeshRebuild, usize::MAX)
@@ -336,12 +340,21 @@ impl Dimension {
             .take_up_to(ChunkDerivedWorkKind::RenderLightUpload, usize::MAX)
     }
 
+    pub(crate) fn take_collider_rebuilds(&mut self) -> Vec<ChunkDerivedWork> {
+        self.derived_work
+            .take_up_to(ChunkDerivedWorkKind::ColliderRebuild, usize::MAX)
+    }
+
     pub(crate) fn requeue_mesh_rebuild(&mut self, work: ChunkDerivedWork) -> bool {
         self.requeue_published_derived_work(work, ChunkDerivedWorkKind::MeshRebuild)
     }
 
     pub(crate) fn requeue_render_light_upload(&mut self, work: ChunkDerivedWork) -> bool {
         self.requeue_published_derived_work(work, ChunkDerivedWorkKind::RenderLightUpload)
+    }
+
+    pub(crate) fn requeue_collider_rebuild(&mut self, work: ChunkDerivedWork) -> bool {
+        self.requeue_published_derived_work(work, ChunkDerivedWorkKind::ColliderRebuild)
     }
 
     #[cfg_attr(
@@ -373,6 +386,11 @@ impl Dimension {
             .pending(ChunkDerivedWorkKind::RenderLightUpload)
     }
 
+    pub(crate) fn pending_collider_rebuilds(&self) -> impl Iterator<Item = ChunkDerivedWork> + '_ {
+        self.derived_work
+            .pending(ChunkDerivedWorkKind::ColliderRebuild)
+    }
+
     pub(crate) fn has_pending_mesh_rebuild(&self, position: ChunkPos) -> bool {
         self.has_pending_derived_work(position, ChunkDerivedWorkKind::MeshRebuild)
     }
@@ -383,6 +401,10 @@ impl Dimension {
     )]
     pub(crate) fn has_pending_render_light_upload(&self, position: ChunkPos) -> bool {
         self.has_pending_derived_work(position, ChunkDerivedWorkKind::RenderLightUpload)
+    }
+
+    pub(crate) fn has_pending_collider_rebuild(&self, position: ChunkPos) -> bool {
+        self.has_pending_derived_work(position, ChunkDerivedWorkKind::ColliderRebuild)
     }
 
     /// Drops every disposable task owned by this dimension.
@@ -439,10 +461,11 @@ impl Dimension {
             && work.effects().contains(kind)
     }
 
-    fn discard_visual_work(&mut self, position: ChunkPos, expected_entity: Entity) {
-        let visual = ChunkDerivedEffects::only(ChunkDerivedWorkKind::MeshRebuild)
+    fn discard_unpublished_work(&mut self, position: ChunkPos, expected_entity: Entity) {
+        let effects = ChunkDerivedEffects::only(ChunkDerivedWorkKind::MeshRebuild)
+            .with(ChunkDerivedWorkKind::ColliderRebuild)
             .with(ChunkDerivedWorkKind::RenderLightUpload);
-        self.derived_work.take(position, expected_entity, visual);
+        self.derived_work.take(position, expected_entity, effects);
     }
 
     fn discard_chunk_derived_work(&mut self, position: ChunkPos, expected_entity: Entity) {
@@ -627,7 +650,7 @@ impl Dimension {
             .complete_loaded_column(column)
             .expect("unpublished column must remain complete");
         for (position, entity) in chunks {
-            self.discard_visual_work(position, entity);
+            self.discard_unpublished_work(position, entity);
         }
         assert!(
             self.hide_loaded_column(column),

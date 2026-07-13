@@ -1,4 +1,4 @@
-use super::{Chunk, ChunkContentCounts, ChunkNeedsColliderRebuild, ChunkPosition};
+use super::{Chunk, ChunkColumn, ChunkContentCounts, ChunkPosition};
 use crate::world::{
     WORLD_COLLISION_LAYERS,
     dimension::{Active, Dimension},
@@ -45,43 +45,85 @@ fn insert_one(
     ));
 }
 
+pub(crate) fn column_colliders_ready(
+    dimension: &Dimension,
+    column: ChunkColumn,
+    chunks: &Query<(&ChunkPosition, &ChunkContentCounts, Option<&Children>)>,
+    colliders: &Query<(), With<Collider>>,
+) -> bool {
+    let Some(column_chunks) = dimension.complete_loaded_column(column) else {
+        return false;
+    };
+
+    for (position, entity) in column_chunks {
+        if dimension.published_chunk_entity(position) != Some(entity)
+            || dimension.has_pending_collider_rebuild(position)
+        {
+            return false;
+        }
+        let Ok((actual_position, contents, children)) = chunks.get(entity) else {
+            return false;
+        };
+        if actual_position.chunk_pos() != position {
+            return false;
+        }
+        let collider_count = children.map_or(0, |children| colliders.iter_many(children).count());
+        if (contents.solid == 0 && collider_count != 0)
+            || (contents.solid > 0 && collider_count == 0)
+        {
+            return false;
+        }
+    }
+
+    true
+}
+
 fn rebuild_chunk_colliders(
     mut commands: Commands,
-    chunks_q: Query<
-        (
-            &ChunkPosition,
-            &Chunk,
-            &ChunkContentCounts,
-            Entity,
-            Option<&Children>,
-        ),
-        With<ChunkNeedsColliderRebuild>,
-    >,
+    chunks_q: Query<(
+        Entity,
+        &ChunkPosition,
+        &Chunk,
+        &ChunkContentCounts,
+        Option<&Children>,
+    )>,
     collider_q: Query<Entity, With<Collider>>,
-    dimension: Option<Single<&Dimension, With<Active>>>,
+    dimension: Option<Single<&mut Dimension, With<Active>>>,
 ) {
-    if chunks_q.is_empty() {
+    let Some(mut dimension) = dimension else {
+        return;
+    };
+    let pending = dimension.take_collider_rebuilds();
+    if pending.is_empty() {
         return;
     }
 
-    let Some(dimension) = dimension else {
-        return;
-    };
-    for (position, chunk, meta, chunk_entity, children) in &chunks_q {
-        if dimension.published_chunk_entity(position.chunk_pos()) != Some(chunk_entity) {
+    for work in pending {
+        let position = work.position();
+        let expected_entity = work.expected_entity();
+        if dimension.published_chunk_entity(position) != Some(expected_entity) {
+            continue;
+        }
+        let Ok((entity, actual_position, chunk, contents, children)) =
+            chunks_q.get(expected_entity)
+        else {
+            dimension.requeue_collider_rebuild(work);
+            continue;
+        };
+        if entity != expected_entity || actual_position.chunk_pos() != position {
+            dimension.requeue_collider_rebuild(work);
             continue;
         }
 
         if let Some(children) = children {
             for collider_entity in collider_q.iter_many(children) {
-                commands.get_entity(collider_entity).unwrap().despawn();
+                if let Ok(mut entity) = commands.get_entity(collider_entity) {
+                    entity.despawn();
+                }
             }
         }
 
-        insert_one(&mut commands, chunk, chunk_entity, meta);
-        commands
-            .entity(chunk_entity)
-            .remove::<ChunkNeedsColliderRebuild>();
+        insert_one(&mut commands, chunk, expected_entity, contents);
     }
 }
 
@@ -89,23 +131,76 @@ fn rebuild_chunk_colliders(
 mod tests {
     use super::*;
     use crate::block::BlockType;
-    use crate::world::chunk::{ChunkCell, ChunkPos};
+    use crate::world::{
+        WorldHeight,
+        chunk::{ChunkCell, ChunkPos},
+    };
 
     #[derive(Resource)]
     struct TestDimension(Entity);
+
+    #[derive(Resource, Default)]
+    struct CenterColliderReady(bool);
 
     fn collider_app() -> App {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins)
             .add_systems(Update, rebuild_chunk_colliders);
-        let dimension = app.world_mut().spawn((Dimension::default(), Active)).id();
-        app.insert_resource(TestDimension(dimension));
+        add_test_dimension(&mut app);
         app
+    }
+
+    fn fixed_collider_app() -> App {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .init_resource::<CenterColliderReady>()
+            .add_systems(FixedPreUpdate, rebuild_chunk_colliders)
+            .add_systems(Update, observe_center_collider_readiness);
+        add_test_dimension(&mut app);
+        app
+    }
+
+    fn add_test_dimension(app: &mut App) {
+        let dimension = app.world_mut().spawn_empty().id();
+        app.world_mut().entity_mut(dimension).insert((
+            Dimension::new_for_test(dimension, WorldHeight::new(1).unwrap()),
+            Active,
+        ));
+        app.insert_resource(TestDimension(dimension));
+    }
+
+    fn observe_center_collider_readiness(
+        dimension: Single<&Dimension, With<Active>>,
+        chunks: Query<(&ChunkPosition, &ChunkContentCounts, Option<&Children>)>,
+        colliders: Query<(), With<Collider>>,
+        mut ready: ResMut<CenterColliderReady>,
+    ) {
+        ready.0 = column_colliders_ready(
+            dimension.into_inner(),
+            ChunkColumn::new(0, 0),
+            &chunks,
+            &colliders,
+        );
     }
 
     fn register_active_chunk(app: &mut App, position: ChunkPos, chunk: Entity) {
         let dimension = app.world().resource::<TestDimension>().0;
         register_dimension_chunk(app, dimension, position, chunk);
+    }
+
+    fn enqueue_active_rebuild(app: &mut App, position: ChunkPos) {
+        let dimension = app.world().resource::<TestDimension>().0;
+        enqueue_dimension_rebuild(app, dimension, position);
+    }
+
+    fn enqueue_dimension_rebuild(app: &mut App, dimension: Entity, position: ChunkPos) {
+        assert!(
+            app.world_mut()
+                .entity_mut(dimension)
+                .get_mut::<Dimension>()
+                .unwrap()
+                .enqueue_collider_rebuild(position)
+        );
     }
 
     fn register_dimension_chunk(
@@ -134,7 +229,7 @@ mod tests {
     }
 
     #[test]
-    fn collider_rebuild_marker_is_removed_after_rebuild() {
+    fn queued_collider_rebuild_is_consumed_after_rebuild() {
         let mut app = collider_app();
 
         let mut chunk = Chunk::default();
@@ -142,23 +237,18 @@ mod tests {
         let meta = chunk.compute_content_counts();
         let chunk_entity = app
             .world_mut()
-            .spawn((
-                ChunkPosition::from(ChunkPos::ZERO),
-                chunk,
-                meta,
-                ChunkNeedsColliderRebuild,
-            ))
+            .spawn((ChunkPosition::from(ChunkPos::ZERO), chunk, meta))
             .id();
         register_active_chunk(&mut app, ChunkPos::ZERO, chunk_entity);
+        enqueue_active_rebuild(&mut app, ChunkPos::ZERO);
 
         app.update();
 
         let world = app.world();
-        assert!(
-            world
-                .get::<ChunkNeedsColliderRebuild>(chunk_entity)
-                .is_none()
-        );
+        let dimension = world
+            .get::<Dimension>(world.resource::<TestDimension>().0)
+            .unwrap();
+        assert!(!dimension.has_pending_collider_rebuild(ChunkPos::ZERO));
         assert_eq!(collider_child_count(world, chunk_entity), 1);
     }
 
@@ -172,14 +262,10 @@ mod tests {
         let meta = chunk.compute_content_counts();
         let chunk_entity = app
             .world_mut()
-            .spawn((
-                ChunkPosition::from(ChunkPos::ZERO),
-                chunk,
-                meta,
-                ChunkNeedsColliderRebuild,
-            ))
+            .spawn((ChunkPosition::from(ChunkPos::ZERO), chunk, meta))
             .id();
         register_active_chunk(&mut app, ChunkPos::ZERO, chunk_entity);
+        enqueue_active_rebuild(&mut app, ChunkPos::ZERO);
 
         app.update();
 
@@ -191,19 +277,14 @@ mod tests {
         let mut app = collider_app();
         let active_dimension = app.world().resource::<TestDimension>().0;
         let foreign_dimension = app.world_mut().spawn(Dimension::default()).id();
-        let position = ChunkPos::new(-7, 2, 11);
+        let position = ChunkPos::new(-7, 0, 11);
 
         let mut active_chunk = Chunk::default();
         active_chunk.set_cell_xyz(0, 0, 0, BlockType::Stone.into());
         let active_meta = active_chunk.compute_content_counts();
         let active_entity = app
             .world_mut()
-            .spawn((
-                ChunkPosition::from(position),
-                active_chunk,
-                active_meta,
-                ChunkNeedsColliderRebuild,
-            ))
+            .spawn((ChunkPosition::from(position), active_chunk, active_meta))
             .id();
 
         let mut foreign_chunk = Chunk::default();
@@ -211,31 +292,138 @@ mod tests {
         let foreign_meta = foreign_chunk.compute_content_counts();
         let foreign_entity = app
             .world_mut()
-            .spawn((
-                ChunkPosition::from(position),
-                foreign_chunk,
-                foreign_meta,
-                ChunkNeedsColliderRebuild,
-            ))
+            .spawn((ChunkPosition::from(position), foreign_chunk, foreign_meta))
             .id();
 
         register_dimension_chunk(&mut app, active_dimension, position, active_entity);
         register_dimension_chunk(&mut app, foreign_dimension, position, foreign_entity);
+        enqueue_dimension_rebuild(&mut app, active_dimension, position);
+        enqueue_dimension_rebuild(&mut app, foreign_dimension, position);
 
         app.update();
 
         let world = app.world();
         assert!(
-            world
-                .get::<ChunkNeedsColliderRebuild>(active_entity)
-                .is_none()
+            !world
+                .get::<Dimension>(active_dimension)
+                .unwrap()
+                .has_pending_collider_rebuild(position)
         );
         assert_eq!(collider_child_count(world, active_entity), 1);
         assert!(
             world
-                .get::<ChunkNeedsColliderRebuild>(foreign_entity)
-                .is_some()
+                .get::<Dimension>(foreign_dimension)
+                .unwrap()
+                .has_pending_collider_rebuild(position)
         );
         assert_eq!(collider_child_count(world, foreign_entity), 0);
+    }
+
+    #[test]
+    fn replacement_chunk_rejects_stale_collider_work() {
+        let mut app = collider_app();
+        let position = ChunkPos::ZERO;
+
+        let mut old_chunk = Chunk::default();
+        old_chunk.set_cell_xyz(0, 0, 0, BlockType::Stone.into());
+        let old_entity = app
+            .world_mut()
+            .spawn((
+                ChunkPosition::from(position),
+                old_chunk.clone(),
+                old_chunk.compute_content_counts(),
+            ))
+            .id();
+        register_active_chunk(&mut app, position, old_entity);
+        enqueue_active_rebuild(&mut app, position);
+
+        let mut replacement = Chunk::default();
+        replacement.set_cell_xyz(1, 0, 0, BlockType::Stone.into());
+        let replacement_entity = app
+            .world_mut()
+            .spawn((
+                ChunkPosition::from(position),
+                replacement.clone(),
+                replacement.compute_content_counts(),
+            ))
+            .id();
+        register_active_chunk(&mut app, position, replacement_entity);
+        enqueue_active_rebuild(&mut app, position);
+
+        app.update();
+
+        assert_eq!(collider_child_count(app.world(), old_entity), 0);
+        assert_eq!(collider_child_count(app.world(), replacement_entity), 1);
+    }
+
+    #[test]
+    fn empty_chunk_completion_removes_existing_collider() {
+        let mut app = collider_app();
+        let entity = app
+            .world_mut()
+            .spawn((
+                ChunkPosition::from(ChunkPos::ZERO),
+                Chunk::default(),
+                ChunkContentCounts::default(),
+            ))
+            .id();
+        register_active_chunk(&mut app, ChunkPos::ZERO, entity);
+        app.world_mut().spawn((
+            ChildOf(entity),
+            Collider::cuboid(1.0, 1.0, 1.0),
+            RigidBody::Static,
+        ));
+        enqueue_active_rebuild(&mut app, ChunkPos::ZERO);
+
+        app.update();
+
+        assert_eq!(collider_child_count(app.world(), entity), 0);
+        let dimension = app
+            .world()
+            .get::<Dimension>(app.world().resource::<TestDimension>().0)
+            .unwrap();
+        assert!(!dimension.has_pending_collider_rebuild(ChunkPos::ZERO));
+    }
+
+    #[test]
+    fn current_but_unreadable_chunk_requeues_collider_work() {
+        let mut app = collider_app();
+        let entity = app
+            .world_mut()
+            .spawn(ChunkPosition::from(ChunkPos::ZERO))
+            .id();
+        register_active_chunk(&mut app, ChunkPos::ZERO, entity);
+        enqueue_active_rebuild(&mut app, ChunkPos::ZERO);
+
+        app.update();
+
+        let dimension = app
+            .world()
+            .get::<Dimension>(app.world().resource::<TestDimension>().0)
+            .unwrap();
+        assert!(dimension.has_pending_collider_rebuild(ChunkPos::ZERO));
+    }
+
+    #[test]
+    fn published_column_readiness_waits_for_fixed_collider_rebuild() {
+        let mut app = fixed_collider_app();
+        let mut chunk = Chunk::default();
+        chunk.set_cell_xyz(0, 0, 0, BlockType::Stone.into());
+        let contents = chunk.compute_content_counts();
+        let entity = app
+            .world_mut()
+            .spawn((ChunkPosition::from(ChunkPos::ZERO), chunk, contents))
+            .id();
+        register_active_chunk(&mut app, ChunkPos::ZERO, entity);
+        enqueue_active_rebuild(&mut app, ChunkPos::ZERO);
+
+        app.world_mut().run_schedule(Update);
+        assert!(!app.world().resource::<CenterColliderReady>().0);
+
+        app.world_mut().run_schedule(FixedPreUpdate);
+        app.world_mut().run_schedule(Update);
+
+        assert!(app.world().resource::<CenterColliderReady>().0);
+        assert_eq!(collider_child_count(app.world(), entity), 1);
     }
 }

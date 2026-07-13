@@ -12,8 +12,8 @@ use minecraft_clone::{
         DimensionCatalog, DimensionId, WORLD_COLLISION_LAYERS, WorldMetadata,
         chunk::{
             CHUNK_SIZE, Chunk, ChunkCell, ChunkColumn, ChunkContentCounts, ChunkHeightmap,
-            ChunkLight, ChunkNeedsColliderRebuild, ChunkNeedsFluidStep, ChunkNeedsLightRebuild,
-            ChunkNeedsSave, ChunkPos, ChunkPosition, FluidProfile, FluidState,
+            ChunkLight, ChunkNeedsFluidStep, ChunkNeedsLightRebuild, ChunkNeedsSave, ChunkPos,
+            ChunkPosition, FluidProfile, FluidState,
             light::ChunkLightRegion,
             mesh::{ChunkMeshBlocks, ChunkMeshLight, mesher::build},
         },
@@ -27,6 +27,9 @@ struct ChunkNeedsMeshRebuild;
 
 #[derive(Component)]
 struct ChunkNeedsRenderLightUpload;
+
+#[derive(Component)]
+struct ChunkNeedsColliderRebuild;
 
 const MESH_REBUILD_SIDE: i32 = 16;
 const MESH_REBUILD_HEIGHT: i32 = 4;

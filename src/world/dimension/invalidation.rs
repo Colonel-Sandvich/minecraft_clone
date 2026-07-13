@@ -1,8 +1,7 @@
 use bevy::{platform::collections::HashSet, prelude::*};
 
 use crate::world::chunk::{
-    ChunkColumn, ChunkInvalidationPlan, ChunkNeedsColliderRebuild, ChunkNeedsFluidStep,
-    ChunkNeedsLightRebuild, ChunkNeedsSave,
+    ChunkColumn, ChunkInvalidationPlan, ChunkNeedsFluidStep, ChunkNeedsLightRebuild, ChunkNeedsSave,
 };
 
 use super::Dimension;
@@ -27,13 +26,13 @@ pub(crate) fn apply_chunk_invalidations(
         if effects.needs_render_light_upload() {
             dimension.enqueue_render_light_upload(position);
         }
+        if effects.needs_collider_rebuild() {
+            dimension.enqueue_collider_rebuild(position);
+        }
         let mut entity = commands.entity(entity);
 
         if effects.needs_save() {
             entity.insert(ChunkNeedsSave);
-        }
-        if effects.needs_collider_rebuild() {
-            entity.insert(ChunkNeedsColliderRebuild);
         }
         if effects.needs_light_rebuild() {
             entity.insert(ChunkNeedsLightRebuild);
@@ -127,7 +126,12 @@ mod tests {
                 .pending_mesh_rebuild_count(),
             1
         );
-        assert!(world.get::<ChunkNeedsColliderRebuild>(own).is_some());
+        assert!(
+            world
+                .get::<Dimension>(active_dimension)
+                .unwrap()
+                .has_pending_collider_rebuild(origin)
+        );
         assert!(world.get::<ChunkNeedsLightRebuild>(own).is_some());
         assert!(world.get::<ChunkNeedsFluidStep>(own).is_some());
 
@@ -147,6 +151,12 @@ mod tests {
                 .get::<Dimension>(other_dimension)
                 .unwrap()
                 .has_pending_mesh_rebuild(origin)
+        );
+        assert!(
+            !world
+                .get::<Dimension>(other_dimension)
+                .unwrap()
+                .has_pending_collider_rebuild(origin)
         );
     }
 }

@@ -1,5 +1,6 @@
 use std::thread;
 
+use avian3d::prelude::Collider;
 use bevy::prelude::*;
 
 use super::*;
@@ -8,8 +9,8 @@ use crate::{
     player::{Player, PlayerDimension},
     world::{
         chunk::{
-            CHUNK_SIZE, Chunk, ChunkColumn, ChunkHeightmap, ChunkLight, ChunkNeedsSave, ChunkPos,
-            LocalBlockPos,
+            CHUNK_SIZE, Chunk, ChunkColumn, ChunkContentCounts, ChunkHeightmap, ChunkLight,
+            ChunkNeedsSave, ChunkPos, LocalBlockPos,
             mesh::{PreparedChunkMeshLight, padded_chunk_index},
         },
         definition::{DimensionCatalog, DimensionDefinition, DimensionId, GeneratorProfile},
@@ -464,6 +465,14 @@ fn complete_dependency_halo_lights_and_publishes_center_exactly_once() {
             assert!(state.is_staged());
             assert!(state.is_light_pending());
         }
+    }
+    for (position, entity) in dimension_ref.complete_loaded_column(center).unwrap() {
+        let contents = world.get::<ChunkContentCounts>(entity).unwrap();
+        assert_eq!(
+            dimension_ref.has_pending_collider_rebuild(position),
+            contents.solid > 0,
+            "publication must enqueue collider work only for solid chunks"
+        );
     }
 
     let perf = world.resource::<crate::world::chunk::ChunkPerfCounters>();
@@ -1140,6 +1149,16 @@ fn outgoing_published_column_becomes_hidden_lit_support_without_relighting() {
         .unwrap()
         .column_incarnation(center)
         .unwrap();
+    let center_entity = app
+        .world()
+        .get::<Dimension>(dimension)
+        .unwrap()
+        .loaded_chunk_entity(center.chunk(0))
+        .unwrap();
+    let collider = app
+        .world_mut()
+        .spawn((ChildOf(center_entity), Collider::cuboid(1.0, 1.0, 1.0)))
+        .id();
     app.world_mut()
         .entity_mut(player)
         .get_mut::<Transform>()
@@ -1159,6 +1178,14 @@ fn outgoing_published_column_becomes_hidden_lit_support_without_relighting() {
     assert!(
         !dimension_ref.has_pending_mesh_rebuild(center.chunk(0)),
         "hidden support must not retain visual work"
+    );
+    assert!(
+        !dimension_ref.has_pending_collider_rebuild(center.chunk(0)),
+        "hidden support must not retain collider work"
+    );
+    assert!(
+        world.get::<Collider>(collider).is_none(),
+        "hidden support must not retain collider children"
     );
     let perf = world.resource::<crate::world::chunk::ChunkPerfCounters>();
     assert_eq!(perf.light_patch_runs, 1);
