@@ -25,6 +25,16 @@ pub use sqlite::{SqliteChunkStore, development_world_path};
 #[cfg(feature = "turso-store")]
 pub use turso_backend::{TursoChunkStore, development_turso_path};
 
+fn development_store_stem(metadata: &WorldMetadata) -> String {
+    format!(
+        "seed-{:016x}-g{}-c{}-h{}",
+        metadata.seed,
+        metadata.generator_version,
+        metadata.chunk_format_version,
+        metadata.height_chunks(),
+    )
+}
+
 pub type ChunkStoreResult<T> = Result<T, ChunkStoreError>;
 
 pub(crate) const SQL_CREATE_WORLD_METADATA: &str = "CREATE TABLE IF NOT EXISTS world_metadata (

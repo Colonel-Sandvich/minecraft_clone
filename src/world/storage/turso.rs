@@ -260,7 +260,7 @@ fn path_to_string(path: &Path) -> ChunkStoreResult<String> {
 pub fn development_turso_path(metadata: &WorldMetadata) -> PathBuf {
     PathBuf::from("saves")
         .join("dev")
-        .join(format!("seed-{:016x}.turso", metadata.seed))
+        .join(format!("{}.turso", super::development_store_stem(metadata)))
 }
 
 async fn load_column_heightmap(

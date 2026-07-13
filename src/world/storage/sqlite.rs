@@ -203,9 +203,10 @@ fn configure_database(connection: &Connection) -> ChunkStoreResult<()> {
 }
 
 pub fn development_world_path(metadata: &WorldMetadata) -> PathBuf {
-    PathBuf::from("saves")
-        .join("dev")
-        .join(format!("seed-{:016x}.sqlite3", metadata.seed))
+    PathBuf::from("saves").join("dev").join(format!(
+        "{}.sqlite3",
+        super::development_store_stem(metadata)
+    ))
 }
 
 fn ensure_metadata_value(

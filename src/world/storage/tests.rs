@@ -671,10 +671,25 @@ fn repository_rejects_columns_returned_for_another_dimension() {
 }
 
 #[test]
-fn development_world_paths_include_seed() {
-    let a = development_world_path(&WorldMetadata::with_seed(1));
-    let b = development_world_path(&WorldMetadata::with_seed(2));
+fn development_world_paths_include_complete_format_identity() {
+    let base = WorldMetadata::with_seed(1);
+    let different_seed = WorldMetadata::with_seed(2);
+    let mut different_generator = base.clone();
+    different_generator.generator_version += 1;
+    let mut different_chunk_format = base.clone();
+    different_chunk_format.chunk_format_version += 1;
+    let different_height = base.clone().with_height_chunks(4).unwrap();
 
-    assert_ne!(a, b);
-    assert!(a.ends_with("seed-0000000000000001.sqlite3"));
+    let path = development_world_path(&base);
+    for different in [
+        different_seed,
+        different_generator,
+        different_chunk_format,
+        different_height,
+    ] {
+        assert_ne!(path, development_world_path(&different));
+    }
+    assert!(path.ends_with("seed-0000000000000001-g1-c2-h5.sqlite3"));
+    #[cfg(feature = "turso-store")]
+    assert!(development_turso_path(&base).ends_with("seed-0000000000000001-g1-c2-h5.turso"));
 }
