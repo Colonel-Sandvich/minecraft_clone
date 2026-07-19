@@ -17,7 +17,7 @@ use crate::{
     },
 };
 
-use super::cam::{MouseCam, MouseState, gameplay_input_active};
+use super::cam::{MouseCam, MouseState, PlayerCameraSystems, gameplay_input_active};
 
 pub struct BlockInteractionPlugin;
 
@@ -30,7 +30,8 @@ impl Plugin for BlockInteractionPlugin {
                 PreUpdate,
                 update_block_target
                     .run_if(gameplay_input_active)
-                    .after(InputSystems),
+                    .after(InputSystems)
+                    .after(PlayerCameraSystems::Look),
             )
             .add_systems(OnEnter(GameState::Paused), clear_block_interaction_state)
             .add_systems(OnEnter(GameState::Playing), clear_block_interaction_state)

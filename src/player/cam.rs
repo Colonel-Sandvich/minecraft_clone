@@ -12,7 +12,13 @@ pub struct PlayerCamPlugin;
 impl Plugin for PlayerCamPlugin {
     fn build(&self, app: &mut App) {
         app.init_state::<MouseState>()
-            .add_systems(Update, player_look.run_if(gameplay_input_active))
+            .add_systems(
+                PreUpdate,
+                player_look
+                    .in_set(PlayerCameraSystems::Look)
+                    .after(InputSystems)
+                    .run_if(gameplay_input_active),
+            )
             .add_systems(OnEnter(MouseState::Grabbed), apply_grabbed_cursor)
             .add_systems(OnEnter(MouseState::Free), apply_free_cursor)
             .add_systems(OnEnter(GameState::Playing), enter_gameplay_cursor)
@@ -21,6 +27,11 @@ impl Plugin for PlayerCamPlugin {
 
         app.init_resource::<MouseSettings>();
     }
+}
+
+#[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PlayerCameraSystems {
+    Look,
 }
 
 #[derive(Resource, SettingsGroup, Reflect, Debug, Clone, Copy)]

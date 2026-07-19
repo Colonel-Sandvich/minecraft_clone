@@ -18,18 +18,20 @@ use bevy_settings::SettingsPlugin;
 use crate::{
     audio::{GameAudioPlugin, GameAudioSettings},
     game_state::GameStatePlugin,
+    input::GameInputPlugin,
+    item::DroppedItemPlugin,
     light::LightPlugin,
     memory::{MemoryTrackingPlugin, memory_profiler_enabled},
     mob::MobControllerPlugin,
     player::{Player, PlayerPlugin, cam::MouseSettings},
     textures::BlockTexturePlugin,
     ui::UIPlugin,
-    world::chunk::{
-        Chunk, ChunkColumn, ChunkContentCounts, ChunkNeedsLightRebuild, ChunkPerfCounters,
-        ChunkPos, ChunkPosition, mesh::ChunkMeshLayer,
-    },
     world::{
         WorldConfig, WorldMetadata, WorldPlugin,
+        chunk::{
+            Chunk, ChunkColumn, ChunkContentCounts, ChunkNeedsLightRebuild, ChunkPerfCounters,
+            ChunkPos, ChunkPosition, mesh::ChunkMeshLayer,
+        },
         dimension::{Active, DesiredColumnView, Dimension, ViewDistance},
     },
 };
@@ -65,6 +67,8 @@ impl Plugin for AppPlugin {
         .add_plugins(LightPlugin)
         .add_plugins(MobControllerPlugin)
         .add_plugins(PlayerPlugin)
+        .add_plugins(GameInputPlugin)
+        .add_plugins(DroppedItemPlugin)
         .add_plugins(BlockTexturePlugin)
         .insert_resource({
             let metadata = WorldMetadata::default();

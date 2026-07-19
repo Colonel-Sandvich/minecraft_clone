@@ -102,11 +102,17 @@ pub enum WorldStorageConfig {
 
 pub const WORLD_LAYER: u32 = 1 << 0;
 pub const ACTOR_LAYER: u32 = 1 << 1;
+pub const ITEM_LAYER: u32 = 1 << 2;
+pub const PICKUP_LAYER: u32 = 1 << 3;
 
 pub const WORLD_COLLISION_LAYERS: CollisionLayers =
-    CollisionLayers::from_bits(WORLD_LAYER, ACTOR_LAYER);
+    CollisionLayers::from_bits(WORLD_LAYER, ACTOR_LAYER | ITEM_LAYER);
 pub const ACTOR_COLLISION_LAYERS: CollisionLayers =
     CollisionLayers::from_bits(ACTOR_LAYER, WORLD_LAYER);
+pub const ITEM_COLLISION_LAYERS: CollisionLayers =
+    CollisionLayers::from_bits(ITEM_LAYER, WORLD_LAYER | PICKUP_LAYER);
+pub const PICKUP_SENSOR_COLLISION_LAYERS: CollisionLayers =
+    CollisionLayers::from_bits(PICKUP_LAYER, ITEM_LAYER);
 
 impl Plugin for WorldPlugin {
     fn build(&self, app: &mut App) {
