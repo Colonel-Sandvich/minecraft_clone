@@ -5,7 +5,7 @@ use bevy::prelude::*;
 
 use super::*;
 use crate::{
-    block::BlockType,
+    item::Item,
     player::{Player, PlayerDimension},
     world::{
         chunk::{
@@ -245,7 +245,7 @@ fn streaming_generation_uses_the_root_dimension_definition() {
         .loaded_chunk_entity(ChunkPos::new(0, 1, 0))
         .and_then(|entity| app.world().get::<Chunk>(entity))
         .unwrap();
-    assert_eq!(bottom.cell_xyz(0, 0, 0).as_block(), Some(BlockType::Grass));
+    assert_eq!(bottom.cell_xyz(0, 0, 0).as_block(), Some(Item::Grass));
     assert!(bottom.cell_xyz(0, 1, 0).is_empty());
     assert!(upper.cell_xyz(0, 0, 0).is_empty());
 }
@@ -724,7 +724,7 @@ fn stale_scratch_content_rejects_the_whole_async_patch_before_retry() {
         .unwrap()
         .cell_xyz(0, 15, 0);
     let replacement = if old == crate::world::chunk::ChunkCell::EMPTY {
-        BlockType::Glowstone.into()
+        Item::Glowstone.into()
     } else {
         crate::world::chunk::ChunkCell::EMPTY
     };
@@ -839,7 +839,7 @@ fn stale_runtime_relight_preserves_published_authority_until_retry_commits() {
         .unwrap()
         .cell_xyz(0, 8, 8);
     let replacement = if old == crate::world::chunk::ChunkCell::EMPTY {
-        BlockType::Glowstone.into()
+        Item::Glowstone.into()
     } else {
         crate::world::chunk::ChunkCell::EMPTY
     };
@@ -1233,7 +1233,7 @@ fn initial_bootstrap_commits_nearby_columns_before_runtime_relight() {
             emitter.x(),
             emitter.y(),
             emitter.z(),
-            BlockType::Glowstone.into(),
+            Item::Glowstone.into(),
         );
     {
         let mut dimension_ref = app.world_mut().get_mut::<Dimension>(dimension).unwrap();

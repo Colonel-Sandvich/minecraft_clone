@@ -600,7 +600,7 @@ fn light_rebuild_targets(
 mod tests {
     use super::*;
     use crate::{
-        block::BlockType,
+        item::Item,
         world::{
             chunk::{CHUNK_SIZE, ChunkCell, ChunkNeedsLightRebuild, LocalBlockPos},
             generation::WorldMetadata,
@@ -638,7 +638,7 @@ mod tests {
             .register_published_chunk(position.into(), entity);
     }
 
-    fn solid_chunk(block: BlockType) -> Chunk {
+    fn solid_chunk(block: Item) -> Chunk {
         Chunk::filled(block.into())
     }
 
@@ -667,7 +667,7 @@ mod tests {
         let mut upper = Chunk::default();
         for x in 0..CHUNK_SIZE {
             for z in 0..CHUNK_SIZE {
-                upper.set_cell_xyz(x, 0, z, BlockType::Stone.into());
+                upper.set_cell_xyz(x, 0, z, Item::Stone.into());
             }
         }
         let upper_entity = app
@@ -719,7 +719,7 @@ mod tests {
             .world_mut()
             .spawn((
                 ChunkPosition::from(IVec3::X),
-                solid_chunk(BlockType::Stone),
+                solid_chunk(Item::Stone),
                 ChunkLight::default(),
                 heightmap_with(15),
             ))
@@ -762,7 +762,7 @@ mod tests {
             .id();
 
         let mut right_chunk = Chunk::default();
-        right_chunk.set_cell_xyz(0, 8, 8, BlockType::Glowstone.into());
+        right_chunk.set_cell_xyz(0, 8, 8, Item::Glowstone.into());
         let right_entity = app
             .world_mut()
             .spawn((

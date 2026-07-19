@@ -137,7 +137,7 @@ fn rebuild_chunk_colliders(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::block::BlockType;
+    use crate::item::Item;
     use crate::world::{
         WorldHeight,
         chunk::{ChunkCell, ChunkPos},
@@ -248,7 +248,7 @@ mod tests {
         let mut app = collider_app();
 
         let mut chunk = Chunk::default();
-        chunk.set_cell_xyz(0, 0, 0, BlockType::Stone.into());
+        chunk.set_cell_xyz(0, 0, 0, Item::Stone.into());
         let meta = chunk.compute_content_counts();
         let chunk_entity = app
             .world_mut()
@@ -272,7 +272,7 @@ mod tests {
         let mut app = collider_disabled_app();
 
         let mut chunk = Chunk::default();
-        chunk.set_cell_xyz(0, 0, 0, BlockType::Stone.into());
+        chunk.set_cell_xyz(0, 0, 0, Item::Stone.into());
         let meta = chunk.compute_content_counts();
         let chunk_entity = app
             .world_mut()
@@ -296,7 +296,7 @@ mod tests {
         let mut app = collider_app();
 
         let mut chunk = Chunk::default();
-        chunk.set_cell_xyz(0, 0, 0, BlockType::Ice.into());
+        chunk.set_cell_xyz(0, 0, 0, Item::Ice.into());
         chunk.set_cell_xyz(1, 0, 0, ChunkCell::water_source());
         let meta = chunk.compute_content_counts();
         let chunk_entity = app
@@ -319,7 +319,7 @@ mod tests {
         let position = ChunkPos::new(-7, 0, 11);
 
         let mut active_chunk = Chunk::default();
-        active_chunk.set_cell_xyz(0, 0, 0, BlockType::Stone.into());
+        active_chunk.set_cell_xyz(0, 0, 0, Item::Stone.into());
         let active_meta = active_chunk.compute_content_counts();
         let active_entity = app
             .world_mut()
@@ -327,7 +327,7 @@ mod tests {
             .id();
 
         let mut foreign_chunk = Chunk::default();
-        foreign_chunk.set_cell_xyz(0, 0, 0, BlockType::Stone.into());
+        foreign_chunk.set_cell_xyz(0, 0, 0, Item::Stone.into());
         let foreign_meta = foreign_chunk.compute_content_counts();
         let foreign_entity = app
             .world_mut()
@@ -364,7 +364,7 @@ mod tests {
         let position = ChunkPos::ZERO;
 
         let mut old_chunk = Chunk::default();
-        old_chunk.set_cell_xyz(0, 0, 0, BlockType::Stone.into());
+        old_chunk.set_cell_xyz(0, 0, 0, Item::Stone.into());
         let old_entity = app
             .world_mut()
             .spawn((
@@ -377,7 +377,7 @@ mod tests {
         enqueue_active_rebuild(&mut app, position);
 
         let mut replacement = Chunk::default();
-        replacement.set_cell_xyz(1, 0, 0, BlockType::Stone.into());
+        replacement.set_cell_xyz(1, 0, 0, Item::Stone.into());
         let replacement_entity = app
             .world_mut()
             .spawn((
@@ -447,7 +447,7 @@ mod tests {
     fn published_column_readiness_waits_for_fixed_collider_rebuild() {
         let mut app = fixed_collider_app();
         let mut chunk = Chunk::default();
-        chunk.set_cell_xyz(0, 0, 0, BlockType::Stone.into());
+        chunk.set_cell_xyz(0, 0, 0, Item::Stone.into());
         let contents = chunk.compute_content_counts();
         let entity = app
             .world_mut()

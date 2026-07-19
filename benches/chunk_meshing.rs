@@ -8,7 +8,8 @@ use bevy::{
 };
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use minecraft_clone::{
-    block::{BlockMaterialLayer, BlockType},
+    block::BlockMaterialLayer,
+    item::Item,
     world::{
         WorldMetadata,
         chunk::mesh::{
@@ -49,12 +50,12 @@ fn make_scenarios() -> Vec<Scenario> {
         Scenario {
             name: "full_stone_buried",
             center_pos: IVec3::ZERO,
-            chunks: filled_neighborhood(BlockType::Stone),
+            chunks: filled_neighborhood(Item::Stone),
         },
         Scenario {
             name: "full_stone_open",
             center_pos: IVec3::ZERO,
-            chunks: vec![(IVec3::ZERO, filled_chunk(BlockType::Stone))],
+            chunks: vec![(IVec3::ZERO, filled_chunk(Item::Stone))],
         },
         Scenario {
             name: "checkerboard",
@@ -81,7 +82,7 @@ fn realistic_terrain_buried_scenario(name: &'static str) -> Scenario {
                 if x == 0 && y == 0 && z == 0 {
                     continue;
                 }
-                chunks.push((ivec3(x, y, z), filled_chunk(BlockType::Stone)));
+                chunks.push((ivec3(x, y, z), filled_chunk(Item::Stone)));
             }
         }
     }
@@ -96,11 +97,11 @@ fn realistic_terrain_buried_scenario(name: &'static str) -> Scenario {
 // Chunk helpers
 // ---------------------------------------------------------------------------
 
-fn filled_chunk(block: BlockType) -> Chunk {
+fn filled_chunk(block: Item) -> Chunk {
     Chunk::filled(block.into())
 }
 
-fn filled_neighborhood(block: BlockType) -> Vec<(IVec3, Chunk)> {
+fn filled_neighborhood(block: Item) -> Vec<(IVec3, Chunk)> {
     let mut chunks = Vec::with_capacity(27);
     for x in -1..=1 {
         for y in -1..=1 {
@@ -114,7 +115,7 @@ fn filled_neighborhood(block: BlockType) -> Vec<(IVec3, Chunk)> {
 
 fn single_stone_chunk() -> Chunk {
     let mut chunk = Chunk::default();
-    chunk.set_cell_xyz(8, 8, 8, BlockType::Stone.into());
+    chunk.set_cell_xyz(8, 8, 8, Item::Stone.into());
     chunk
 }
 
@@ -124,7 +125,7 @@ fn checkerboard_chunk() -> Chunk {
         for y in 0..CHUNK_SIZE {
             for z in 0..CHUNK_SIZE {
                 if (x + y + z) % 2 == 0 {
-                    chunk.set_cell_xyz(x, y, z, BlockType::Stone.into());
+                    chunk.set_cell_xyz(x, y, z, Item::Stone.into());
                 }
             }
         }
@@ -156,31 +157,31 @@ fn realistic_terrain_chunk() -> Chunk {
         for z in 0..CHUNK_SIZE {
             for y in 0..CHUNK_SIZE {
                 let cell = if y < 4 {
-                    BlockType::Stone.into()
+                    Item::Stone.into()
                 } else if y < 6 {
-                    BlockType::Dirt.into()
+                    Item::Dirt.into()
                 } else if y == 6 {
-                    BlockType::Grass.into()
+                    Item::Grass.into()
                 } else if (7..=11).contains(&y) && (6..=9).contains(&x) && (6..=9).contains(&z) {
-                    BlockType::OakLog.into()
+                    Item::OakLog.into()
                 } else if y == 12
                     && (5..=10).contains(&x)
                     && (5..=10).contains(&z)
                     && !((7..=8).contains(&x) && (7..=8).contains(&z))
                 {
-                    BlockType::OakLeaves.into()
+                    Item::OakLeaves.into()
                 } else if y == 11 && (5..=10).contains(&x) && (5..=10).contains(&z) {
-                    BlockType::OakLeaves.into()
+                    Item::OakLeaves.into()
                 } else if y == 10
                     && (5..=10).contains(&x)
                     && (5..=10).contains(&z)
                     && (x == 5 || x == 10 || z == 5 || z == 10)
                 {
-                    BlockType::OakLeaves.into()
+                    Item::OakLeaves.into()
                 } else if y == 3 && (x + z) % 13 == 0 {
-                    BlockType::Glass.into()
+                    Item::Glass.into()
                 } else if y == 8 && (x * 7 + z * 11) % 23 == 0 {
-                    BlockType::Glass.into()
+                    Item::Glass.into()
                 } else {
                     ChunkCell::EMPTY
                 };
@@ -194,7 +195,7 @@ fn realistic_terrain_chunk() -> Chunk {
         for z in 3..=10 {
             let on_edge = x == 3 || x == 12 || z == 3 || z == 10;
             let cell = if on_edge {
-                BlockType::Ice.into()
+                Item::Ice.into()
             } else {
                 ChunkCell::water_source()
             };

@@ -497,7 +497,7 @@ impl DimensionDerivedWork {
 mod tests {
     use super::*;
     use crate::{
-        block::BlockType,
+        item::Item,
         world::chunk::{
             CellDelta, ChunkCell, ChunkContentCounts, ChunkInvalidationPlan, LocalBlockPos,
         },
@@ -530,7 +530,7 @@ mod tests {
             LocalBlockPos::new(3, 5, 7),
             CellDelta {
                 old: ChunkCell::EMPTY,
-                new: BlockType::Stone.into(),
+                new: Item::Stone.into(),
             },
         );
         let derived = ChunkDerivedEffects::from(changed.effects_for(position).unwrap());
@@ -812,7 +812,7 @@ mod tests {
             LocalBlockPos::new(1, 1, 1),
             CellDelta {
                 old: ChunkCell::EMPTY,
-                new: BlockType::Dirt.into(),
+                new: Item::Dirt.into(),
             },
         );
 

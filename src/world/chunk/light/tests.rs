@@ -4,7 +4,7 @@ use bevy::{
 };
 
 use crate::{
-    block::BlockType,
+    item::Item,
     world::chunk::{CHUNK_SIZE, Chunk, ChunkCell, ChunkPos, LocalBlockPos},
 };
 
@@ -15,7 +15,7 @@ fn local(x: u32, y: u32, z: u32) -> LocalBlockPos {
     LocalBlockPos::new(x, y, z)
 }
 
-fn block_cell(block: BlockType) -> ChunkCell {
+fn block_cell(block: Item) -> ChunkCell {
     block.into()
 }
 
@@ -57,7 +57,7 @@ fn rebuilt_by_position(region: ChunkLightRegion<'_>) -> HashMap<ChunkPos, Rebuil
 fn sky_light_above_an_opaque_surface_is_full() {
     let chunk = chunk_with_cells(|_, y, _| {
         if y < 10 {
-            block_cell(BlockType::Stone)
+            block_cell(Item::Stone)
         } else {
             ChunkCell::EMPTY
         }
@@ -87,9 +87,9 @@ fn sky_light_above_an_opaque_surface_is_full() {
 fn sky_light_attenuates_through_transparent_blocks() {
     let chunk = chunk_with_cells(|_, y, _| {
         if y < 10 {
-            block_cell(BlockType::Stone)
+            block_cell(Item::Stone)
         } else if y < 13 {
-            block_cell(BlockType::OakLeaves)
+            block_cell(Item::OakLeaves)
         } else {
             ChunkCell::EMPTY
         }
@@ -116,7 +116,7 @@ fn sky_light_spreads_sideways_into_a_cave() {
         if z == 8 && (x == 0 || (x == 1 && (6..=10).contains(&y))) {
             ChunkCell::EMPTY
         } else {
-            block_cell(BlockType::Stone)
+            block_cell(Item::Stone)
         }
     });
     let rebuilt = rebuild_single(
@@ -136,9 +136,9 @@ fn sky_light_spreads_sideways_into_a_cave() {
 #[test]
 fn block_light_emission_respects_transparent_and_opaque_cells() {
     let mut chunk = Chunk::default();
-    chunk.set_cell_xyz(8, 8, 8, block_cell(BlockType::Glowstone));
-    chunk.set_cell_xyz(7, 8, 8, block_cell(BlockType::OakLeaves));
-    chunk.set_cell_xyz(9, 8, 8, block_cell(BlockType::Stone));
+    chunk.set_cell_xyz(8, 8, 8, block_cell(Item::Glowstone));
+    chunk.set_cell_xyz(7, 8, 8, block_cell(Item::OakLeaves));
+    chunk.set_cell_xyz(9, 8, 8, block_cell(Item::Stone));
 
     let rebuilt = rebuild_single(
         1,
@@ -158,8 +158,8 @@ fn block_light_emission_respects_transparent_and_opaque_cells() {
 fn full_rebuild_removes_stale_light_without_harming_other_emitters() {
     let position = ChunkPos::new(-6, 0, -7);
     let mut chunk = Chunk::default();
-    chunk.set_cell_xyz(4, 8, 4, block_cell(BlockType::Glowstone));
-    chunk.set_cell_xyz(12, 8, 12, block_cell(BlockType::Glowstone));
+    chunk.set_cell_xyz(4, 8, 4, block_cell(Item::Glowstone));
+    chunk.set_cell_xyz(12, 8, 12, block_cell(Item::Glowstone));
 
     let first = rebuild_single(
         1,
@@ -198,7 +198,7 @@ fn block_light_crosses_all_six_faces_at_absolute_negative_positions() {
 
     for (offset, source_local, neighbor_local) in cases {
         let mut source = Chunk::default();
-        source.set_cell(source_local.as_uvec3(), block_cell(BlockType::Glowstone));
+        source.set_cell(source_local.as_uvec3(), block_cell(Item::Glowstone));
         let neighbor = Chunk::default();
         let neighbor_position = source_position.offset(offset);
         let source_light = ChunkLight::default();
@@ -239,7 +239,7 @@ fn vertical_sky_occlusion_spans_an_entire_loaded_column() {
     let mut upper = Chunk::default();
     for x in 0..CHUNK_SIZE {
         for z in 0..CHUNK_SIZE {
-            upper.set_cell_xyz(x, 0, z, block_cell(BlockType::Stone));
+            upper.set_cell_xyz(x, 0, z, block_cell(Item::Stone));
         }
     }
     let lower_light = ChunkLight::default();
@@ -367,7 +367,7 @@ fn calculation_dependencies_influence_commits_without_being_committed() {
     let right = Chunk::default();
     let back = Chunk::default();
     let mut diagonal = Chunk::default();
-    diagonal.set_cell_xyz(0, 8, 0, block_cell(BlockType::Glowstone));
+    diagonal.set_cell_xyz(0, 8, 0, block_cell(Item::Glowstone));
     let center_light = ChunkLight::default();
     let center_heightmap = ChunkHeightmap::default();
 
@@ -405,7 +405,7 @@ fn calculation_dependencies_influence_commits_without_being_committed() {
 fn calculation_only_region_is_solved_without_commits() {
     let position = ChunkPos::new(3, 0, -2);
     let mut chunk = Chunk::default();
-    chunk.set_cell_xyz(8, 8, 8, block_cell(BlockType::Glowstone));
+    chunk.set_cell_xyz(8, 8, 8, block_cell(Item::Glowstone));
 
     let mut region = ChunkLightRegion::new(1);
     region.insert_calculation_chunk(position, &chunk);
@@ -453,7 +453,7 @@ fn target_insertion_order_does_not_change_region_output() {
     let left_position = ChunkPos::new(-14, 0, -9);
     let right_position = left_position.offset(IVec3::X);
     let mut left = Chunk::default();
-    left.set_cell_xyz(15, 8, 8, block_cell(BlockType::Glowstone));
+    left.set_cell_xyz(15, 8, 8, block_cell(Item::Glowstone));
     let right = Chunk::default();
     let left_light = ChunkLight::default();
     let right_light = ChunkLight::default();
@@ -484,9 +484,9 @@ fn rebuilding_identical_state_reports_no_changes() {
     let position = ChunkPos::new(-4, 0, -6);
     let chunk = chunk_with_cells(|_, y, _| {
         if y < 7 {
-            block_cell(BlockType::Stone)
+            block_cell(Item::Stone)
         } else if y == 10 {
-            block_cell(BlockType::Glowstone)
+            block_cell(Item::Glowstone)
         } else {
             ChunkCell::EMPTY
         }
@@ -516,7 +516,7 @@ fn sixteen_chunk_height_preserves_the_highest_heightmap_value() {
     let mut chunks = (0..HEIGHT_CHUNKS)
         .map(|_| Chunk::default())
         .collect::<Vec<_>>();
-    chunks[HEIGHT_CHUNKS - 1].set_cell_xyz(0, CHUNK_SIZE - 1, 0, block_cell(BlockType::Stone));
+    chunks[HEIGHT_CHUNKS - 1].set_cell_xyz(0, CHUNK_SIZE - 1, 0, block_cell(Item::Stone));
     let lights = (0..HEIGHT_CHUNKS)
         .map(|_| ChunkLight::default())
         .collect::<Vec<_>>();

@@ -12,12 +12,12 @@ use bevy::{
     },
 };
 use image::{RgbaImage, imageops::FilterType};
-use strum::IntoEnumIterator;
 
 use crate::block::{
-    BlockTextureAnimation, BlockTextureLayer, BlockTextureMap, BlockType, WATER_RENDER_ID,
+    BlockTextureAnimation, BlockTextureLayer, BlockTextureMap, WATER_RENDER_ID,
     render_id_for_block, render_id_to_texture_path,
 };
+use crate::item::Item;
 use crate::quad::Direction;
 
 const TERRAIN_ANISOTROPY: u16 = 1;
@@ -265,15 +265,15 @@ fn append_source_texture_frames(
 
 fn used_terrain_texture_paths() -> Vec<&'static str> {
     let mut paths = Vec::new();
-    for block in BlockType::iter() {
-        for side in Direction::iter() {
+    for block in Item::BLOCKS {
+        for side in Direction::ALL {
             let path = render_id_to_texture_path(render_id_for_block(block), side);
             if !paths.contains(&path) {
                 paths.push(path);
             }
         }
     }
-    for side in Direction::iter() {
+    for side in Direction::ALL {
         let path = render_id_to_texture_path(WATER_RENDER_ID, side);
         if !paths.contains(&path) {
             paths.push(path);

@@ -183,7 +183,7 @@ pub struct ChunkNeedsFluidStep;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::block::BlockType;
+    use crate::item::Item;
     use crate::world::chunk::Chunk;
 
     fn add(counts: &mut ChunkContentCounts, cell: ChunkCell) {
@@ -212,9 +212,9 @@ mod tests {
     fn content_counts_track_independent_cell_properties() {
         let mut counts = ChunkContentCounts::default();
 
-        add(&mut counts, BlockType::Stone.into());
-        add(&mut counts, BlockType::OakLeaves.into());
-        add(&mut counts, BlockType::Ice.into());
+        add(&mut counts, Item::Stone.into());
+        add(&mut counts, Item::OakLeaves.into());
+        add(&mut counts, Item::Ice.into());
         add(&mut counts, ChunkCell::water_source());
 
         assert_eq!(
@@ -236,7 +236,7 @@ mod tests {
 
         counts.apply_delta(CellDelta {
             old: ChunkCell::water_source(),
-            new: BlockType::Stone.into(),
+            new: Item::Stone.into(),
         });
 
         assert_eq!(
@@ -257,12 +257,12 @@ mod tests {
         let mut counts = ChunkContentCounts::default();
 
         for (pos, cell) in [
-            (uvec3(1, 2, 3), BlockType::Stone.into()),
-            (uvec3(4, 5, 6), BlockType::OakLeaves.into()),
+            (uvec3(1, 2, 3), Item::Stone.into()),
+            (uvec3(4, 5, 6), Item::OakLeaves.into()),
             (uvec3(7, 8, 9), ChunkCell::water_source()),
-            (uvec3(1, 2, 3), BlockType::Glass.into()),
+            (uvec3(1, 2, 3), Item::Glass.into()),
             (uvec3(4, 5, 6), ChunkCell::EMPTY),
-            (uvec3(7, 8, 9), BlockType::Ice.into()),
+            (uvec3(7, 8, 9), Item::Ice.into()),
         ] {
             counts.apply_delta(chunk.set_cell(pos, cell));
             assert_eq!(counts, chunk.compute_content_counts());
@@ -273,7 +273,7 @@ mod tests {
     #[should_panic(expected = "rendered content count underflow")]
     fn inconsistent_delta_panics_instead_of_wrapping() {
         ChunkContentCounts::default().apply_delta(CellDelta {
-            old: BlockType::Stone.into(),
+            old: Item::Stone.into(),
             new: ChunkCell::EMPTY,
         });
     }
@@ -285,6 +285,6 @@ mod tests {
             rendered: u16::MAX,
             ..Default::default()
         };
-        add(&mut counts, BlockType::Stone.into());
+        add(&mut counts, Item::Stone.into());
     }
 }

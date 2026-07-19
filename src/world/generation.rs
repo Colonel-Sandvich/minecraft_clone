@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 
 use crate::{
-    block::BlockType,
+    item::Item,
     world::{
         chunk::{CHUNK_ISIZE, CHUNK_SIZE, Chunk, ChunkCell, ChunkPos, WorldBlockPos},
         definition::{DimensionDefinition, GeneratorProfile},
@@ -157,11 +157,11 @@ pub fn generate_chunk(metadata: &WorldMetadata, chunk_pos: IVec3) -> Chunk {
         let local_y = surface_y + 1;
         if (0..CHUNK_ISIZE).contains(&local_y) {
             let y = local_y as usize;
-            chunk.set_cell_xyz(8, y, 8, BlockType::Glass.into());
-            chunk.set_cell_xyz(7, y, 8, BlockType::Glass.into());
-            chunk.set_cell_xyz(9, y, 8, BlockType::Glass.into());
-            chunk.set_cell_xyz(8, y, 7, BlockType::Glass.into());
-            chunk.set_cell_xyz(8, y, 9, BlockType::Glass.into());
+            chunk.set_cell_xyz(8, y, 8, Item::Glass.into());
+            chunk.set_cell_xyz(7, y, 8, Item::Glass.into());
+            chunk.set_cell_xyz(9, y, 8, Item::Glass.into());
+            chunk.set_cell_xyz(8, y, 7, Item::Glass.into());
+            chunk.set_cell_xyz(8, y, 9, Item::Glass.into());
         }
     }
 
@@ -199,7 +199,7 @@ fn generate_grass_floor_chunk(chunk_pos: ChunkPos) -> Chunk {
 
     Chunk::from_cell_fn(|_, y, _| {
         if y == 0 {
-            BlockType::Grass.into()
+            Item::Grass.into()
         } else {
             ChunkCell::EMPTY
         }
@@ -213,7 +213,7 @@ fn generate_center_glass_platform_chunk(chunk_pos: ChunkPos) -> Chunk {
 
     Chunk::from_cell_fn(|_, y, _| {
         if y == 0 {
-            BlockType::Glass.into()
+            Item::Glass.into()
         } else {
             ChunkCell::EMPTY
         }
@@ -291,11 +291,11 @@ pub fn oak_tree_candidates_for_source_chunk(
     trees
 }
 
-pub fn oak_tree_blocks(tree: OakTree) -> Vec<(IVec3, BlockType)> {
+pub fn oak_tree_blocks(tree: OakTree) -> Vec<(IVec3, Item)> {
     let mut blocks = Vec::new();
 
     for dy in 0..tree.trunk_height {
-        blocks.push((tree.origin + IVec3::Y * dy, BlockType::OakLog));
+        blocks.push((tree.origin + IVec3::Y * dy, Item::OakLog));
     }
 
     for dy in -2_i32..=2 {
@@ -315,7 +315,7 @@ pub fn oak_tree_blocks(tree: OakTree) -> Vec<(IVec3, BlockType)> {
 
                 blocks.push((
                     ivec3(dx, tree.trunk_height - 1 + dy, dz) + tree.origin,
-                    BlockType::OakLeaves,
+                    Item::OakLeaves,
                 ));
             }
         }
@@ -333,13 +333,13 @@ pub fn apply_oak_tree_to_chunk(tree: OakTree, chunk_pos: IVec3, chunk: &mut Chun
         };
 
         match block {
-            BlockType::OakLog => {
-                chunk.set_cell(local_pos.as_uvec3(), BlockType::OakLog.into());
+            Item::OakLog => {
+                chunk.set_cell(local_pos.as_uvec3(), Item::OakLog.into());
             }
-            BlockType::OakLeaves if chunk.cell(local_pos) == ChunkCell::EMPTY => {
-                chunk.set_cell(local_pos.as_uvec3(), BlockType::OakLeaves.into());
+            Item::OakLeaves if chunk.cell(local_pos) == ChunkCell::EMPTY => {
+                chunk.set_cell(local_pos.as_uvec3(), Item::OakLeaves.into());
             }
-            BlockType::OakLeaves => {}
+            Item::OakLeaves => {}
             _ => unreachable!("oak tree emitted non-oak block"),
         }
     }
@@ -375,11 +375,11 @@ fn terrain_cell_at(world_y: i32, surface_y: i32) -> ChunkCell {
     if world_y > surface_y {
         ChunkCell::EMPTY
     } else if world_y == surface_y {
-        BlockType::Grass.into()
+        Item::Grass.into()
     } else if world_y >= surface_y - 3 {
-        BlockType::Dirt.into()
+        Item::Dirt.into()
     } else {
-        BlockType::Stone.into()
+        Item::Stone.into()
     }
 }
 
@@ -446,7 +446,7 @@ mod tests {
     use super::*;
     use crate::world::definition::{DimensionCatalog, DimensionId};
 
-    fn assert_single_bottom_layer(chunk: &Chunk, block: BlockType) {
+    fn assert_single_bottom_layer(chunk: &Chunk, block: Item) {
         for (cell, local) in chunk.iter() {
             let expected = if local.y() == 0 {
                 block.into()
@@ -588,7 +588,7 @@ mod tests {
         ] {
             let chunk =
                 generate_chunk_for_profile(&metadata, GeneratorProfile::GrassFloorV1, position);
-            assert_single_bottom_layer(&chunk, BlockType::Grass);
+            assert_single_bottom_layer(&chunk, Item::Grass);
         }
     }
 
@@ -612,7 +612,7 @@ mod tests {
             ChunkPos::ZERO,
         );
 
-        assert_single_bottom_layer(&chunk, BlockType::Glass);
+        assert_single_bottom_layer(&chunk, Item::Glass);
     }
 
     #[test]
@@ -653,13 +653,13 @@ mod tests {
         let grass = catalog.get(DimensionId::GRASS_FLOOR).unwrap();
         assert_single_bottom_layer(
             &generate_dimension_chunk(&metadata, grass, ChunkPos::new(2, 0, -3)),
-            BlockType::Grass,
+            Item::Grass,
         );
 
         let glass = catalog.get(DimensionId::CENTER_GLASS_PLATFORM).unwrap();
         assert_single_bottom_layer(
             &generate_dimension_chunk(&metadata, glass, ChunkPos::ZERO),
-            BlockType::Glass,
+            Item::Glass,
         );
     }
 
@@ -692,14 +692,8 @@ mod tests {
 
         apply_oak_tree_to_chunk(tree, ivec3(1, 0, 0), &mut neighbor);
 
-        assert_eq!(
-            neighbor.get_block(uvec3(0, 14, 8)),
-            Some(BlockType::OakLeaves)
-        );
-        assert_eq!(
-            neighbor.get_block(uvec3(1, 14, 8)),
-            Some(BlockType::OakLeaves)
-        );
+        assert_eq!(neighbor.get_block(uvec3(0, 14, 8)), Some(Item::OakLeaves));
+        assert_eq!(neighbor.get_block(uvec3(1, 14, 8)), Some(Item::OakLeaves));
         assert_eq!(neighbor.get_cell(uvec3(15, 14, 8)), ChunkCell::EMPTY);
     }
 

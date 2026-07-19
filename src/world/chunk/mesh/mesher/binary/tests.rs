@@ -1,7 +1,8 @@
 use super::*;
 use crate::block::{
-    BLOCK_FLAG_FULL_CUBE, BLOCK_FLAG_RENDERED, BlockType, WATER_RENDER_ID, render_id_for_block,
+    BLOCK_FLAG_FULL_CUBE, BLOCK_FLAG_RENDERED, WATER_RENDER_ID, render_id_for_block,
 };
+use crate::item::Item;
 use crate::world::chunk::CHUNK_SIZE;
 use crate::world::chunk::mesh::{
     ChunkMeshBlocks,
@@ -101,7 +102,7 @@ fn binary_empty_chunk() {
 fn binary_single_full_cube_emits_six_faces() {
     let mut kinds = [0u16; PADDED_CHUNK_VOLUME];
     let center = padded_chunk_index(9, 9, 9);
-    kinds[center] = render_id_for_block(BlockType::Stone);
+    kinds[center] = render_id_for_block(Item::Stone);
     let padded = make_padded(&kinds);
     let result = build_binary(&padded);
     let total: usize = result.iter().map(|layer| layer.faces.len()).sum();
@@ -110,7 +111,7 @@ fn binary_single_full_cube_emits_six_faces() {
 
 #[test]
 fn binary_full_cube_ao_faces_match_scalar() {
-    let stone = render_id_for_block(BlockType::Stone);
+    let stone = render_id_for_block(Item::Stone);
     let target = padded_chunk_index(8, 8, 8);
 
     for side in 0..DIRECTION_COUNT {
@@ -130,8 +131,8 @@ fn binary_two_adjacent_full_cubes_emit_ten_faces() {
     let mut kinds = [0u16; PADDED_CHUNK_VOLUME];
     let a = padded_chunk_index(9, 9, 9); // center
     let b = padded_chunk_index(10, 9, 9); // +X neighbor
-    kinds[a] = render_id_for_block(BlockType::Stone);
-    kinds[b] = render_id_for_block(BlockType::Stone);
+    kinds[a] = render_id_for_block(Item::Stone);
+    kinds[b] = render_id_for_block(Item::Stone);
     let padded = make_padded(&kinds);
     let result = build_binary(&padded);
     let total: usize = result.iter().map(|layer| layer.faces.len()).sum();
@@ -140,7 +141,7 @@ fn binary_two_adjacent_full_cubes_emit_ten_faces() {
 
 #[test]
 fn binary_full_cube_buried_emits_nothing() {
-    let kinds = [render_id_for_block(BlockType::Stone); PADDED_CHUNK_VOLUME];
+    let kinds = [render_id_for_block(Item::Stone); PADDED_CHUNK_VOLUME];
     let padded = make_padded(&kinds);
     let result = build_binary(&padded);
     let total: usize = result.iter().map(|layer| layer.faces.len()).sum();
@@ -152,8 +153,8 @@ fn binary_stone_next_to_glass_emits_six_faces() {
     let mut kinds = [0u16; PADDED_CHUNK_VOLUME];
     let stone = padded_chunk_index(9, 9, 9);
     let glass = padded_chunk_index(10, 9, 9); // +X neighbor
-    kinds[stone] = render_id_for_block(BlockType::Stone);
-    kinds[glass] = render_id_for_block(BlockType::Glass); // Glass is rendered but NOT full_cube
+    kinds[stone] = render_id_for_block(Item::Stone);
+    kinds[glass] = render_id_for_block(Item::Glass); // Glass is rendered but NOT full_cube
     let padded = make_padded(&kinds);
     let result = build_binary(&padded);
     let total: usize = result.iter().map(|layer| layer.faces.len()).sum();
@@ -168,8 +169,8 @@ fn hybrid_stone_plus_glass_matches_scalar() {
     let mut kinds = [0u16; PADDED_CHUNK_VOLUME];
     let stone = padded_chunk_index(9, 9, 9);
     let glass = padded_chunk_index(10, 9, 9); // +X neighbor
-    kinds[stone] = render_id_for_block(BlockType::Stone);
-    kinds[glass] = render_id_for_block(BlockType::Glass);
+    kinds[stone] = render_id_for_block(Item::Stone);
+    kinds[glass] = render_id_for_block(Item::Glass);
     let padded = make_padded(&kinds);
 
     let scalar = super::super::build_reference(&padded);
@@ -189,7 +190,7 @@ fn hybrid_water_stone_matches_scalar() {
     let water = padded_chunk_index(9, 9, 9);
     let stone = padded_chunk_index(10, 9, 9);
     kinds[water] = WATER_RENDER_ID;
-    kinds[stone] = render_id_for_block(BlockType::Stone);
+    kinds[stone] = render_id_for_block(Item::Stone);
     let padded = make_padded(&kinds);
 
     let scalar = super::super::build_reference(&padded);
@@ -241,7 +242,7 @@ fn hybrid_full_scenarios_match_scalar() {
     }
     // all stone
     {
-        let padded = make_padded(&[render_id_for_block(BlockType::Stone); PADDED_CHUNK_VOLUME]);
+        let padded = make_padded(&[render_id_for_block(Item::Stone); PADDED_CHUNK_VOLUME]);
         let scalar = super::super::build_reference(&padded);
         let hybrid = super::super::build(&padded);
         assert_eq!(
@@ -258,7 +259,7 @@ fn hybrid_full_scenarios_match_scalar() {
                 for z in 0..CHUNK_SIZE {
                     if (x + y + z) % 2 == 0 {
                         kinds[padded_chunk_index(x + 1, y + 1, z + 1)] =
-                            render_id_for_block(BlockType::Stone);
+                            render_id_for_block(Item::Stone);
                     }
                 }
             }
@@ -275,10 +276,10 @@ fn hybrid_full_scenarios_match_scalar() {
     // stone + glass mixed
     {
         let mut kinds = [0u16; PADDED_CHUNK_VOLUME];
-        kinds[padded_chunk_index(9, 9, 9)] = render_id_for_block(BlockType::Stone);
-        kinds[padded_chunk_index(9, 9, 8)] = render_id_for_block(BlockType::Stone);
-        kinds[padded_chunk_index(9, 9, 10)] = render_id_for_block(BlockType::Glass);
-        kinds[padded_chunk_index(9, 8, 9)] = render_id_for_block(BlockType::OakLeaves);
+        kinds[padded_chunk_index(9, 9, 9)] = render_id_for_block(Item::Stone);
+        kinds[padded_chunk_index(9, 9, 8)] = render_id_for_block(Item::Stone);
+        kinds[padded_chunk_index(9, 9, 10)] = render_id_for_block(Item::Glass);
+        kinds[padded_chunk_index(9, 8, 9)] = render_id_for_block(Item::OakLeaves);
         kinds[padded_chunk_index(9, 10, 9)] = WATER_RENDER_ID;
         let padded = make_padded(&kinds);
         let scalar = super::super::build_reference(&padded);
@@ -297,7 +298,7 @@ fn translucent_water_culled_by_stone() {
     let water = padded_chunk_index(9, 9, 9);
     let stone = padded_chunk_index(10, 9, 9);
     kinds[water] = WATER_RENDER_ID;
-    kinds[stone] = render_id_for_block(BlockType::Stone);
+    kinds[stone] = render_id_for_block(Item::Stone);
     let padded = make_padded(&kinds);
 
     let result = super::super::build_reference(&padded);
@@ -309,11 +310,11 @@ fn translucent_water_culled_by_stone() {
 fn translucent_water_basin() {
     let mut kinds = [0u16; PADDED_CHUNK_VOLUME];
     kinds[padded_chunk_index(9, 9, 9)] = WATER_RENDER_ID;
-    kinds[padded_chunk_index(9, 8, 9)] = render_id_for_block(BlockType::Stone); // below
-    kinds[padded_chunk_index(10, 9, 9)] = render_id_for_block(BlockType::Stone); // +X
-    kinds[padded_chunk_index(8, 9, 9)] = render_id_for_block(BlockType::Stone); // -X
-    kinds[padded_chunk_index(9, 9, 10)] = render_id_for_block(BlockType::Stone); // +Z
-    kinds[padded_chunk_index(9, 9, 8)] = render_id_for_block(BlockType::Stone); // -Z
+    kinds[padded_chunk_index(9, 8, 9)] = render_id_for_block(Item::Stone); // below
+    kinds[padded_chunk_index(10, 9, 9)] = render_id_for_block(Item::Stone); // +X
+    kinds[padded_chunk_index(8, 9, 9)] = render_id_for_block(Item::Stone); // -X
+    kinds[padded_chunk_index(9, 9, 10)] = render_id_for_block(Item::Stone); // +Z
+    kinds[padded_chunk_index(9, 9, 8)] = render_id_for_block(Item::Stone); // -Z
     let padded = make_padded(&kinds);
 
     let result = super::super::build_reference(&padded);
@@ -326,8 +327,8 @@ fn translucent_water_basin() {
 #[test]
 fn translucent_ice_culled_by_stone() {
     let mut kinds = [0u16; PADDED_CHUNK_VOLUME];
-    kinds[padded_chunk_index(9, 9, 9)] = render_id_for_block(BlockType::Ice);
-    kinds[padded_chunk_index(9, 8, 9)] = render_id_for_block(BlockType::Stone);
+    kinds[padded_chunk_index(9, 9, 9)] = render_id_for_block(Item::Ice);
+    kinds[padded_chunk_index(9, 8, 9)] = render_id_for_block(Item::Stone);
     let padded = make_padded(&kinds);
 
     let result = super::super::build_reference(&padded);
@@ -385,13 +386,13 @@ fn make_realistic_padded() -> ChunkMeshBlocks {
             for y in 0..CHUNK_SIZE {
                 let idx = padded_chunk_index(x + 1, y + 1, z + 1);
                 kinds[idx] = if y < 4 {
-                    render_id_for_block(BlockType::Stone)
+                    render_id_for_block(Item::Stone)
                 } else if y < 6 {
-                    render_id_for_block(BlockType::Dirt)
+                    render_id_for_block(Item::Dirt)
                 } else if y == 6 {
-                    render_id_for_block(BlockType::Grass)
+                    render_id_for_block(Item::Grass)
                 } else if y >= 7 && y <= 11 && x >= 6 && x <= 9 && z >= 6 && z <= 9 {
-                    render_id_for_block(BlockType::OakLog)
+                    render_id_for_block(Item::OakLog)
                 } else if y == 12
                     && x >= 5
                     && x <= 10
@@ -399,9 +400,9 @@ fn make_realistic_padded() -> ChunkMeshBlocks {
                     && z <= 10
                     && !(x >= 7 && x <= 8 && z >= 7 && z <= 8)
                 {
-                    render_id_for_block(BlockType::OakLeaves)
+                    render_id_for_block(Item::OakLeaves)
                 } else if y == 11 && x >= 5 && x <= 10 && z >= 5 && z <= 10 {
-                    render_id_for_block(BlockType::OakLeaves)
+                    render_id_for_block(Item::OakLeaves)
                 } else if y == 10
                     && x >= 5
                     && x <= 10
@@ -409,11 +410,11 @@ fn make_realistic_padded() -> ChunkMeshBlocks {
                     && z <= 10
                     && (x == 5 || x == 10 || z == 5 || z == 10)
                 {
-                    render_id_for_block(BlockType::OakLeaves)
+                    render_id_for_block(Item::OakLeaves)
                 } else if y == 3 && (x + z) % 13 == 0 {
-                    render_id_for_block(BlockType::Glass)
+                    render_id_for_block(Item::Glass)
                 } else if y == 8 && (x * 7 + z * 11) % 23 == 0 {
-                    render_id_for_block(BlockType::Glass)
+                    render_id_for_block(Item::Glass)
                 } else {
                     0u16
                 };

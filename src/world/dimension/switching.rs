@@ -256,7 +256,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        block::BlockType,
+        item::Item,
         player::interaction::{BlockInteractionKind, BlockTarget},
         world::{
             WorldMetadata,
@@ -613,7 +613,7 @@ mod tests {
         };
         let counts = {
             let mut chunk = app.world_mut().get_mut::<Chunk>(chunk_entity).unwrap();
-            chunk.set_cell_xyz(0, 15, 0, BlockType::Glowstone.into());
+            chunk.set_cell_xyz(0, 15, 0, Item::Glowstone.into());
             chunk.compute_content_counts()
         };
         app.world_mut()
@@ -658,7 +658,7 @@ mod tests {
                 .get::<Chunk>(target_chunk)
                 .unwrap()
                 .cell_xyz(0, 0, 0),
-            BlockType::Grass.into()
+            Item::Grass.into()
         );
 
         trigger_dimension_switch(&mut app);
@@ -692,7 +692,7 @@ mod tests {
                 .get::<Chunk>(reloaded)
                 .unwrap()
                 .cell_xyz(0, 15, 0),
-            BlockType::Glowstone.into()
+            Item::Glowstone.into()
         );
     }
 

@@ -1,6 +1,6 @@
 use bevy::prelude::*;
 
-use crate::block::BlockType;
+use crate::item::Item;
 
 use super::{
     components::ChunkContentCounts,
@@ -284,7 +284,7 @@ impl Chunk {
     }
 
     #[inline(always)]
-    pub fn get_block(&self, pos: UVec3) -> Option<BlockType> {
+    pub fn get_block(&self, pos: UVec3) -> Option<Item> {
         self.get_cell(pos).as_block()
     }
 
@@ -324,7 +324,7 @@ impl Chunk {
         cell
     }
 
-    pub fn set_block(&mut self, pos: UVec3, block: BlockType) -> CellDelta {
+    pub fn set_block(&mut self, pos: UVec3, block: Item) -> CellDelta {
         self.set_cell(pos, block.into())
     }
 
@@ -372,7 +372,7 @@ impl Chunk {
         Some(self.set_cell(pos, cell))
     }
 
-    pub fn place_block(&mut self, pos: UVec3, block: BlockType) -> Option<CellDelta> {
+    pub fn place_block(&mut self, pos: UVec3, block: Item) -> Option<CellDelta> {
         if !block.is_placeable() {
             return None;
         }

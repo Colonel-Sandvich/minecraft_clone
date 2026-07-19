@@ -1,6 +1,6 @@
 use bevy::prelude::*;
 
-use crate::block::BlockType;
+use crate::item::Item;
 
 use super::*;
 
@@ -18,9 +18,9 @@ fn semantic_no_op_writes_do_not_advance_content_revision() {
     );
     assert_eq!(chunk.content_revision(), ChunkRevision::INITIAL);
 
-    chunk.set_cell(UVec3::ZERO, BlockType::Stone.into());
+    chunk.set_cell(UVec3::ZERO, Item::Stone.into());
     let changed = chunk.content_revision();
-    chunk.set_cell(UVec3::ZERO, BlockType::Stone.into());
+    chunk.set_cell(UVec3::ZERO, Item::Stone.into());
 
     assert_eq!(chunk.content_revision(), changed);
 }
@@ -29,10 +29,10 @@ fn semantic_no_op_writes_do_not_advance_content_revision() {
 fn semantic_writes_advance_content_revision_once_each() {
     let mut chunk = Chunk::default();
 
-    chunk.set_cell(UVec3::ZERO, BlockType::Stone.into());
+    chunk.set_cell(UVec3::ZERO, Item::Stone.into());
     assert_eq!(chunk.content_revision().get(), 1);
 
-    chunk.set_cell(UVec3::ZERO, BlockType::Dirt.into());
+    chunk.set_cell(UVec3::ZERO, Item::Dirt.into());
     assert_eq!(chunk.content_revision().get(), 2);
 }
 
@@ -43,22 +43,22 @@ fn fill_advances_once_only_when_contents_change() {
     chunk.fill(ChunkCell::EMPTY);
     assert_eq!(chunk.content_revision(), ChunkRevision::INITIAL);
 
-    chunk.fill(BlockType::Stone.into());
+    chunk.fill(Item::Stone.into());
     assert_eq!(chunk.content_revision().get(), 1);
 
-    chunk.fill(BlockType::Stone.into());
+    chunk.fill(Item::Stone.into());
     assert_eq!(chunk.content_revision().get(), 1);
 
-    chunk.fill(BlockType::Dirt.into());
+    chunk.fill(Item::Dirt.into());
     assert_eq!(chunk.content_revision().get(), 2);
 }
 
 #[test]
 fn raw_constructors_start_at_the_initial_content_revision() {
-    let filled = Chunk::filled(BlockType::Stone.into());
+    let filled = Chunk::filled(Item::Stone.into());
     let generated = Chunk::from_cell_fn(|x, _, _| {
         if x == 0 {
-            BlockType::Stone.into()
+            Item::Stone.into()
         } else {
             ChunkCell::EMPTY
         }
@@ -71,12 +71,12 @@ fn raw_constructors_start_at_the_initial_content_revision() {
 #[test]
 fn clone_preserves_revision_without_coupling_future_mutations() {
     let mut original = Chunk::default();
-    original.set_cell(UVec3::ZERO, BlockType::Stone.into());
+    original.set_cell(UVec3::ZERO, Item::Stone.into());
 
     let mut cloned = original.clone();
     assert_eq!(cloned.content_revision(), original.content_revision());
 
-    cloned.set_cell(UVec3::X, BlockType::Dirt.into());
+    cloned.set_cell(UVec3::X, Item::Dirt.into());
     assert_eq!(cloned.content_revision().get(), 2);
     assert_eq!(original.content_revision().get(), 1);
 }
@@ -84,7 +84,7 @@ fn clone_preserves_revision_without_coupling_future_mutations() {
 #[test]
 fn codec_roundtrip_resets_revision_but_preserves_semantic_equality() {
     let mut chunk = Chunk::default();
-    chunk.set_cell(UVec3::ZERO, BlockType::Stone.into());
+    chunk.set_cell(UVec3::ZERO, Item::Stone.into());
 
     let decoded = Chunk::try_from_storage_bytes(&chunk.to_storage_bytes()).unwrap();
 
@@ -96,7 +96,7 @@ fn codec_roundtrip_resets_revision_but_preserves_semantic_equality() {
 #[test]
 fn chunk_equality_ignores_content_revision_history() {
     let mut mutated_back_to_air = Chunk::default();
-    mutated_back_to_air.set_cell(UVec3::ZERO, BlockType::Stone.into());
+    mutated_back_to_air.set_cell(UVec3::ZERO, Item::Stone.into());
     mutated_back_to_air.set_cell(UVec3::ZERO, ChunkCell::EMPTY);
 
     assert_eq!(mutated_back_to_air, Chunk::default());
@@ -109,11 +109,11 @@ fn chunk_equality_ignores_content_revision_history() {
 #[test]
 fn chunk_storage_bytes_roundtrip_in_iteration_order() {
     let mut chunk = Chunk::default();
-    chunk.set_cell_xyz(0, 0, 0, BlockType::Grass.into());
-    chunk.set_cell_xyz(1, 0, 0, BlockType::Dirt.into());
-    chunk.set_cell_xyz(0, 0, 1, BlockType::Stone.into());
-    chunk.set_cell_xyz(0, 1, 0, BlockType::OakLog.into());
-    chunk.set_cell_xyz(15, 15, 15, BlockType::OakLeaves.into());
+    chunk.set_cell_xyz(0, 0, 0, Item::Grass.into());
+    chunk.set_cell_xyz(1, 0, 0, Item::Dirt.into());
+    chunk.set_cell_xyz(0, 0, 1, Item::Stone.into());
+    chunk.set_cell_xyz(0, 1, 0, Item::OakLog.into());
+    chunk.set_cell_xyz(15, 15, 15, Item::OakLeaves.into());
 
     let bytes = chunk.to_storage_bytes();
     let decoded = Chunk::try_from_storage_bytes(&bytes).unwrap();
@@ -130,7 +130,7 @@ fn chunk_storage_bytes_roundtrip_all_air() {
 
 #[test]
 fn chunk_storage_bytes_roundtrip_full_stone() {
-    let chunk = Chunk::filled(BlockType::Stone.into());
+    let chunk = Chunk::filled(Item::Stone.into());
     let bytes = chunk.to_storage_bytes();
     let decoded = Chunk::try_from_storage_bytes(&bytes).unwrap();
     assert_eq!(decoded, chunk);
@@ -139,7 +139,7 @@ fn chunk_storage_bytes_roundtrip_full_stone() {
 #[test]
 fn chunk_uses_u8_palette_storage_for_common_chunks() {
     let mut chunk = Chunk::default();
-    chunk.set_cell(uvec3(1, 2, 3), BlockType::Stone.into());
+    chunk.set_cell(uvec3(1, 2, 3), Item::Stone.into());
     chunk.set_cell(uvec3(2, 2, 3), ChunkCell::water_source());
 
     assert!(matches!(chunk.cell_storage(), CellStorage::U8(_)));
@@ -151,13 +151,13 @@ fn chunk_uses_u8_palette_storage_for_common_chunks() {
 fn chunk_can_set_cells_by_cell_state_id() {
     let mut chunk = Chunk::default();
     let pos = uvec3(4, 5, 6);
-    let state = ChunkCell::block(BlockType::Glowstone).state_id();
+    let state = ChunkCell::block(Item::Glowstone).state_id();
 
     assert_eq!(
         chunk.set_state(pos, state, &CELL_REGISTRY),
         Some(CellDelta {
             old: ChunkCell::EMPTY,
-            new: BlockType::Glowstone.into(),
+            new: Item::Glowstone.into(),
         })
     );
     assert_eq!(chunk.state_id(pos), state);
@@ -225,13 +225,13 @@ fn solid_block_placement_replaces_water_fluid_cell() {
     chunk.place_cell(pos, ChunkCell::water_source()).unwrap();
 
     assert_eq!(
-        chunk.place_block(pos, BlockType::Stone),
+        chunk.place_block(pos, Item::Stone),
         Some(CellDelta {
             old: ChunkCell::water_source(),
-            new: BlockType::Stone.into(),
+            new: Item::Stone.into(),
         })
     );
-    assert_eq!(chunk.get_cell(pos), BlockType::Stone.into());
+    assert_eq!(chunk.get_cell(pos), Item::Stone.into());
 }
 
 #[test]
@@ -254,7 +254,7 @@ fn blocked_water_spreads_sideways_with_decay() {
     let mut chunk = Chunk::default();
     let source = uvec3(8, 1, 8);
     chunk.set_cell(source, ChunkCell::water_source());
-    chunk.set_block(uvec3(8, 0, 8), BlockType::Stone);
+    chunk.set_block(uvec3(8, 0, 8), Item::Stone);
 
     assert!(chunk.step_fluids(&FluidProfile::WATER).changed);
     assert_eq!(chunk.get_cell(source), ChunkCell::water_source());
@@ -273,11 +273,11 @@ fn water_flow_does_not_enter_solid_blocks() {
     let mut chunk = Chunk::default();
     let source = uvec3(8, 1, 8);
     chunk.set_cell(source, ChunkCell::water_source());
-    chunk.set_block(uvec3(8, 0, 8), BlockType::Stone);
-    chunk.set_block(uvec3(7, 1, 8), BlockType::Stone);
+    chunk.set_block(uvec3(8, 0, 8), Item::Stone);
+    chunk.set_block(uvec3(7, 1, 8), Item::Stone);
 
     assert!(chunk.step_fluids(&FluidProfile::WATER).changed);
-    assert_eq!(chunk.get_cell(uvec3(7, 1, 8)), BlockType::Stone.into());
+    assert_eq!(chunk.get_cell(uvec3(7, 1, 8)), Item::Stone.into());
 }
 
 #[test]
@@ -285,7 +285,7 @@ fn unreplenished_low_level_water_disappears() {
     let mut chunk = Chunk::default();
     let pos = uvec3(8, 1, 8);
     chunk.set_cell(pos, ChunkCell::water_flow(1));
-    chunk.set_block(uvec3(8, 0, 8), BlockType::Stone);
+    chunk.set_block(uvec3(8, 0, 8), Item::Stone);
 
     assert!(chunk.step_fluids(&FluidProfile::WATER).changed);
     assert_eq!(chunk.get_cell(pos), ChunkCell::EMPTY);
@@ -296,7 +296,7 @@ fn water_step_reports_changed_only_when_final_state_changes() {
     let mut chunk = Chunk::default();
     for x in 0..CHUNK_SIZE {
         for z in 0..CHUNK_SIZE {
-            chunk.set_cell_xyz(x, 0, z, BlockType::Stone.into());
+            chunk.set_cell_xyz(x, 0, z, Item::Stone.into());
         }
     }
     chunk.set_cell(uvec3(7, 1, 8), ChunkCell::water_source());

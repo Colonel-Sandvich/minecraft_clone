@@ -257,7 +257,7 @@ mod tests {
     use std::collections::HashSet;
 
     use super::*;
-    use crate::block::BlockType;
+    use crate::item::Item;
     use crate::world::chunk::state::{ChunkCell, FluidProfile};
 
     fn delta(old: ChunkCell, new: ChunkCell) -> CellDelta {
@@ -286,9 +286,9 @@ mod tests {
     #[test]
     fn cell_classifier_uses_subsystem_specific_signatures() {
         let air = ChunkCell::EMPTY;
-        let stone = ChunkCell::block(BlockType::Stone);
-        let dirt = ChunkCell::block(BlockType::Dirt);
-        let glass = ChunkCell::block(BlockType::Glass);
+        let stone = ChunkCell::block(Item::Stone);
+        let dirt = ChunkCell::block(Item::Dirt);
+        let glass = ChunkCell::block(Item::Glass);
         let source = ChunkCell::fluid(FluidProfile::WATER.source());
         let falling = ChunkCell::fluid(FluidProfile::WATER.falling());
 
@@ -333,7 +333,7 @@ mod tests {
     #[test]
     fn cell_fanout_matches_interior_face_edge_and_corner_topology() {
         let origin = ChunkPos::new(4, 5, 6);
-        let change = delta(ChunkCell::EMPTY, BlockType::Stone.into());
+        let change = delta(ChunkCell::EMPTY, Item::Stone.into());
 
         let cases = [
             (LocalBlockPos::new(1, 2, 3), vec![]),
@@ -398,7 +398,7 @@ mod tests {
         plan.record_cell_delta(
             origin,
             LocalBlockPos::ZERO,
-            delta(ChunkCell::EMPTY, BlockType::Stone.into()),
+            delta(ChunkCell::EMPTY, Item::Stone.into()),
         );
 
         let own = effects(&plan, origin);
@@ -424,7 +424,7 @@ mod tests {
         mesh_plan.record_cell_delta(
             origin,
             boundary,
-            delta(BlockType::Stone.into(), BlockType::Dirt.into()),
+            delta(Item::Stone.into(), Item::Dirt.into()),
         );
         let mesh_neighbor = effects(&mesh_plan, neighbor(origin, bevy::math::IVec3::NEG_X));
         assert!(mesh_neighbor.needs_mesh_rebuild());
@@ -495,7 +495,7 @@ mod tests {
         let lower = ChunkPos::new(2, -3, 5);
         let upper = ChunkPos::new(2, 9, 5);
         let mut plan = ChunkInvalidationPlan::new();
-        let change = delta(ChunkCell::EMPTY, BlockType::Stone.into());
+        let change = delta(ChunkCell::EMPTY, Item::Stone.into());
 
         plan.record_cell_delta(lower, LocalBlockPos::new(1, 1, 1), change);
         plan.record_cell_delta(lower, LocalBlockPos::new(1, 1, 1), change);

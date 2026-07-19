@@ -193,7 +193,7 @@ fn snapshot_chunks_for_sources(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::block::BlockType;
+    use crate::item::Item;
     use crate::world::chunk::{CHUNK_SIZE, ChunkCell, ChunkNeedsSave, ChunkPos, ChunkPosition};
 
     #[derive(Resource)]
@@ -225,7 +225,7 @@ mod tests {
 
         let mut chunk = Chunk::default();
         chunk.set_cell(uvec3(8, 1, 8), ChunkCell::water_source());
-        chunk.set_block(uvec3(8, 0, 8), BlockType::Stone);
+        chunk.set_block(uvec3(8, 0, 8), Item::Stone);
         let counts = chunk.compute_content_counts();
         let entity = app
             .world_mut()
@@ -407,7 +407,7 @@ mod tests {
         let mut chunk = Chunk::default();
         for x in 0..CHUNK_SIZE {
             for z in 0..CHUNK_SIZE {
-                chunk.set_cell_xyz(x, 0, z, BlockType::Stone.into());
+                chunk.set_cell_xyz(x, 0, z, Item::Stone.into());
             }
         }
         if let Some((pos, cell)) = water {

@@ -4,9 +4,10 @@ use bevy::prelude::Reflect;
 use strum::{Display, EnumCount, EnumString};
 
 use crate::block::{
-    BLOCK_FLAG_FULL_CUBE, BLOCK_FLAG_RENDERED, BLOCK_FLAG_TRANSLUCENT, BlockType, WATER_RENDER_ID,
+    BLOCK_FLAG_FULL_CUBE, BLOCK_FLAG_RENDERED, BLOCK_FLAG_TRANSLUCENT, WATER_RENDER_ID,
     render_id_for_block,
 };
+use crate::item::Item;
 
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -30,7 +31,7 @@ impl HotCellMeta {
         fluid_level: 0,
     };
 
-    pub const fn for_block(block: BlockType) -> Self {
+    pub const fn for_block(block: Item) -> Self {
         Self {
             render_id: render_id_for_block(block),
             mesh_flags: block.mesh_flags(),
@@ -53,7 +54,7 @@ impl HotCellMeta {
 
 pub const AIR_CELL_STATE_ID: CellStateId = CellStateId(0);
 const FIRST_BLOCK_STATE_ID: u32 = 1;
-const FIRST_FLUID_STATE_ID: u32 = FIRST_BLOCK_STATE_ID + BlockType::COUNT as u32;
+const FIRST_FLUID_STATE_ID: u32 = FIRST_BLOCK_STATE_ID + Item::BLOCK_COUNT as u32;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct CellRegistry;
@@ -284,15 +285,27 @@ const fn nonzero_u8(value: u8) -> NonZeroU8 {
 pub enum ChunkCell {
     #[default]
     Empty,
-    Block(BlockType),
+    Block(Item),
     Fluid(FluidState),
 }
 
 impl ChunkCell {
     pub const EMPTY: Self = Self::Empty;
 
-    pub const fn block(block: BlockType) -> Self {
+    pub const fn block(block: Item) -> Self {
+        assert!(
+            block.is_block(),
+            "only block-items can be stored in a chunk"
+        );
         Self::Block(block)
+    }
+
+    pub const fn try_block(item: Item) -> Option<Self> {
+        if item.is_block() {
+            Some(Self::Block(item))
+        } else {
+            None
+        }
     }
 
     pub const fn fluid(fluid: FluidState) -> Self {
@@ -311,7 +324,10 @@ impl ChunkCell {
     pub fn state_id(self) -> CellStateId {
         match self {
             Self::Empty => AIR_CELL_STATE_ID,
-            Self::Block(block) => CellStateId(FIRST_BLOCK_STATE_ID + block as u32),
+            Self::Block(block) => match block.block_storage_id() {
+                Some(id) => CellStateId(FIRST_BLOCK_STATE_ID + id as u32),
+                None => panic!("chunk contains a non-block item"),
+            },
             Self::Fluid(fluid) => {
                 let profile = FluidProfile::default_for_type(fluid.ty());
                 debug_assert!(profile.contains(fluid));
@@ -353,7 +369,7 @@ impl ChunkCell {
         matches!(self, Self::Fluid(_))
     }
 
-    pub const fn as_block(self) -> Option<BlockType> {
+    pub const fn as_block(self) -> Option<Item> {
         match self {
             Self::Block(b) => Some(b),
             _ => None,
@@ -420,7 +436,7 @@ impl ChunkCell {
         if let Some(fluid) = FluidState::from_name(name) {
             return Some(Self::Fluid(fluid));
         }
-        BlockType::from_name(name).map(Self::Block)
+        Item::from_name(name).map(Self::Block)
     }
 }
 
@@ -432,7 +448,7 @@ fn cell_from_state_id(state: CellStateId) -> Option<ChunkCell> {
 
     if raw < FIRST_FLUID_STATE_ID {
         let block_id = (raw - FIRST_BLOCK_STATE_ID) as u16;
-        return BlockType::from_storage_id(block_id).map(ChunkCell::Block);
+        return Item::from_block_storage_id(block_id).map(ChunkCell::Block);
     }
 
     let profile = FluidProfile::WATER;
@@ -451,10 +467,10 @@ fn cell_from_state_id(state: CellStateId) -> Option<ChunkCell> {
     Some(ChunkCell::Fluid(FluidState::new(profile.ty, form, level)))
 }
 
-impl From<BlockType> for ChunkCell {
+impl From<Item> for ChunkCell {
     #[inline(always)]
-    fn from(block: BlockType) -> Self {
-        Self::Block(block)
+    fn from(block: Item) -> Self {
+        Self::block(block)
     }
 }
 

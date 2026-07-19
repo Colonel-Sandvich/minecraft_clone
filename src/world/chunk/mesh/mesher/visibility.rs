@@ -2,7 +2,7 @@
 
 use crate::block::{
     BLOCK_FLAG_CUTOUT, BLOCK_FLAG_EMITS_INTERNAL_FACES, BLOCK_FLAG_FULL_CUBE, BLOCK_FLAG_RENDERED,
-    BLOCK_FLAG_TRANSLUCENT, BlockMaterialLayer, BlockType, WATER_RENDER_ID,
+    BLOCK_FLAG_TRANSLUCENT, BlockMaterialLayer, WATER_RENDER_ID, from_render_id,
 };
 
 #[inline(always)]
@@ -10,7 +10,7 @@ pub(crate) fn block_mesh_flags(render_id: u16) -> u8 {
     match render_id {
         0 => 0,
         WATER_RENDER_ID => BLOCK_FLAG_RENDERED | BLOCK_FLAG_TRANSLUCENT,
-        _ => BlockType::from_repr(render_id - 1).unwrap().mesh_flags(),
+        _ => from_render_id(render_id).unwrap().mesh_flags(),
     }
 }
 

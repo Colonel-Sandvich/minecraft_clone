@@ -4,9 +4,8 @@ use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
 use bevy::state::app::StatesPlugin;
 
-use crate::block::{
-    BlockMaterialLayer, BlockType, WATER_RENDER_ID, from_render_id, render_id_for_block,
-};
+use crate::block::{BlockMaterialLayer, WATER_RENDER_ID, from_render_id, render_id_for_block};
+use crate::item::Item;
 use crate::quad::Direction;
 use crate::textures::TextureState;
 use crate::world::chunk::mesh::mesher::{build, build_reference};
@@ -110,7 +109,7 @@ fn get_block(blocks: &ChunkMeshBlocks, x: i32, y: i32, z: i32) -> u16 {
     blocks.blocks[padded_chunk_index(x, y, z)]
 }
 
-fn block_cell(block: BlockType) -> ChunkCell {
+fn block_cell(block: Item) -> ChunkCell {
     block.into()
 }
 
@@ -228,13 +227,13 @@ fn vertex_ao_uses_four_symmetric_levels() {
 #[test]
 fn face_ao_samples_adjacent_plane_and_only_full_cube_occluders() {
     let mut chunk = Chunk::default();
-    chunk.set_cell_xyz(1, 1, 1, block_cell(BlockType::Stone));
+    chunk.set_cell_xyz(1, 1, 1, block_cell(Item::Stone));
 
-    chunk.set_cell_xyz(0, 2, 1, block_cell(BlockType::Stone));
-    chunk.set_cell_xyz(1, 2, 2, block_cell(BlockType::Stone));
-    chunk.set_cell_xyz(0, 2, 2, block_cell(BlockType::Stone));
-    chunk.set_cell_xyz(2, 2, 1, block_cell(BlockType::Glass));
-    chunk.set_cell_xyz(2, 2, 2, block_cell(BlockType::OakLeaves));
+    chunk.set_cell_xyz(0, 2, 1, block_cell(Item::Stone));
+    chunk.set_cell_xyz(1, 2, 2, block_cell(Item::Stone));
+    chunk.set_cell_xyz(0, 2, 2, block_cell(Item::Stone));
+    chunk.set_cell_xyz(2, 2, 1, block_cell(Item::Glass));
+    chunk.set_cell_xyz(2, 2, 2, block_cell(Item::OakLeaves));
 
     let blocks = ChunkMeshBlocks::from_chunk(&chunk);
     assert_eq!(
@@ -246,12 +245,12 @@ fn face_ao_samples_adjacent_plane_and_only_full_cube_occluders() {
 #[test]
 fn face_ao_samples_loaded_face_neighbor_chunk() {
     let mut centre = Chunk::default();
-    centre.set_cell_xyz(1, 15, 1, block_cell(BlockType::Stone));
+    centre.set_cell_xyz(1, 15, 1, block_cell(Item::Stone));
 
     let mut above = Chunk::default();
-    above.set_cell_xyz(0, 0, 1, block_cell(BlockType::Stone));
-    above.set_cell_xyz(1, 0, 2, block_cell(BlockType::Stone));
-    above.set_cell_xyz(0, 0, 2, block_cell(BlockType::Stone));
+    above.set_cell_xyz(0, 0, 1, block_cell(Item::Stone));
+    above.set_cell_xyz(1, 0, 2, block_cell(Item::Stone));
+    above.set_cell_xyz(0, 0, 2, block_cell(Item::Stone));
 
     let padded_blocks = padded_chunk_blocks([(IVec3::ZERO, &centre), (IVec3::Y, &above)]);
 
@@ -264,11 +263,11 @@ fn face_ao_samples_loaded_face_neighbor_chunk() {
 #[test]
 fn face_ao_samples_loaded_edge_neighbor_chunk() {
     let mut centre = Chunk::default();
-    centre.set_cell_xyz(0, 15, 1, block_cell(BlockType::Stone));
+    centre.set_cell_xyz(0, 15, 1, block_cell(Item::Stone));
 
     let mut edge = Chunk::default();
-    edge.set_cell_xyz(15, 0, 1, block_cell(BlockType::Stone));
-    edge.set_cell_xyz(15, 0, 2, block_cell(BlockType::Stone));
+    edge.set_cell_xyz(15, 0, 1, block_cell(Item::Stone));
+    edge.set_cell_xyz(15, 0, 2, block_cell(Item::Stone));
 
     let padded_blocks = padded_chunk_blocks([(IVec3::ZERO, &centre), (ivec3(-1, 1, 0), &edge)]);
 
@@ -281,10 +280,10 @@ fn face_ao_samples_loaded_edge_neighbor_chunk() {
 #[test]
 fn face_ao_samples_loaded_corner_neighbor_chunk() {
     let mut centre = Chunk::default();
-    centre.set_cell_xyz(0, 15, 15, block_cell(BlockType::Stone));
+    centre.set_cell_xyz(0, 15, 15, block_cell(Item::Stone));
 
     let mut corner = Chunk::default();
-    corner.set_cell_xyz(15, 0, 0, block_cell(BlockType::Stone));
+    corner.set_cell_xyz(15, 0, 0, block_cell(Item::Stone));
 
     let padded_blocks = padded_chunk_blocks([(IVec3::ZERO, &centre), (ivec3(-1, 1, 1), &corner)]);
 
@@ -302,8 +301,8 @@ fn indexed_face_ao_matches_reference_corner_order_for_all_directions() {
             for z in 0..CHUNK_SIZE {
                 let hash = x * 17 + y * 31 + z * 43;
                 let cell = match hash % 5 {
-                    0 | 3 => block_cell(BlockType::Stone),
-                    1 => block_cell(BlockType::Glass),
+                    0 | 3 => block_cell(Item::Stone),
+                    1 => block_cell(Item::Glass),
                     _ => ChunkCell::EMPTY,
                 };
                 chunk.set_cell_xyz(x, y, z, cell);
@@ -335,7 +334,7 @@ fn queued_mesh_rebuild_is_consumed_after_rebuild() {
     let mut app = mesh_rebuild_app();
 
     let mut chunk = Chunk::default();
-    chunk.set_cell_xyz(0, 0, 0, block_cell(BlockType::Stone));
+    chunk.set_cell_xyz(0, 0, 0, block_cell(Item::Stone));
     let chunk_entity = app
         .world_mut()
         .spawn((ChunkPosition::from(IVec3::ZERO), chunk))
@@ -383,7 +382,7 @@ fn publication_work_is_consumed_by_visual_systems_in_the_same_update() {
     add_active_dimension(&mut app);
 
     let mut chunk = Chunk::default();
-    chunk.set_cell_xyz(0, 0, 0, block_cell(BlockType::Stone));
+    chunk.set_cell_xyz(0, 0, 0, block_cell(Item::Stone));
     let chunk_entity = app
         .world_mut()
         .spawn((
@@ -423,7 +422,7 @@ fn visual_work_waits_until_texture_assets_are_ready() {
     add_active_dimension(&mut app);
 
     let mut chunk = Chunk::default();
-    chunk.set_cell_xyz(0, 0, 0, block_cell(BlockType::Stone));
+    chunk.set_cell_xyz(0, 0, 0, block_cell(Item::Stone));
     let entity = app
         .world_mut()
         .spawn((
@@ -463,7 +462,7 @@ fn mesh_rebuild_reuses_layer_entity_and_uploads_same_count_topology_changes() {
     let mut app = mesh_rebuild_app();
 
     let mut chunk = Chunk::default();
-    chunk.set_cell_xyz(0, 0, 0, block_cell(BlockType::Stone));
+    chunk.set_cell_xyz(0, 0, 0, block_cell(Item::Stone));
     let chunk_entity = app
         .world_mut()
         .spawn((
@@ -496,7 +495,7 @@ fn mesh_rebuild_reuses_layer_entity_and_uploads_same_count_topology_changes() {
         {
             let mut chunk = entity.get_mut::<Chunk>().unwrap();
             chunk.set_cell_xyz(0, 0, 0, ChunkCell::EMPTY);
-            chunk.set_cell_xyz(1, 0, 0, block_cell(BlockType::Stone));
+            chunk.set_cell_xyz(1, 0, 0, block_cell(Item::Stone));
         }
         entity.get_mut::<Transform>().unwrap().translation = Vec3::new(32.0, 0.0, 0.0);
     }
@@ -532,7 +531,7 @@ fn consecutive_mesh_rebuild_preserves_changed_count_face_payload() {
     let mut app = mesh_rebuild_app();
 
     let mut chunk = Chunk::default();
-    chunk.set_cell_xyz(0, 0, 0, block_cell(BlockType::Stone));
+    chunk.set_cell_xyz(0, 0, 0, block_cell(Item::Stone));
     let chunk_entity = app
         .world_mut()
         .spawn((ChunkPosition::from(IVec3::ZERO), chunk))
@@ -557,7 +556,7 @@ fn consecutive_mesh_rebuild_preserves_changed_count_face_payload() {
         entity
             .get_mut::<Chunk>()
             .unwrap()
-            .set_cell_xyz(1, 0, 0, block_cell(BlockType::Stone));
+            .set_cell_xyz(1, 0, 0, block_cell(Item::Stone));
     }
     enqueue_active_mesh_rebuild(&mut app, ChunkPos::ZERO);
 
@@ -590,8 +589,8 @@ fn mesh_rebuild_despawns_material_layers_no_longer_emitted() {
     let mut app = mesh_rebuild_app();
 
     let mut chunk = Chunk::default();
-    chunk.set_cell_xyz(0, 0, 0, block_cell(BlockType::Stone));
-    chunk.set_cell_xyz(1, 0, 0, block_cell(BlockType::Glass));
+    chunk.set_cell_xyz(0, 0, 0, block_cell(Item::Stone));
+    chunk.set_cell_xyz(1, 0, 0, block_cell(Item::Glass));
     let chunk_entity = app
         .world_mut()
         .spawn((ChunkPosition::from(IVec3::ZERO), chunk))
@@ -644,7 +643,7 @@ fn mesh_rebuild_is_scoped_to_active_dimension_with_duplicate_coordinates() {
     let right = center.offset(IVec3::X);
 
     let mut active_center_chunk = Chunk::default();
-    active_center_chunk.set_cell_xyz(15, 0, 0, block_cell(BlockType::Stone));
+    active_center_chunk.set_cell_xyz(15, 0, 0, block_cell(Item::Stone));
     let active_center = app
         .world_mut()
         .spawn((ChunkPosition::from(center), active_center_chunk))
@@ -655,13 +654,13 @@ fn mesh_rebuild_is_scoped_to_active_dimension_with_duplicate_coordinates() {
         .id();
 
     let mut foreign_center_chunk = Chunk::default();
-    foreign_center_chunk.set_cell_xyz(15, 0, 0, block_cell(BlockType::Stone));
+    foreign_center_chunk.set_cell_xyz(15, 0, 0, block_cell(Item::Stone));
     let foreign_center = app
         .world_mut()
         .spawn((ChunkPosition::from(center), foreign_center_chunk))
         .id();
     let mut foreign_right_chunk = Chunk::default();
-    foreign_right_chunk.set_cell_xyz(0, 0, 0, block_cell(BlockType::Stone));
+    foreign_right_chunk.set_cell_xyz(0, 0, 0, block_cell(Item::Stone));
     let foreign_right = app
         .world_mut()
         .spawn((ChunkPosition::from(right), foreign_right_chunk))
@@ -696,7 +695,7 @@ fn replacement_chunk_rejects_stale_visual_work_and_reenters_at_the_new_entity() 
     let position = ChunkPos::ZERO;
 
     let mut old_chunk = Chunk::default();
-    old_chunk.set_cell_xyz(0, 0, 0, block_cell(BlockType::Stone));
+    old_chunk.set_cell_xyz(0, 0, 0, block_cell(Item::Stone));
     let old_entity = app
         .world_mut()
         .spawn((ChunkPosition::from(position), old_chunk))
@@ -705,7 +704,7 @@ fn replacement_chunk_rejects_stale_visual_work_and_reenters_at_the_new_entity() 
     enqueue_active_mesh_rebuild(&mut app, position);
 
     let mut replacement_chunk = Chunk::default();
-    replacement_chunk.set_cell_xyz(1, 0, 0, block_cell(BlockType::Glass));
+    replacement_chunk.set_cell_xyz(1, 0, 0, block_cell(Item::Glass));
     let replacement_entity = app
         .world_mut()
         .spawn((ChunkPosition::from(position), replacement_chunk))
@@ -875,8 +874,8 @@ fn mesh_rebuild_new_layer_child_reuses_existing_light_data() {
     let mut app = mesh_rebuild_app();
 
     let mut chunk = Chunk::default();
-    chunk.set_cell_xyz(0, 0, 0, block_cell(BlockType::Stone));
-    chunk.set_cell_xyz(1, 0, 0, block_cell(BlockType::Glass));
+    chunk.set_cell_xyz(0, 0, 0, block_cell(Item::Stone));
+    chunk.set_cell_xyz(1, 0, 0, block_cell(Item::Glass));
     let existing_light_data = empty_light_data();
 
     let chunk_entity = app
@@ -1036,9 +1035,9 @@ fn water_top_face_packs_flow_direction() {
     let mut chunk = Chunk::default();
     chunk.set_cell_xyz(8, 1, 8, ChunkCell::water_source());
     chunk.set_cell_xyz(9, 1, 8, ChunkCell::water_flow(7));
-    chunk.set_cell_xyz(7, 1, 8, block_cell(BlockType::Stone));
-    chunk.set_cell_xyz(8, 1, 7, block_cell(BlockType::Stone));
-    chunk.set_cell_xyz(8, 1, 9, block_cell(BlockType::Stone));
+    chunk.set_cell_xyz(7, 1, 8, block_cell(Item::Stone));
+    chunk.set_cell_xyz(8, 1, 7, block_cell(Item::Stone));
+    chunk.set_cell_xyz(8, 1, 9, block_cell(Item::Stone));
 
     let blocks = ChunkMeshBlocks::from_chunk(&chunk);
     let face = build_reference(&blocks)
@@ -1178,7 +1177,7 @@ fn reference_face_counts(blocks: &ChunkMeshBlocks) -> Vec<(BlockMaterialLayer, u
                     if cell == neighbor
                         && profile.occlusion == crate::block::FaceOcclusion::None
                         && neighbor_profile.occlusion == crate::block::FaceOcclusion::None
-                        && cell != render_id_for_block(BlockType::OakLeaves)
+                        && cell != render_id_for_block(Item::OakLeaves)
                     {
                         continue;
                     }
@@ -1205,7 +1204,7 @@ struct TestChunkCase {
 
 fn test_chunks() -> Vec<TestChunkCase> {
     let mut single = Chunk::default();
-    single.set_cell_xyz(8, 8, 8, block_cell(BlockType::Stone));
+    single.set_cell_xyz(8, 8, 8, block_cell(Item::Stone));
 
     let mut checkerboard = Chunk::default();
     let mut mixed = Chunk::default();
@@ -1213,15 +1212,15 @@ fn test_chunks() -> Vec<TestChunkCase> {
         for y in 0..CHUNK_SIZE {
             for z in 0..CHUNK_SIZE {
                 if (x + y + z) % 2 == 0 {
-                    checkerboard.set_cell_xyz(x, y, z, block_cell(BlockType::Stone));
+                    checkerboard.set_cell_xyz(x, y, z, block_cell(Item::Stone));
                 }
 
                 let cell = if y < 4 {
-                    block_cell(BlockType::Stone)
+                    block_cell(Item::Stone)
                 } else if (x + z) % 7 == 0 {
-                    block_cell(BlockType::Glass)
+                    block_cell(Item::Glass)
                 } else if (x * 3 + y + z * 5) % 11 == 0 {
-                    block_cell(BlockType::OakLeaves)
+                    block_cell(Item::OakLeaves)
                 } else {
                     ChunkCell::EMPTY
                 };
@@ -1230,21 +1229,21 @@ fn test_chunks() -> Vec<TestChunkCase> {
         }
     }
 
-    let leaves = Chunk::filled(block_cell(BlockType::OakLeaves));
+    let leaves = Chunk::filled(block_cell(Item::OakLeaves));
 
     let empty = Chunk::default();
 
-    let full_stone = Chunk::filled(block_cell(BlockType::Stone));
+    let full_stone = Chunk::filled(block_cell(Item::Stone));
 
-    let all_glass = Chunk::filled(block_cell(BlockType::Glass));
+    let all_glass = Chunk::filled(block_cell(Item::Glass));
 
-    let mut water_basin = Chunk::filled(block_cell(BlockType::Stone));
+    let mut water_basin = Chunk::filled(block_cell(Item::Stone));
     for x in 4..12 {
         for z in 4..12 {
             water_basin.set_cell_xyz(x, 8, z, ChunkCell::water_source());
         }
     }
-    water_basin.set_cell_xyz(8, 9, 8, block_cell(BlockType::Ice));
+    water_basin.set_cell_xyz(8, 9, 8, block_cell(Item::Ice));
 
     vec![
         TestChunkCase {

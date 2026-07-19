@@ -58,7 +58,7 @@ pub(crate) fn apply_chunk_invalidations(
 mod tests {
     use super::*;
     use crate::{
-        block::BlockType,
+        item::Item,
         world::{
             chunk::{CellDelta, ChunkCell, ChunkPos, LocalBlockPos},
             dimension::Active,
@@ -105,7 +105,7 @@ mod tests {
             LocalBlockPos::new(1, 2, 3),
             CellDelta {
                 old: ChunkCell::EMPTY,
-                new: BlockType::Stone.into(),
+                new: Item::Stone.into(),
             },
         );
         app.insert_resource(TestPlan(plan));

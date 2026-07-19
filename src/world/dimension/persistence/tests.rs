@@ -12,7 +12,7 @@ use bevy::prelude::*;
 
 use super::*;
 use crate::{
-    block::BlockType,
+    item::Item,
     world::{
         chunk::{ChunkColumn, ChunkHeightmap, ChunkLight, ChunkPos},
         definition::{ChunkAddress, DimensionId},
@@ -351,7 +351,7 @@ fn outgoing_dimension_capture_does_not_require_active_or_an_io_budget() {
     let owner = spawn_dimension(&mut app, metadata.height(), false);
     let position = ChunkPos::new(3, 0, -2);
     let mut chunk = Chunk::default();
-    chunk.set_cell_xyz(0, 0, 0, BlockType::OakLog.into());
+    chunk.set_cell_xyz(0, 0, 0, Item::OakLog.into());
     let entity = spawn_dirty_chunk(
         &mut app,
         owner,
@@ -393,7 +393,7 @@ fn transient_failure_retries_owned_snapshot_after_root_despawn() {
     let position = ChunkPos::new(2, 0, -1);
     let address = overworld(position);
     let mut expected = Chunk::default();
-    expected.set_cell_xyz(0, 0, 0, BlockType::OakLog.into());
+    expected.set_cell_xyz(0, 0, 0, Item::OakLog.into());
     let mut heightmap = ChunkHeightmap::default();
     heightmap.heights[2][5] = 9;
     let (mut app, owner) = save_app(repository.clone(), usize::MAX);
@@ -432,7 +432,7 @@ fn newer_live_revision_coalesces_behind_in_flight_snapshot() {
     let position = ChunkPos::new(2, 0, -1);
     let address = overworld(position);
     let mut original = Chunk::default();
-    original.set_cell_xyz(0, 0, 0, BlockType::OakLog.into());
+    original.set_cell_xyz(0, 0, 0, Item::OakLog.into());
     let (mut app, owner) = save_app(repository.clone(), usize::MAX);
     let entity = spawn_dirty_chunk(
         &mut app,
@@ -448,7 +448,7 @@ fn newer_live_revision_coalesces_behind_in_flight_snapshot() {
     app.world_mut()
         .get_mut::<Chunk>(entity)
         .unwrap()
-        .set_cell_xyz(1, 0, 0, BlockType::Stone.into());
+        .set_cell_xyz(1, 0, 0, Item::Stone.into());
     let expected = app.world().get::<Chunk>(entity).unwrap().clone();
     let latest_revision = expected.content_revision();
 
@@ -493,7 +493,7 @@ fn equal_local_columns_in_different_dimensions_save_concurrently() {
     let grass_address = ChunkAddress::new(DimensionId::GRASS_FLOOR, position);
     let (mut app, overworld_owner) = save_app(repository.clone(), 2);
     let mut overworld_chunk = Chunk::default();
-    overworld_chunk.set_cell_xyz(0, 0, 0, BlockType::OakLog.into());
+    overworld_chunk.set_cell_xyz(0, 0, 0, Item::OakLog.into());
     let mut overworld_heightmap = ChunkHeightmap::default();
     overworld_heightmap.heights[0][0] = 3;
     let overworld_entity = spawn_dirty_chunk(
@@ -510,7 +510,7 @@ fn equal_local_columns_in_different_dimensions_save_concurrently() {
     let grass_definition = *repository.catalog().get(DimensionId::GRASS_FLOOR).unwrap();
     let grass_owner = spawn_defined_dimension(&mut app, grass_definition, false);
     let mut grass_chunk = Chunk::default();
-    grass_chunk.set_cell_xyz(0, 0, 0, BlockType::Grass.into());
+    grass_chunk.set_cell_xyz(0, 0, 0, Item::Grass.into());
     let mut grass_heightmap = ChunkHeightmap::default();
     grass_heightmap.heights[0][0] = 7;
     let grass_entity = spawn_dirty_chunk(
@@ -553,7 +553,7 @@ fn dirty_chunks_are_persisted_and_marked_clean() {
     let repository = ChunkRepository::new(InMemoryChunkStore::new(metadata));
     let position = ChunkPos::new(2, 0, -1);
     let mut chunk = Chunk::default();
-    chunk.set_cell_xyz(0, 0, 0, BlockType::OakLog.into());
+    chunk.set_cell_xyz(0, 0, 0, Item::OakLog.into());
     let (mut app, owner) = save_app(repository.clone(), usize::MAX);
     let entity = spawn_dirty_chunk(
         &mut app,
@@ -577,7 +577,7 @@ fn dirty_chunks_are_persisted_under_their_root_dimension() {
     let repository = ChunkRepository::new(InMemoryChunkStore::new(metadata));
     let position = ChunkPos::new(2, 0, -1);
     let mut chunk = Chunk::default();
-    chunk.set_cell_xyz(0, 0, 0, BlockType::Grass.into());
+    chunk.set_cell_xyz(0, 0, 0, Item::Grass.into());
     let (mut app, owner) =
         save_app_in_dimension(repository.clone(), usize::MAX, DimensionId::GRASS_FLOOR);
     let entity = spawn_dirty_chunk(
@@ -682,7 +682,7 @@ fn stale_revision_completion_cannot_clean_identical_live_content() {
     ));
     let position = ChunkPos::new(2, 0, -1);
     let mut original = Chunk::default();
-    original.set_cell_xyz(0, 0, 0, BlockType::OakLog.into());
+    original.set_cell_xyz(0, 0, 0, Item::OakLog.into());
     let (mut app, owner) = save_app(repository.clone(), usize::MAX);
     let entity = spawn_dirty_chunk(
         &mut app,
@@ -706,8 +706,8 @@ fn stale_revision_completion_cannot_clean_identical_live_content() {
         .revision;
     {
         let mut chunk = app.world_mut().get_mut::<Chunk>(entity).unwrap();
-        chunk.set_cell_xyz(0, 0, 0, BlockType::Stone.into());
-        chunk.set_cell_xyz(0, 0, 0, BlockType::OakLog.into());
+        chunk.set_cell_xyz(0, 0, 0, Item::Stone.into());
+        chunk.set_cell_xyz(0, 0, 0, Item::OakLog.into());
         assert_eq!(*chunk, original);
         assert_ne!(chunk.content_revision(), first_revision);
     }
@@ -903,7 +903,7 @@ fn permanent_failure_retains_the_newest_owned_snapshot_after_despawn() {
     let address = overworld(ChunkPos::ZERO);
     let (mut app, owner) = save_app(repository.clone(), usize::MAX);
     let mut original = Chunk::default();
-    original.set_cell_xyz(0, 0, 0, BlockType::OakLog.into());
+    original.set_cell_xyz(0, 0, 0, Item::OakLog.into());
     let entity = spawn_dirty_chunk(
         &mut app,
         owner,
@@ -917,7 +917,7 @@ fn permanent_failure_retains_the_newest_owned_snapshot_after_despawn() {
     app.world_mut()
         .get_mut::<Chunk>(entity)
         .unwrap()
-        .set_cell_xyz(1, 0, 0, BlockType::Stone.into());
+        .set_cell_xyz(1, 0, 0, Item::Stone.into());
     let expected = app.world().get::<Chunk>(entity).unwrap().clone();
     let expected_revision = expected.content_revision();
     app.update();

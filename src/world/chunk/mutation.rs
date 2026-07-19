@@ -1,4 +1,4 @@
-use crate::block::BlockType;
+use crate::item::Item;
 
 use super::{
     components::ChunkContentCounts,
@@ -52,7 +52,7 @@ impl<'a> ChunkEditor<'a> {
         Some(self.commit(local, CellDelta { old, new }))
     }
 
-    pub fn set_block(&mut self, local: LocalBlockPos, block: BlockType) -> Option<CellDelta> {
+    pub fn set_block(&mut self, local: LocalBlockPos, block: Item) -> Option<CellDelta> {
         self.set_cell(local, ChunkCell::block(block))
     }
 
@@ -77,7 +77,7 @@ impl<'a> ChunkEditor<'a> {
         Some(self.commit(local, CellDelta { old, new: cell }))
     }
 
-    pub fn place_block(&mut self, local: LocalBlockPos, block: BlockType) -> Option<CellDelta> {
+    pub fn place_block(&mut self, local: LocalBlockPos, block: Item) -> Option<CellDelta> {
         if !block.is_placeable() {
             return None;
         }
@@ -152,8 +152,8 @@ mod tests {
         {
             let mut editor =
                 ChunkEditor::new(position, &mut chunk, &mut counts, &mut invalidations);
-            assert!(editor.set_block(local, BlockType::Stone).is_some());
-            assert!(editor.set_block(local, BlockType::Glass).is_some());
+            assert!(editor.set_block(local, Item::Stone).is_some());
+            assert!(editor.set_block(local, Item::Glass).is_some());
             assert!(editor.set_cell(local, ChunkCell::water_source()).is_some());
             assert_eq!(editor.set_cell(local, ChunkCell::water_source()), None);
         }
@@ -185,8 +185,8 @@ mod tests {
                     .is_some()
             );
             assert_eq!(editor.break_block(local), None);
-            assert!(editor.place_block(local, BlockType::Stone).is_some());
-            assert_eq!(editor.place_block(local, BlockType::Dirt), None);
+            assert!(editor.place_block(local, Item::Stone).is_some());
+            assert_eq!(editor.place_block(local, Item::Dirt), None);
             assert!(editor.break_block(local).is_some());
         }
 

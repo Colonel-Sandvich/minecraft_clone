@@ -238,7 +238,7 @@ mod tests {
     use bevy::audio::Decodable;
 
     use crate::{
-        block::BlockType,
+        item::Item,
         player::interaction::{BlockEditCommitted, BlockEditKind},
         world::chunk::{CellDelta, ChunkBlockPos, ChunkCell, WorldBlockPos},
     };
@@ -258,7 +258,7 @@ mod tests {
         assert_eq!(
             cue_for_block_edit(&edit(
                 BlockEditKind::Break,
-                BlockType::Stone.into(),
+                Item::Stone.into(),
                 ChunkCell::EMPTY,
             )),
             Some(SoundCue::BlockBreak)
@@ -267,7 +267,7 @@ mod tests {
             cue_for_block_edit(&edit(
                 BlockEditKind::Place,
                 ChunkCell::EMPTY,
-                BlockType::Dirt.into(),
+                Item::Dirt.into(),
             )),
             Some(SoundCue::BlockPlace)
         );
@@ -372,7 +372,7 @@ mod tests {
                 kind: BlockEditKind::Break,
                 position: WorldBlockPos::new(-2, 3, 4).split(),
                 delta: CellDelta {
-                    old: BlockType::Stone.into(),
+                    old: Item::Stone.into(),
                     new: ChunkCell::EMPTY,
                 },
             },
@@ -381,7 +381,7 @@ mod tests {
                 position: WorldBlockPos::new(8, -1, 6).split(),
                 delta: CellDelta {
                     old: ChunkCell::EMPTY,
-                    new: BlockType::Dirt.into(),
+                    new: Item::Dirt.into(),
                 },
             },
         ];

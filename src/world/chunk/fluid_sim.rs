@@ -377,7 +377,7 @@ fn cell_after(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::block::BlockType;
+    use crate::item::Item;
 
     #[derive(Default)]
     struct TestFluidWorld {
@@ -389,7 +389,7 @@ mod tests {
             let chunk = self.chunks.entry(chunk_pos).or_default();
             for x in 0..CHUNK_SIZE {
                 for z in 0..CHUNK_SIZE {
-                    chunk.set_cell_xyz(x, 0, z, BlockType::Stone.into());
+                    chunk.set_cell_xyz(x, 0, z, Item::Stone.into());
                 }
             }
         }
@@ -496,18 +496,18 @@ mod tests {
         let mut world = TestFluidWorld::default();
         world.fill_floor(IVec3::ZERO);
         world.set_cell(ivec3(8, 1, 8), ChunkCell::water_source());
-        world.set_cell(ivec3(7, 1, 8), BlockType::Stone.into());
-        world.set_cell(ivec3(8, 1, 7), BlockType::Stone.into());
-        world.set_cell(ivec3(8, 1, 9), BlockType::Stone.into());
+        world.set_cell(ivec3(7, 1, 8), Item::Stone.into());
+        world.set_cell(ivec3(8, 1, 7), Item::Stone.into());
+        world.set_cell(ivec3(8, 1, 9), Item::Stone.into());
 
         world.step();
         assert_eq!(world.cell(ivec3(9, 1, 8)), Some(ChunkCell::water_flow(7)));
 
-        world.set_cell(ivec3(9, 1, 8), BlockType::Stone.into());
+        world.set_cell(ivec3(9, 1, 8), Item::Stone.into());
         world.set_cell(ivec3(8, 1, 7), ChunkCell::EMPTY);
         world.step();
 
-        assert_eq!(world.cell(ivec3(9, 1, 8)), Some(BlockType::Stone.into()));
+        assert_eq!(world.cell(ivec3(9, 1, 8)), Some(Item::Stone.into()));
         assert_eq!(world.cell(ivec3(8, 1, 7)), Some(ChunkCell::water_flow(7)));
     }
 }

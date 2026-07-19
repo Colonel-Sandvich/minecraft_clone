@@ -159,14 +159,14 @@ impl std::error::Error for ChunkDecodeError {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::block::BlockType;
+    use crate::item::Item;
 
     #[test]
     fn representative_encoding_has_stable_wire_fingerprint() {
         let mut chunk = Chunk::default();
-        chunk.set_cell_xyz(0, 0, 0, BlockType::Grass.into());
-        chunk.set_cell_xyz(1, 0, 0, BlockType::Dirt.into());
-        chunk.set_cell_xyz(0, 0, 1, BlockType::Stone.into());
+        chunk.set_cell_xyz(0, 0, 0, Item::Grass.into());
+        chunk.set_cell_xyz(1, 0, 0, Item::Dirt.into());
+        chunk.set_cell_xyz(0, 0, 1, Item::Stone.into());
         chunk.set_cell_xyz(15, 15, 15, ChunkCell::water_source());
 
         let bytes = chunk.to_storage_bytes();

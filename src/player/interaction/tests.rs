@@ -1,5 +1,5 @@
 use crate::{
-    block::BlockType,
+    item::Item,
     world::chunk::{CellDelta, ChunkBlockPos, ChunkCell, ChunkPos, LocalBlockPos},
 };
 
@@ -68,8 +68,8 @@ fn water_placement_does_not_require_actor_clearance() {
     assert!(!placement_requires_actor_clearance(
         ChunkCell::water_source()
     ));
-    assert!(placement_requires_actor_clearance(BlockType::Stone.into()));
-    assert!(placement_requires_actor_clearance(BlockType::Ice.into()));
+    assert!(placement_requires_actor_clearance(Item::Stone.into()));
+    assert!(placement_requires_actor_clearance(Item::Ice.into()));
 }
 
 fn app_with_request_emitter() -> App {
@@ -151,7 +151,7 @@ fn interaction_request_uses_action_specific_block_position() {
 fn committed_edit_requires_a_successful_world_delta() {
     let position = block_pos(uvec3(4, 5, 6));
     let delta = CellDelta {
-        old: BlockType::Stone.into(),
+        old: Item::Stone.into(),
         new: ChunkCell::EMPTY,
     };
 

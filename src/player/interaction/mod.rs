@@ -220,7 +220,9 @@ fn apply_block_interaction_requests(
 
         let delta = match request.kind {
             BlockInteractionKind::Pick => {
-                hotbar.set_selected_cell(chunk.cell(pos.local()));
+                if let Some(item) = chunk.cell(pos.local()).as_block() {
+                    hotbar.set_selected_item(item);
+                }
                 None
             }
             BlockInteractionKind::Break => {
@@ -229,7 +231,10 @@ fn apply_block_interaction_requests(
                 editor.break_block(pos.local())
             }
             BlockInteractionKind::Place => {
-                let Some(cell) = hotbar.selected_cell() else {
+                let Some(item) = hotbar.selected_item() else {
+                    continue;
+                };
+                let Some(cell) = ChunkCell::try_block(item) else {
                     continue;
                 };
                 if placement_requires_actor_clearance(cell)

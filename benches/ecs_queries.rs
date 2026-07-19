@@ -7,7 +7,7 @@ use bevy::{
 };
 use criterion::{BatchSize, BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use minecraft_clone::{
-    block::BlockType,
+    item::Item,
     world::{
         DimensionCatalog, DimensionId, WORLD_COLLISION_LAYERS, WorldMetadata,
         chunk::{
@@ -450,7 +450,7 @@ fn fluid_bench_chunk(active: bool) -> Chunk {
     let mut chunk = Chunk::default();
     if active {
         for z in 1..CHUNK_SIZE - 1 {
-            chunk.set_block(uvec3(1, 0, z as u32), BlockType::Stone);
+            chunk.set_block(uvec3(1, 0, z as u32), Item::Stone);
             chunk.set_cell(uvec3(1, 1, z as u32), ChunkCell::water_source());
         }
     }
@@ -488,7 +488,7 @@ fn collider_bench_chunk() -> Chunk {
         for z in 0..CHUNK_SIZE {
             for y in 0..8 {
                 if (x + y + z) % 3 != 0 {
-                    chunk.set_cell_xyz(x, y, z, BlockType::Stone.into());
+                    chunk.set_cell_xyz(x, y, z, Item::Stone.into());
                 }
             }
         }

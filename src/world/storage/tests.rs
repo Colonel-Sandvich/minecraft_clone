@@ -5,7 +5,7 @@ use std::{
 };
 
 use super::*;
-use crate::block::BlockType;
+use crate::item::Item;
 use crate::player::PlayerId;
 use crate::world::chunk::{ChunkColumn, ChunkHeightmap, ChunkPos};
 use crate::world::definition::{ChunkAddress, ColumnAddress, DimensionId};
@@ -86,7 +86,7 @@ fn test_turso_store(metadata: &WorldMetadata) -> TestTursoStore {
     TestTursoStore { store, path }
 }
 
-fn chunk_with_block(block: BlockType) -> Chunk {
+fn chunk_with_block(block: Item) -> Chunk {
     let mut chunk = Chunk::default();
     chunk.set_cell_xyz(0, 0, 0, block.into());
     chunk
@@ -146,8 +146,8 @@ fn assert_addressed_store_contract(store: &impl ChunkStore, height: WorldHeight)
     let position = ChunkPos::new(2, 0, -3);
     let overworld = ChunkAddress::new(DimensionId::OVERWORLD, position);
     let grass_floor = ChunkAddress::new(DimensionId::GRASS_FLOOR, position);
-    let overworld_chunk = chunk_with_block(BlockType::Stone);
-    let grass_floor_chunk = chunk_with_block(BlockType::Grass);
+    let overworld_chunk = chunk_with_block(Item::Stone);
+    let grass_floor_chunk = chunk_with_block(Item::Grass);
     let overworld_heightmap = ChunkHeightmap {
         heights: [[17; crate::world::chunk::CHUNK_SIZE]; crate::world::chunk::CHUNK_SIZE],
     };
@@ -188,7 +188,7 @@ fn assert_addressed_store_contract(store: &impl ChunkStore, height: WorldHeight)
         store
             .save_chunk(
                 bounded_column.chunk(y),
-                &chunk_with_block(BlockType::Glass),
+                &chunk_with_block(Item::Glass),
                 &default_heightmap(),
             )
             .unwrap();
@@ -243,8 +243,8 @@ fn sqlite_store_roundtrips_full_chunks() {
     let metadata = WorldMetadata::with_seed(42);
     let store = test_sqlite_store(&metadata);
     let address = chunk_address(ChunkPos::new(-2, 1, 3));
-    let mut chunk = chunk_with_block(BlockType::Grass);
-    chunk.set_cell_xyz(15, 15, 15, BlockType::OakLeaves.into());
+    let mut chunk = chunk_with_block(Item::Grass);
+    chunk.set_cell_xyz(15, 15, 15, Item::OakLeaves.into());
 
     store
         .save_chunk(address, &chunk, &default_heightmap())
@@ -336,7 +336,7 @@ fn sqlite_open_adds_player_schema_to_an_existing_world() {
     let metadata = WorldMetadata::with_seed(42);
     let store = test_sqlite_store(&metadata);
     let address = chunk_address(ChunkPos::new(2, 1, -3));
-    let chunk = chunk_with_block(BlockType::Stone);
+    let chunk = chunk_with_block(Item::Stone);
     store
         .save_chunk(address, &chunk, &default_heightmap())
         .unwrap();
@@ -371,9 +371,9 @@ fn sqlite_store_loads_columns_by_xz() {
     let store = test_sqlite_store(&metadata);
     let column = ChunkColumn::new(-2, 3);
     let address = column_address(column);
-    let lower = chunk_with_block(BlockType::Grass);
-    let upper = chunk_with_block(BlockType::Stone);
-    let other_column = chunk_with_block(BlockType::Dirt);
+    let lower = chunk_with_block(Item::Grass);
+    let upper = chunk_with_block(Item::Stone);
+    let other_column = chunk_with_block(Item::Dirt);
 
     store
         .save_chunk(address.chunk(3), &upper, &default_heightmap())
@@ -407,8 +407,8 @@ fn in_memory_store_loads_columns_by_xz() {
     let store = InMemoryChunkStore::new(metadata.clone());
     let column = ChunkColumn::new(2, -1);
     let address = column_address(column);
-    let lower = chunk_with_block(BlockType::OakLog);
-    let upper = chunk_with_block(BlockType::OakLeaves);
+    let lower = chunk_with_block(Item::OakLog);
+    let upper = chunk_with_block(Item::OakLeaves);
 
     store
         .save_chunk(address.chunk(2), &upper, &default_heightmap())
@@ -451,7 +451,7 @@ fn noop_store_discards_chunks() {
     store
         .save_chunk(
             address,
-            &chunk_with_block(BlockType::Grass),
+            &chunk_with_block(Item::Grass),
             &default_heightmap(),
         )
         .unwrap();
@@ -486,8 +486,8 @@ fn turso_store_roundtrips_full_chunks() {
     let metadata = WorldMetadata::with_seed(42);
     let store = test_turso_store(&metadata);
     let address = chunk_address(ChunkPos::new(-2, 1, 3));
-    let mut chunk = chunk_with_block(BlockType::Grass);
-    chunk.set_cell_xyz(15, 15, 15, BlockType::OakLeaves.into());
+    let mut chunk = chunk_with_block(Item::Grass);
+    chunk.set_cell_xyz(15, 15, 15, Item::OakLeaves.into());
 
     store
         .save_chunk(address, &chunk, &default_heightmap())
@@ -528,7 +528,7 @@ fn turso_open_adds_player_schema_to_an_existing_world() {
     let metadata = WorldMetadata::with_seed(42);
     let store = test_turso_store(&metadata);
     let address = chunk_address(ChunkPos::new(2, 1, -3));
-    let chunk = chunk_with_block(BlockType::Stone);
+    let chunk = chunk_with_block(Item::Stone);
     store
         .save_chunk(address, &chunk, &default_heightmap())
         .unwrap();
@@ -582,8 +582,8 @@ fn turso_store_loads_columns_by_xz() {
     let store = test_turso_store(&metadata);
     let column = ChunkColumn::new(-2, 3);
     let address = column_address(column);
-    let lower = chunk_with_block(BlockType::Grass);
-    let upper = chunk_with_block(BlockType::Stone);
+    let lower = chunk_with_block(Item::Grass);
+    let upper = chunk_with_block(Item::Stone);
 
     store
         .save_chunk(address.chunk(3), &upper, &default_heightmap())
@@ -691,8 +691,8 @@ fn stored_columns_sort_chunks_and_retain_column_metadata() {
     let heightmap = ChunkHeightmap {
         heights: [[23; crate::world::chunk::CHUNK_SIZE]; crate::world::chunk::CHUNK_SIZE],
     };
-    let lower = chunk_with_block(BlockType::Dirt);
-    let upper = chunk_with_block(BlockType::Stone);
+    let lower = chunk_with_block(Item::Dirt);
+    let upper = chunk_with_block(Item::Stone);
 
     let stored = StoredColumn::try_new(
         address,

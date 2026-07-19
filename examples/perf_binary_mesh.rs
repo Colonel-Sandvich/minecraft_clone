@@ -9,7 +9,7 @@
 
 use bevy::{platform::collections::HashMap, prelude::IVec3};
 use minecraft_clone::{
-    block::BlockType,
+    item::Item,
     world::chunk::{
         CHUNK_SIZE, Chunk, ChunkCell,
         mesh::{ChunkMeshBlocks, mesher::build_binary},
@@ -50,31 +50,31 @@ fn realistic_terrain_chunk() -> Chunk {
         for z in 0..CHUNK_SIZE {
             for y in 0..CHUNK_SIZE {
                 let cell = if y < 4 {
-                    BlockType::Stone.into()
+                    Item::Stone.into()
                 } else if y < 6 {
-                    BlockType::Dirt.into()
+                    Item::Dirt.into()
                 } else if y == 6 {
-                    BlockType::Grass.into()
+                    Item::Grass.into()
                 } else if (7..=11).contains(&y) && (6..=9).contains(&x) && (6..=9).contains(&z) {
-                    BlockType::OakLog.into()
+                    Item::OakLog.into()
                 } else if y == 12
                     && (5..=10).contains(&x)
                     && (5..=10).contains(&z)
                     && !((7..=8).contains(&x) && (7..=8).contains(&z))
                 {
-                    BlockType::OakLeaves.into()
+                    Item::OakLeaves.into()
                 } else if y == 11 && (5..=10).contains(&x) && (5..=10).contains(&z) {
-                    BlockType::OakLeaves.into()
+                    Item::OakLeaves.into()
                 } else if y == 10
                     && (5..=10).contains(&x)
                     && (5..=10).contains(&z)
                     && (x == 5 || x == 10 || z == 5 || z == 10)
                 {
-                    BlockType::OakLeaves.into()
+                    Item::OakLeaves.into()
                 } else if y == 3 && (x + z) % 13 == 0 {
-                    BlockType::Glass.into()
+                    Item::Glass.into()
                 } else if y == 8 && (x * 7 + z * 11) % 23 == 0 {
-                    BlockType::Glass.into()
+                    Item::Glass.into()
                 } else {
                     ChunkCell::EMPTY
                 };
@@ -88,7 +88,7 @@ fn realistic_terrain_chunk() -> Chunk {
         for z in 3..=10 {
             let on_edge = x == 3 || x == 12 || z == 3 || z == 10;
             let cell = if on_edge {
-                BlockType::Ice.into()
+                Item::Ice.into()
             } else {
                 ChunkCell::water_source()
             };

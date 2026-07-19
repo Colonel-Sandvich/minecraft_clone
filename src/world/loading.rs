@@ -193,7 +193,7 @@ mod tests {
     #[cfg(feature = "turso-store")]
     use crate::world::storage::TursoStoreErrorKind;
     use crate::{
-        block::BlockType,
+        item::Item,
         world::{
             definition::{ChunkAddress, ColumnAddress, DimensionId},
             generation::{WorldMetadata, generate_dimension_chunk},
@@ -249,7 +249,7 @@ mod tests {
         let position = ChunkColumn::new(-5, 8);
         let address = ColumnAddress::new(DimensionId::OVERWORLD, position);
         let mut persisted = Chunk::default();
-        persisted.set_cell_xyz(0, 0, 0, BlockType::Glowstone.into());
+        persisted.set_cell_xyz(0, 0, 0, Item::Glowstone.into());
         let heightmap = ChunkHeightmap {
             heights: [[19; crate::world::chunk::CHUNK_SIZE]; crate::world::chunk::CHUNK_SIZE],
         };
@@ -344,7 +344,7 @@ mod tests {
         assert_eq!(loaded.address, address);
         assert_eq!(
             loaded.chunks()[0].chunk.cell_xyz(0, 0, 0).as_block(),
-            Some(BlockType::Grass)
+            Some(Item::Grass)
         );
         assert!(loaded.chunks()[0].chunk.cell_xyz(0, 1, 0).is_empty());
         assert!(loaded.chunks()[1].chunk.cell_xyz(0, 0, 0).is_empty());
@@ -364,7 +364,7 @@ mod tests {
 
         assert_eq!(
             center.chunks()[0].chunk.cell_xyz(0, 0, 0).as_block(),
-            Some(BlockType::Glass)
+            Some(Item::Glass)
         );
         assert!(center.chunks()[0].chunk.cell_xyz(0, 1, 0).is_empty());
         assert!(center.chunks()[1].chunk.cell_xyz(0, 0, 0).is_empty());

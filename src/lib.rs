@@ -5,6 +5,7 @@ pub mod audio;
 pub mod block;
 pub mod game_state;
 pub mod input;
+pub mod item;
 pub mod light;
 pub mod memory;
 pub mod mob;

@@ -6,7 +6,7 @@ use bevy::{
 };
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use minecraft_clone::{
-    block::BlockType,
+    item::Item,
     world::{
         WorldMetadata,
         chunk::{
@@ -29,7 +29,7 @@ fn empty_chunk() -> Chunk {
     Chunk::default()
 }
 
-fn solid_chunk(block: BlockType) -> Chunk {
+fn solid_chunk(block: Item) -> Chunk {
     Chunk::filled(block.into())
 }
 
@@ -43,7 +43,7 @@ fn checkerboard_leaves_chunk() -> Chunk {
         for z in 0..CHUNK_SIZE {
             for y in 0..CHUNK_SIZE {
                 if (x + y + z) % 2 == 0 {
-                    chunk.set_cell_xyz(x, y, z, BlockType::OakLeaves.into());
+                    chunk.set_cell_xyz(x, y, z, Item::OakLeaves.into());
                 }
             }
         }
@@ -57,7 +57,7 @@ fn glowstone_lattice_chunk() -> Chunk {
         for z in 0..CHUNK_SIZE {
             for y in 0..CHUNK_SIZE {
                 if x % 4 == 0 && z % 4 == 0 && y % 4 == 0 {
-                    chunk.set_cell_xyz(x, y, z, BlockType::Glowstone.into());
+                    chunk.set_cell_xyz(x, y, z, Item::Glowstone.into());
                 }
             }
         }
@@ -77,7 +77,7 @@ fn hollow_chamber_chunk() -> Chunk {
                     || y == 0
                     || y == CHUNK_SIZE - 1;
                 if is_surface {
-                    chunk.set_cell_xyz(x, y, z, BlockType::Stone.into());
+                    chunk.set_cell_xyz(x, y, z, Item::Stone.into());
                 }
             }
         }
@@ -86,7 +86,7 @@ fn hollow_chamber_chunk() -> Chunk {
 }
 
 fn cave_chunk() -> Chunk {
-    let mut chunk = solid_chunk(BlockType::Stone);
+    let mut chunk = solid_chunk(Item::Stone);
     for x in 0..CHUNK_SIZE {
         for z in 0..CHUNK_SIZE {
             for y in 0..CHUNK_SIZE {
@@ -104,8 +104,8 @@ fn cave_chunk() -> Chunk {
             }
         }
     }
-    chunk.set_cell_xyz(4, 8, 7, BlockType::Glowstone.into());
-    chunk.set_cell_xyz(11, 8, 10, BlockType::Glowstone.into());
+    chunk.set_cell_xyz(4, 8, 7, Item::Glowstone.into());
+    chunk.set_cell_xyz(11, 8, 10, Item::Glowstone.into());
     chunk
 }
 
@@ -113,7 +113,7 @@ fn glass_column_chunk() -> Chunk {
     let mut chunk = Chunk::default();
     for x in 0..CHUNK_SIZE {
         for z in 0..CHUNK_SIZE {
-            chunk.set_cell_xyz(x, 0, z, BlockType::Stone.into());
+            chunk.set_cell_xyz(x, 0, z, Item::Stone.into());
         }
     }
     for x in 0..CHUNK_SIZE {
@@ -121,9 +121,9 @@ fn glass_column_chunk() -> Chunk {
             for y in 1..CHUNK_SIZE {
                 if x % 3 == 0 && z % 3 == 0 {
                     let cell = if (y + x / 3 + z / 3) % 2 == 0 {
-                        BlockType::Glass.into()
+                        Item::Glass.into()
                     } else {
-                        BlockType::OakLeaves.into()
+                        Item::OakLeaves.into()
                     };
                     chunk.set_cell_xyz(x, y, z, cell);
                 }
@@ -191,7 +191,7 @@ impl SingleTargetScenario {
 fn single_target_scenarios() -> Vec<SingleTargetScenario> {
     vec![
         SingleTargetScenario::isolated("empty", empty_chunk()),
-        SingleTargetScenario::isolated("solid_stone", solid_chunk(BlockType::Stone)),
+        SingleTargetScenario::isolated("solid_stone", solid_chunk(Item::Stone)),
         SingleTargetScenario::isolated("surface_terrain", surface_terrain_chunk()),
         SingleTargetScenario::isolated("checkerboard_leaves", checkerboard_leaves_chunk()),
         SingleTargetScenario::isolated("hollow_chamber", hollow_chamber_chunk()),
