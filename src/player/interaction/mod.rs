@@ -178,7 +178,7 @@ fn block_face_normal(normal: Vec3) -> IVec3 {
 fn draw_block_target_gizmos(gizmos: &mut Gizmos, target: BlockTarget) {
     gizmos.cube(
         Transform::from_translation(target.hit_block.world().as_ivec3().as_vec3() + 0.5)
-            .with_scale(Vec3::splat(1.01)),
+            .with_scale(Vec3::splat(1.001)),
         basic::BLACK,
     );
 }
