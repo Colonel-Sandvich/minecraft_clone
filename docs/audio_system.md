@@ -7,8 +7,10 @@ Audio is downstream of gameplay state, never raw input:
 1. A successful player break or placement returns a `CellDelta` from `ChunkEditor`.
 2. The interaction system publishes `BlockEditCommitted` with the edit kind, exact block
    position, and old/new cells. Failed or no-op attempts publish nothing.
-3. The audio adapter maps that domain message to a `SoundCue` and publishes `PlaySound`.
-4. The playback system resolves a variant from `SoundBank` and spawns a Bevy `AudioPlayer`
+3. A completed dropped-item transfer publishes `ItemPickedUp` with the player, dropped entity,
+   and copied stack data.
+4. The audio adapters map these domain messages to a `SoundCue` and publish `PlaySound`.
+5. The playback system resolves a variant from `SoundBank` and spawns a Bevy `AudioPlayer`
    with `PlaybackSettings::DESPAWN`.
 
 World sounds are emitted at the changed block's center. A single `SpatialListener` follows the
@@ -21,11 +23,12 @@ hand-edited settings file.
 
 ## Extension points
 
-- **Material sound sets:** Map the changed `ChunkCell`/`BlockType` to a sound set containing
+- **Material sound sets:** Map the changed `ChunkCell`/`Item` to a sound set containing
   break, place, hit, and footstep variants. The committed edit already carries both old and new
   material, so this does not require changing interaction code.
-- **Variants:** Each cue is already backed by a vector and uses a per-cue cursor. Add files to a
-  cue's path list first; optional pitch variation can be added later if repetition remains audible.
+- **Variants:** Each cue is backed by a vector, uses a per-cue cursor, and defines its own base
+  playback speed. Add files to a cue's path list first; optional variation around that base speed
+  can be added later if repetition remains audible.
 - **Categories:** Add music, ambience, voice, and UI gains beside sound effects when those systems
   exist. `SoundCue` should own its category so callers cannot accidentally route a cue through the
   wrong volume control.
@@ -41,9 +44,9 @@ hand-edited settings file.
 ## Asset policy
 
 Prefer mono Ogg Vorbis for spatial one-shots: it is compact and supported by Bevy's default audio
-feature. Only add audio with a clear redistribution license, retain its source page and direct
-download URL in the root README, and record any conversion or editing. Do not import Minecraft or
-Mojang audio.
+feature. Retain each asset's source page, direct download URL, digest, license or usage terms, and
+any conversion history in the root README. Mojang assets must be identified separately from
+redistributable assets and handled according to the Minecraft Usage Guidelines.
 
 The built-in Bevy audio stack is sufficient for the current scope. Reassess a dedicated mixer or
 audio plugin only when the game needs mixer buses, advanced attenuation, streaming control, or

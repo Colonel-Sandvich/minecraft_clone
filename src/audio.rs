@@ -4,13 +4,18 @@ use bevy::{
 };
 use bevy_settings::{ReflectSettingsGroup, SettingsGroup};
 
-use crate::player::{
-    cam::MouseCam,
-    interaction::{BlockEditCommitted, BlockEditKind},
+use crate::{
+    item::ItemPickedUp,
+    player::{
+        Player,
+        cam::MouseCam,
+        interaction::{BlockEditCommitted, BlockEditKind},
+    },
 };
 
 pub const BLOCK_BREAK_SOUND_PATHS: &[&str] = &["audio/block/rock_break.ogg"];
 pub const BLOCK_PLACE_SOUND_PATHS: &[&str] = &["audio/block/small_rock_impact.ogg"];
+pub const ITEM_PICKUP_SOUND_PATHS: &[&str] = &["audio/item/pickup.ogg"];
 
 const SPATIAL_LISTENER_EAR_GAP: f32 = 0.2;
 
@@ -22,11 +27,17 @@ impl Plugin for GameAudioPlugin {
             .init_resource::<SoundBank>()
             .init_resource::<VariantCursor>()
             .add_message::<BlockEditCommitted>()
+            .add_message::<ItemPickedUp>()
             .add_message::<PlaySound>()
             .add_systems(Update, attach_spatial_listener)
             .add_systems(
                 Update,
-                (request_block_edit_sounds, play_requested_sounds).chain(),
+                (
+                    request_block_edit_sounds,
+                    request_item_pickup_sounds,
+                    play_requested_sounds,
+                )
+                    .chain(),
             );
     }
 }
@@ -72,6 +83,7 @@ fn sanitized_gain(value: f32) -> f32 {
 pub enum SoundCue {
     BlockBreak,
     BlockPlace,
+    ItemPickup,
 }
 
 impl SoundCue {
@@ -79,6 +91,18 @@ impl SoundCue {
         match self {
             Self::BlockBreak => 0,
             Self::BlockPlace => 1,
+            Self::ItemPickup => 2,
+        }
+    }
+
+    const fn playback_speed(self) -> f32 {
+        match self {
+            // The CC0 source effects are longer, lower-pitched recordings than
+            // the short, bright impacts expected for voxel interactions.
+            Self::BlockBreak | Self::BlockPlace => 1.35,
+            // Minecraft applies pitch at playback; the raw pop asset sounds
+            // roughly an octave too low when played at Bevy's default 1.0x.
+            Self::ItemPickup => 2.0,
         }
     }
 }
@@ -117,6 +141,7 @@ impl PlaySound {
 struct SoundBank {
     block_break: Vec<Handle<AudioSource>>,
     block_place: Vec<Handle<AudioSource>>,
+    item_pickup: Vec<Handle<AudioSource>>,
 }
 
 impl FromWorld for SoundBank {
@@ -125,6 +150,7 @@ impl FromWorld for SoundBank {
         Self {
             block_break: load_sound_variants(asset_server, BLOCK_BREAK_SOUND_PATHS),
             block_place: load_sound_variants(asset_server, BLOCK_PLACE_SOUND_PATHS),
+            item_pickup: load_sound_variants(asset_server, ITEM_PICKUP_SOUND_PATHS),
         }
     }
 }
@@ -134,6 +160,7 @@ impl SoundBank {
         match cue {
             SoundCue::BlockBreak => &self.block_break,
             SoundCue::BlockPlace => &self.block_place,
+            SoundCue::ItemPickup => &self.item_pickup,
         }
     }
 }
@@ -146,7 +173,7 @@ fn load_sound_variants(
 }
 
 #[derive(Resource, Default)]
-struct VariantCursor([usize; 2]);
+struct VariantCursor([usize; 3]);
 
 impl VariantCursor {
     fn next(&mut self, cue: SoundCue, variant_count: usize) -> Option<usize> {
@@ -191,6 +218,19 @@ fn request_block_edit_sounds(
     }
 }
 
+fn request_item_pickup_sounds(
+    mut pickups: MessageReader<ItemPickedUp>,
+    players: Query<&Transform, With<Player>>,
+    mut sounds: MessageWriter<PlaySound>,
+) {
+    for pickup in pickups.read() {
+        let Ok(transform) = players.get(pickup.player) else {
+            continue;
+        };
+        sounds.write(PlaySound::at(SoundCue::ItemPickup, transform.translation));
+    }
+}
+
 fn cue_for_block_edit(edit: &BlockEditCommitted) -> Option<SoundCue> {
     match edit.kind {
         BlockEditKind::Break if edit.delta.old.as_block().is_some() => Some(SoundCue::BlockBreak),
@@ -222,6 +262,7 @@ fn play_requested_sounds(
         let spatial = matches!(request.emitter, SoundEmitter::World(_));
         let playback = PlaybackSettings::DESPAWN
             .with_volume(Volume::Linear(gain))
+            .with_speed(request.cue.playback_speed())
             .with_spatial(spatial);
         let mut entity = commands.spawn((AudioPlayer::new(available[index].clone()), playback));
 
@@ -238,7 +279,7 @@ mod tests {
     use bevy::audio::Decodable;
 
     use crate::{
-        item::Item,
+        item::{Item, ItemStack},
         player::interaction::{BlockEditCommitted, BlockEditKind},
         world::chunk::{CellDelta, ChunkBlockPos, ChunkCell, WorldBlockPos},
     };
@@ -309,6 +350,7 @@ mod tests {
         for path in BLOCK_BREAK_SOUND_PATHS
             .iter()
             .chain(BLOCK_PLACE_SOUND_PATHS)
+            .chain(ITEM_PICKUP_SOUND_PATHS)
         {
             let bytes = std::fs::read(asset_root.join(path))
                 .unwrap_or_else(|error| panic!("could not read audio asset {path}: {error}"));
@@ -330,6 +372,14 @@ mod tests {
         assert_eq!(cursor.next(SoundCue::BlockBreak, 3), Some(2));
         assert_eq!(cursor.next(SoundCue::BlockBreak, 3), Some(0));
         assert_eq!(cursor.next(SoundCue::BlockPlace, 0), None);
+        assert_eq!(cursor.next(SoundCue::ItemPickup, 1), Some(0));
+    }
+
+    #[test]
+    fn sound_cues_apply_intentional_playback_pitch() {
+        assert_eq!(SoundCue::BlockBreak.playback_speed(), 1.35);
+        assert_eq!(SoundCue::BlockPlace.playback_speed(), 1.35);
+        assert_eq!(SoundCue::ItemPickup.playback_speed(), 2.0);
     }
 
     #[test]
@@ -359,6 +409,7 @@ mod tests {
             .insert_resource(SoundBank {
                 block_break: vec![Handle::default()],
                 block_place: vec![Handle::default()],
+                item_pickup: vec![Handle::default()],
             })
             .insert_resource(GameAudioSettings::default())
             .init_resource::<VariantCursor>()
@@ -398,6 +449,7 @@ mod tests {
             .iter(app.world())
             .map(|(transform, playback)| {
                 assert!(playback.spatial);
+                assert_eq!(playback.speed, 1.35);
                 transform.translation
             })
             .collect::<Vec<_>>();
@@ -407,5 +459,44 @@ mod tests {
 
         app.update();
         assert_eq!(query.iter(app.world()).count(), 2);
+    }
+
+    #[test]
+    fn item_pickup_schedules_sound_at_the_player() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .add_message::<ItemPickedUp>()
+            .add_message::<PlaySound>()
+            .add_systems(Update, request_item_pickup_sounds);
+
+        let player = app
+            .world_mut()
+            .spawn((Player::default(), Transform::from_xyz(3.0, 4.0, 5.0)))
+            .id();
+        let item = app.world_mut().spawn_empty().id();
+        app.world_mut().write_message(ItemPickedUp {
+            player,
+            item,
+            stack: ItemStack {
+                item: Item::Dirt,
+                count: 1,
+            },
+        });
+
+        app.update();
+
+        let sounds = app
+            .world()
+            .resource::<Messages<PlaySound>>()
+            .iter_current_update_messages()
+            .copied()
+            .collect::<Vec<_>>();
+        assert_eq!(
+            sounds,
+            vec![PlaySound::at(
+                SoundCue::ItemPickup,
+                Vec3::new(3.0, 4.0, 5.0),
+            )]
+        );
     }
 }
