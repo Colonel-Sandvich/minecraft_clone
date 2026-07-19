@@ -3,9 +3,12 @@ use bevy::{
     render::{extract_resource::ExtractResource, render_resource::ShaderType},
 };
 
-use crate::world::{
-    chunk::{Chunk, ChunkCell, WorldBlockPos},
-    dimension::{Active, Dimension},
+use crate::{
+    light::DayNightCycle,
+    world::{
+        chunk::{Chunk, ChunkCell, WorldBlockPos},
+        dimension::{Active, Dimension},
+    },
 };
 
 const MINECRAFT_WATER_FOG_START: f32 = -8.0;
@@ -122,10 +125,14 @@ fn update_terrain_animation_clock(time: Res<Time>, mut clock: ResMut<TerrainAnim
 fn update_camera_fluid_visuals(
     mut settings: ResMut<TerrainVisualSettings>,
     mut clear_color: ResMut<ClearColor>,
+    day_night: Res<DayNightCycle>,
     cameras: Query<&GlobalTransform, With<Camera3d>>,
     dimension: Option<Single<&Dimension, With<Active>>>,
     chunks: Query<&Chunk>,
 ) {
+    let daylight = day_night.lighting();
+    settings.sky_light_color = daylight.sky_light_color;
+
     let underwater = cameras.iter().next().is_some_and(|camera| {
         let Some(dimension) = dimension.as_deref() else {
             return false;
@@ -146,12 +153,16 @@ fn update_camera_fluid_visuals(
         );
     } else {
         let defaults = TerrainVisualSettings::default();
-        settings.fog_color = defaults.fog_color;
+        settings.fog_color = daylight.sky_color;
         settings.fog_start = defaults.fog_start;
         settings.fog_end = defaults.fog_end;
         settings.fog_strength = defaults.fog_strength;
         settings.screen_tint_strength = 0.0;
-        clear_color.0 = default_clear_color();
+        clear_color.0 = Color::srgb(
+            daylight.sky_color.x,
+            daylight.sky_color.y,
+            daylight.sky_color.z,
+        );
     }
 }
 
@@ -209,10 +220,6 @@ fn water_surface_height_fraction(fluid_level: u8, water_above: bool) -> f32 {
 fn minecraft_water_fog_color() -> Vec3 {
     // Vanilla default water fog color: 0x050533.
     vec3(5.0 / 255.0, 5.0 / 255.0, 0x33 as f32 / 255.0)
-}
-
-fn default_clear_color() -> Color {
-    Color::srgb(0x74 as f32 / 255.0, 0xB3 as f32 / 255.0, 1.0)
 }
 
 #[cfg(test)]
