@@ -3,16 +3,19 @@ use crate::{
     player::{Player, cam::MouseCam, control::KeyBindings},
 };
 
-use avian3d::prelude::RigidBody;
+use avian3d::prelude::*;
 use bevy::prelude::*;
 
 #[derive(Component)]
-#[require(RigidBody = RigidBody::Kinematic)]
-#[require(Velocity)]
-#[require(JumpImpulse = JumpImpulse(8.4))]
-#[require(MovementAcceleration = MovementAcceleration(39.2))]
-#[require(AirMovementAcceleration = AirMovementAcceleration(8.0))]
-#[require(CollideAndSlideConfig)]
+#[require(
+    RigidBody = RigidBody::Kinematic,
+    Velocity,
+    JumpImpulse = JumpImpulse(8.4),
+    MovementAcceleration = MovementAcceleration(39.2),
+    AirMovementAcceleration = AirMovementAcceleration(8.0),
+    CollideAndSlideConfig,
+    SleepingDisabled
+)]
 pub struct CharacterController;
 
 #[derive(Component, Default, Deref, DerefMut)]

@@ -116,6 +116,7 @@ fn clear_block_interaction_state(
 
 fn update_block_target(
     camera: Single<(&ChildOf, &GlobalTransform), With<MouseCam>>,
+    children_q: Query<&Children>,
     spatial_query: SpatialQuery,
     mut current_target: ResMut<CurrentBlockTarget>,
     mut gizmos: Gizmos,
@@ -123,7 +124,14 @@ fn update_block_target(
     current_target.0 = None;
 
     let (camera_parent, camera) = *camera;
-    let Some(target) = raycast_block_target(camera_parent.parent(), camera, &spatial_query) else {
+    let entity = camera_parent.parent();
+    let excluded_entities = children_q
+        .get(entity)
+        .ok()
+        .into_iter()
+        .flat_map(|children| children.iter())
+        .chain(std::iter::once(entity));
+    let Some(target) = raycast_block_target(excluded_entities, camera, &spatial_query) else {
         return;
     };
 
@@ -132,7 +140,7 @@ fn update_block_target(
 }
 
 fn raycast_block_target(
-    entity_to_ignore: Entity,
+    excluded_entities: impl IntoIterator<Item = Entity>,
     camera: &GlobalTransform,
     spatial_query: &SpatialQuery,
 ) -> Option<BlockTarget> {
@@ -141,7 +149,7 @@ fn raycast_block_target(
         camera.forward(),
         PLAYER_REACH,
         true,
-        &SpatialQueryFilter::from_mask(WORLD_LAYER).with_excluded_entities([entity_to_ignore]),
+        &SpatialQueryFilter::from_mask(WORLD_LAYER).with_excluded_entities(excluded_entities),
     )?;
 
     let hit_block = (camera.translation() + camera.forward().as_vec3() * (ray.distance + 0.001))

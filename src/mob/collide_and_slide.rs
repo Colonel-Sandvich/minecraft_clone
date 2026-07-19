@@ -43,6 +43,7 @@ pub fn move_character_controllers(
         SpatialQuery,
         Query<(&mut Velocity, &mut Position), With<CharacterController>>,
     )>,
+    children_q: Query<&Children>,
     time: Res<Time<Fixed>>,
 ) {
     // SpatialQuery reads Position internally, so stage results before mutating Position.
@@ -85,6 +86,12 @@ pub fn move_character_controllers(
             was_grounded,
         ) in inputs
         {
+            let excluded_entities = children_q
+                .get(entity)
+                .ok()
+                .into_iter()
+                .flat_map(|children| children.iter())
+                .chain(std::iter::once(entity));
             let (new_position, is_grounded) = if let Some(collider) = collider {
                 collide_and_slide(
                     &spatial_query,
@@ -92,7 +99,8 @@ pub fn move_character_controllers(
                     position,
                     rotation,
                     &mut velocity,
-                    &SpatialQueryFilter::from_mask(WORLD_LAYER).with_excluded_entities([entity]),
+                    &SpatialQueryFilter::from_mask(WORLD_LAYER)
+                        .with_excluded_entities(excluded_entities),
                     &collide_and_slide_config,
                     &time,
                 )
