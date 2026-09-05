@@ -477,10 +477,7 @@ mod tests {
         app.world_mut().write_message(ItemPickedUp {
             player,
             item,
-            stack: ItemStack {
-                item: Item::Dirt,
-                count: 1,
-            },
+            stack: ItemStack::one(Item::Dirt),
         });
 
         app.update();

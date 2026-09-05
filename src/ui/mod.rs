@@ -1,6 +1,7 @@
 mod crosshair;
 mod debug;
 mod hotbar;
+mod inventory;
 mod pause_menu;
 
 use bevy::prelude::*;
@@ -9,9 +10,11 @@ use bevy_dev_tools::diagnostics_overlay::{DiagnosticsOverlay, DiagnosticsOverlay
 use crosshair::CrosshairPlugin;
 use debug::DebugPlugin;
 use hotbar::HotbarPlugin;
+use inventory::InventoryUiPlugin;
 use pause_menu::PauseMenuPlugin;
 
 pub use hotbar::Hotbar;
+pub(crate) use inventory::InventoryUi;
 
 pub struct UIPlugin;
 
@@ -20,6 +23,7 @@ impl Plugin for UIPlugin {
         app.add_plugins(CrosshairPlugin);
         app.add_plugins(DebugPlugin);
         app.add_plugins(HotbarPlugin);
+        app.add_plugins(InventoryUiPlugin);
         app.add_plugins(PauseMenuPlugin);
         #[cfg(debug_assertions)]
         app.add_plugins(DiagnosticsOverlayPlugin)

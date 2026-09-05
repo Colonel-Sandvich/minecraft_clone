@@ -12,8 +12,11 @@ use image::{Rgba, RgbaImage, imageops::FilterType};
 use crate::quad::Direction;
 use crate::{
     game_state::GameState,
-    item::Item,
-    player::cam::{MouseState, gameplay_input_is_active},
+    item::{HOTBAR_SLOTS, Inventory, Item},
+    player::{
+        Player,
+        cam::{MouseState, gameplay_input_is_active},
+    },
 };
 
 pub struct HotbarPlugin;
@@ -37,50 +40,33 @@ impl Plugin for HotbarPlugin {
     }
 }
 
-pub const HOTBAR_SLOTS: usize = 9;
-
-#[derive(Resource)]
+#[derive(Resource, Default)]
 pub struct Hotbar {
-    pub slots: [Option<Item>; HOTBAR_SLOTS],
     pub selected: usize,
 }
 
-impl Default for Hotbar {
-    fn default() -> Self {
-        Self {
-            slots: [
-                Some(Item::Dirt),
-                Some(Item::Stone),
-                Some(Item::Sand),
-                Some(Item::Glass),
-                Some(Item::OakLog),
-                Some(Item::OakLeaves),
-                Some(Item::Glowstone),
-                Some(Item::Grass),
-                Some(Item::Ice),
-            ],
-            selected: 0,
-        }
-    }
-}
-
 impl Hotbar {
-    pub fn selected_item(&self) -> Option<Item> {
-        self.slots[self.selected]
-    }
-
-    pub fn set_selected_item(&mut self, item: Item) {
-        self.slots[self.selected] = Some(item);
+    pub fn selected_stack(&self, inventory: &Inventory) -> Option<crate::item::ItemStack> {
+        inventory.slot(self.selected)
     }
 }
 
 #[derive(Resource, Default)]
-pub struct ItemIcons {
+pub(super) struct ItemIcons {
     pub icons: HashMap<Item, Handle<Image>>,
 }
 
 #[derive(Component)]
-struct HotbarSlot(usize);
+pub(super) struct HotbarHudRoot;
+
+#[derive(Component)]
+struct HotbarSlot;
+
+#[derive(Component)]
+struct HotbarIcon(usize);
+
+#[derive(Component)]
+struct HotbarCount(usize);
 
 #[derive(Component)]
 struct HotbarSelection;
@@ -126,15 +112,18 @@ fn load_scale(path: &str, w: u32, h: u32, images: &mut ResMut<Assets<Image>>) ->
 
 fn spawn_hotbar_ui(commands: &mut Commands, bg_handle: &Handle<Image>, sel_handle: &Handle<Image>) {
     commands
-        .spawn(Node {
-            width: Val::Vw(100.0),
-            height: Val::Vh(100.0),
-            display: Display::Flex,
-            flex_direction: FlexDirection::Column,
-            justify_content: JustifyContent::End,
-            align_items: AlignItems::Center,
-            ..default()
-        })
+        .spawn((
+            HotbarHudRoot,
+            Node {
+                width: Val::Vw(100.0),
+                height: Val::Vh(100.0),
+                display: Display::Flex,
+                flex_direction: FlexDirection::Column,
+                justify_content: JustifyContent::End,
+                align_items: AlignItems::Center,
+                ..default()
+            },
+        ))
         .with_children(|parent| {
             parent
                 .spawn(Node {
@@ -179,20 +168,43 @@ fn spawn_hotbar_ui(commands: &mut Commands, bg_handle: &Handle<Image>, sel_handl
                                         width: Val::Px(60.0),
                                         height: Val::Px(66.0),
                                         display: Display::Flex,
+                                        position_type: PositionType::Relative,
                                         align_items: AlignItems::Center,
                                         justify_content: JustifyContent::Center,
                                         ..default()
                                     },
-                                    HotbarSlot(i),
+                                    HotbarSlot,
                                 ))
-                                .with_child((
-                                    ImageNode::default(),
-                                    Node {
-                                        width: Val::Px(48.0),
-                                        height: Val::Px(48.0),
-                                        ..default()
-                                    },
-                                ));
+                                .with_children(|slot| {
+                                    slot.spawn((
+                                        ImageNode::default(),
+                                        Node {
+                                            width: Val::Px(48.0),
+                                            height: Val::Px(48.0),
+                                            ..default()
+                                        },
+                                        HotbarIcon(i),
+                                    ));
+                                    slot.spawn((
+                                        Text::new(""),
+                                        TextFont {
+                                            font_size: FontSize::Px(20.0),
+                                            ..default()
+                                        },
+                                        TextColor(Color::WHITE),
+                                        TextShadow {
+                                            offset: Vec2::splat(2.0),
+                                            color: Color::BLACK,
+                                        },
+                                        Node {
+                                            position_type: PositionType::Absolute,
+                                            right: Val::Px(4.0),
+                                            bottom: Val::Px(5.0),
+                                            ..default()
+                                        },
+                                        HotbarCount(i),
+                                    ));
+                                });
                             }
                         });
 
@@ -425,23 +437,49 @@ fn handle_hotbar_input(
 
 fn update_hotbar_ui(
     hotbar: Res<Hotbar>,
+    inventory: Single<&Inventory, With<Player>>,
     item_icons: Res<ItemIcons>,
     mut selection: Query<&mut Node, With<HotbarSelection>>,
-    slot_children: Query<(&HotbarSlot, &Children)>,
-    mut images: Query<&mut ImageNode>,
+    mut icons: Query<(&HotbarIcon, &mut ImageNode)>,
+    mut counts: Query<(&HotbarCount, &mut Text)>,
 ) {
     if let Ok(mut node) = selection.single_mut() {
         node.left = Val::Px(hotbar.selected as f32 * 60.0 - 3.0);
     }
 
-    for (slot, children) in &slot_children {
-        for child in children.iter() {
-            if let Ok(mut img) = images.get_mut(child)
-                && let Some(item) = hotbar.slots[slot.0]
-                && let Some(handle) = item_icons.icons.get(&item)
-            {
-                img.image = handle.clone();
-            }
+    for (slot, mut image) in &mut icons {
+        image.image = inventory
+            .slot(slot.0)
+            .and_then(|stack| item_icons.icons.get(&stack.item))
+            .cloned()
+            .unwrap_or_default();
+    }
+
+    for (slot, mut text) in &mut counts {
+        text.0 = hotbar_count_label(inventory.slot(slot.0));
+    }
+}
+
+pub(super) fn hotbar_count_label(stack: Option<crate::item::ItemStack>) -> String {
+    stack.map_or_else(String::new, |stack| {
+        let count = stack.count();
+        if count > 1 {
+            count.to_string()
+        } else {
+            String::new()
         }
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::item::ItemStack;
+
+    #[test]
+    fn count_label_is_hidden_for_empty_and_single_item_slots() {
+        assert_eq!(hotbar_count_label(None), "");
+        assert_eq!(hotbar_count_label(Some(ItemStack::one(Item::Dirt))), "");
+        assert_eq!(hotbar_count_label(ItemStack::try_new(Item::Dirt, 64)), "64");
     }
 }

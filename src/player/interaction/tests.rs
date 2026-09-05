@@ -176,6 +176,47 @@ fn committed_edit_requires_a_successful_world_delta() {
 }
 
 #[test]
+fn survival_consumes_only_successfully_placed_items() {
+    let mut inventory = Inventory::empty();
+    inventory.set_slot(0, ItemStack::try_new(Item::Stone, 2));
+
+    consume_placed_item(GameMode::Survival, &mut inventory, 0, false);
+    assert_eq!(inventory.slot(0), ItemStack::try_new(Item::Stone, 2));
+
+    consume_placed_item(GameMode::Survival, &mut inventory, 0, true);
+    assert_eq!(inventory.slot(0), Some(ItemStack::one(Item::Stone)));
+
+    consume_placed_item(GameMode::Survival, &mut inventory, 0, true);
+    assert_eq!(inventory.slot(0), None);
+}
+
+#[test]
+fn creative_placement_does_not_consume_the_stack() {
+    let mut inventory = Inventory::empty();
+    inventory.set_slot(0, ItemStack::try_new(Item::Stone, 2));
+
+    consume_placed_item(GameMode::Creative, &mut inventory, 0, true);
+
+    assert_eq!(inventory.slot(0), ItemStack::try_new(Item::Stone, 2));
+}
+
+#[test]
+fn survival_pick_moves_a_stored_stack_into_the_selected_hotbar_slot() {
+    let mut inventory = Inventory::empty();
+    inventory.set_slot(0, Some(ItemStack::one(Item::Stone)));
+    inventory.set_slot(crate::item::HOTBAR_SLOTS, ItemStack::try_new(Item::Dirt, 5));
+    let mut hotbar = Hotbar { selected: 0 };
+
+    select_picked_item(GameMode::Survival, &mut inventory, &mut hotbar, Item::Dirt);
+
+    assert_eq!(inventory.slot(0), ItemStack::try_new(Item::Dirt, 5));
+    assert_eq!(
+        inventory.slot(crate::item::HOTBAR_SLOTS),
+        Some(ItemStack::one(Item::Stone))
+    );
+}
+
+#[test]
 fn clearing_interaction_state_discards_target_and_pending_requests() {
     let mut app = App::new();
     app.add_plugins(MinimalPlugins)

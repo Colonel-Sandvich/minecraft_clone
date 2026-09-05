@@ -13,7 +13,7 @@ use interaction::BlockInteractionPlugin;
 use persistence::PlayerPersistencePlugin;
 use spawn::SpawnPlayerPlugin;
 
-use crate::world::DimensionId;
+use crate::{item::Inventory, world::DimensionId};
 
 pub struct PlayerPlugin;
 
@@ -58,7 +58,7 @@ impl Default for PlayerId {
 }
 
 #[derive(Component, Default)]
-#[require(Name::new("Player"))]
+#[require(Name::new("Player"), Inventory)]
 pub struct Player {
     pub id: PlayerId,
     pub gamemode: GameMode,
@@ -78,7 +78,7 @@ impl PlayerDimension {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GameMode {
     Survival,
     #[default]

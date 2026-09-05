@@ -1,0 +1,906 @@
+use std::collections::VecDeque;
+
+use bevy::{
+    input::InputSystems,
+    prelude::*,
+    ui::{FocusPolicy, RelativeCursorPosition, UiSystems},
+    window::PrimaryWindow,
+};
+
+use crate::{
+    game_state::GameState,
+    item::{DropItemRequest, HOTBAR_SLOTS, Inventory, Item, ItemStack},
+    player::{
+        Player,
+        cam::{MouseCam, MouseState},
+        control::KeyBindings,
+    },
+};
+
+use super::{
+    crosshair::CrosshairRoot,
+    hotbar::{HotbarHudRoot, ItemIcons, hotbar_count_label},
+};
+
+pub(super) struct InventoryUiPlugin;
+
+impl Plugin for InventoryUiPlugin {
+    fn build(&self, app: &mut App) {
+        app.init_resource::<InventoryUi>()
+            .add_systems(Startup, spawn_inventory_ui)
+            .add_systems(
+                PreUpdate,
+                (toggle_inventory_ui, handle_inventory_ui_input)
+                    .chain()
+                    .after(InputSystems)
+                    .after(UiSystems::Focus),
+            )
+            .add_systems(
+                FixedPreUpdate,
+                dispatch_inventory_drop_requests.run_if(in_state(GameState::Playing)),
+            )
+            .add_systems(
+                Update,
+                (
+                    update_inventory_visibility,
+                    update_inventory_slots,
+                    update_cursor_stack,
+                    update_slot_highlights,
+                ),
+            )
+            .add_systems(OnExit(GameState::Playing), close_inventory_on_game_exit)
+            .add_systems(PostUpdate, clear_pause_suppression);
+    }
+}
+
+#[derive(Resource, Default)]
+pub(crate) struct InventoryUi {
+    open: bool,
+    suppress_pause: bool,
+    cursor_stack: Option<ItemStack>,
+    drag: Option<StackDrag>,
+    last_left_click: Option<(Item, f64)>,
+    pending_drops: VecDeque<PendingInventoryDrop>,
+}
+
+impl InventoryUi {
+    pub(crate) fn blocks_pause_request(&self) -> bool {
+        self.open || self.suppress_pause
+    }
+}
+
+#[derive(Clone, Debug)]
+struct StackDrag {
+    button: MouseButton,
+    slots: Vec<usize>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct PendingInventoryDrop {
+    stack: ItemStack,
+    inventory_slot: Option<usize>,
+}
+
+#[derive(Component)]
+struct InventoryOverlay;
+
+#[derive(Component)]
+struct InventoryPanel;
+
+#[derive(Component)]
+struct InventorySlot(usize);
+
+#[derive(Component)]
+struct InventorySlotIcon(usize);
+
+#[derive(Component)]
+struct InventorySlotCount(usize);
+
+#[derive(Component)]
+struct CursorStackRoot;
+
+#[derive(Component)]
+struct CursorStackIcon;
+
+#[derive(Component)]
+struct CursorStackCount;
+
+const SLOT_SIZE: f32 = 54.0;
+const ITEM_ICON_SIZE: f32 = 44.0;
+const SLOT_GAP: f32 = 4.0;
+
+fn spawn_inventory_ui(mut commands: Commands) {
+    commands
+        .spawn((
+            InventoryOverlay,
+            Node {
+                position_type: PositionType::Absolute,
+                width: Val::Percent(100.0),
+                height: Val::Percent(100.0),
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::Center,
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.58)),
+            GlobalZIndex(2_000),
+            FocusPolicy::Block,
+            Visibility::Hidden,
+        ))
+        .with_children(|overlay| {
+            overlay
+                .spawn((
+                    InventoryPanel,
+                    RelativeCursorPosition::default(),
+                    Node {
+                        width: Val::Px(602.0),
+                        height: Val::Px(348.0),
+                        flex_direction: FlexDirection::Column,
+                        padding: UiRect::all(Val::Px(28.0)),
+                        row_gap: Val::Px(SLOT_GAP),
+                        border: UiRect::all(Val::Px(4.0)),
+                        ..default()
+                    },
+                    BackgroundColor(Color::srgb(0.72, 0.72, 0.72)),
+                    BorderColor::all(Color::srgb(0.2, 0.2, 0.2)),
+                    FocusPolicy::Block,
+                ))
+                .with_children(|panel| {
+                    panel.spawn((
+                        Text::new("Inventory"),
+                        TextFont {
+                            font_size: FontSize::Px(24.0),
+                            ..default()
+                        },
+                        TextColor(Color::srgb(0.15, 0.15, 0.15)),
+                        Node {
+                            height: Val::Px(30.0),
+                            margin: UiRect::bottom(Val::Px(4.0)),
+                            ..default()
+                        },
+                        Pickable::IGNORE,
+                    ));
+
+                    for row in 0..3 {
+                        spawn_slot_row(
+                            panel,
+                            (0..HOTBAR_SLOTS)
+                                .map(|column| HOTBAR_SLOTS + row * HOTBAR_SLOTS + column),
+                        );
+                    }
+
+                    panel.spawn(Node {
+                        height: Val::Px(18.0),
+                        ..default()
+                    });
+                    spawn_slot_row(panel, 0..HOTBAR_SLOTS);
+                });
+
+            overlay
+                .spawn((
+                    CursorStackRoot,
+                    Node {
+                        position_type: PositionType::Absolute,
+                        width: Val::Px(SLOT_SIZE),
+                        height: Val::Px(SLOT_SIZE),
+                        display: Display::None,
+                        ..default()
+                    },
+                    GlobalZIndex(2_100),
+                    Pickable::IGNORE,
+                ))
+                .with_children(|cursor| {
+                    cursor.spawn((
+                        CursorStackIcon,
+                        ImageNode::default(),
+                        Node {
+                            position_type: PositionType::Absolute,
+                            left: Val::Px(5.0),
+                            top: Val::Px(5.0),
+                            width: Val::Px(ITEM_ICON_SIZE),
+                            height: Val::Px(ITEM_ICON_SIZE),
+                            ..default()
+                        },
+                        Pickable::IGNORE,
+                    ));
+                    cursor.spawn((
+                        CursorStackCount,
+                        stack_count_text(),
+                        Node {
+                            position_type: PositionType::Absolute,
+                            right: Val::Px(1.0),
+                            bottom: Val::Px(1.0),
+                            ..default()
+                        },
+                        Pickable::IGNORE,
+                    ));
+                });
+        });
+}
+
+fn spawn_slot_row(parent: &mut ChildSpawnerCommands, slots: impl IntoIterator<Item = usize>) {
+    parent
+        .spawn(Node {
+            height: Val::Px(SLOT_SIZE),
+            flex_direction: FlexDirection::Row,
+            column_gap: Val::Px(SLOT_GAP),
+            ..default()
+        })
+        .with_children(|row| {
+            for index in slots {
+                row.spawn((
+                    InventorySlot(index),
+                    Button,
+                    Node {
+                        width: Val::Px(SLOT_SIZE),
+                        height: Val::Px(SLOT_SIZE),
+                        position_type: PositionType::Relative,
+                        align_items: AlignItems::Center,
+                        justify_content: JustifyContent::Center,
+                        border: UiRect::all(Val::Px(2.0)),
+                        ..default()
+                    },
+                    BackgroundColor(Color::srgb(0.32, 0.32, 0.32)),
+                    BorderColor::all(Color::srgb(0.12, 0.12, 0.12)),
+                ))
+                .with_children(|slot| {
+                    slot.spawn((
+                        InventorySlotIcon(index),
+                        ImageNode::default(),
+                        Node {
+                            width: Val::Px(ITEM_ICON_SIZE),
+                            height: Val::Px(ITEM_ICON_SIZE),
+                            ..default()
+                        },
+                        Pickable::IGNORE,
+                    ));
+                    slot.spawn((
+                        InventorySlotCount(index),
+                        stack_count_text(),
+                        Node {
+                            position_type: PositionType::Absolute,
+                            right: Val::Px(2.0),
+                            bottom: Val::Px(1.0),
+                            ..default()
+                        },
+                        Pickable::IGNORE,
+                    ));
+                });
+            }
+        });
+}
+
+fn stack_count_text() -> (Text, TextFont, TextColor, TextShadow) {
+    (
+        Text::new(""),
+        TextFont {
+            font_size: FontSize::Px(20.0),
+            ..default()
+        },
+        TextColor(Color::WHITE),
+        TextShadow {
+            offset: Vec2::splat(2.0),
+            color: Color::BLACK,
+        },
+    )
+}
+
+fn toggle_inventory_ui(
+    keyboard: Res<ButtonInput<KeyCode>>,
+    bindings: Res<KeyBindings>,
+    game_state: Res<State<GameState>>,
+    mut next_mouse_state: ResMut<NextState<MouseState>>,
+    mut ui: ResMut<InventoryUi>,
+    inventory: Single<&mut Inventory, With<Player>>,
+) {
+    if ui.open
+        && (keyboard.just_pressed(bindings.open_inventory)
+            || keyboard.just_pressed(KeyCode::Escape))
+    {
+        ui.suppress_pause = keyboard.just_pressed(KeyCode::Escape);
+        let mut inventory = inventory.into_inner();
+        close_inventory(&mut ui, &mut inventory);
+        next_mouse_state.set(MouseState::Grabbed);
+    } else if !ui.open
+        && *game_state.get() == GameState::Playing
+        && keyboard.just_pressed(bindings.open_inventory)
+    {
+        ui.open = true;
+        next_mouse_state.set(MouseState::Free);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn handle_inventory_ui_input(
+    keyboard: Res<ButtonInput<KeyCode>>,
+    mouse: Res<ButtonInput<MouseButton>>,
+    real_time: Res<Time<Real>>,
+    mut ui: ResMut<InventoryUi>,
+    mut inventory: Single<&mut Inventory, With<Player>>,
+    slots: Query<(&InventorySlot, &Interaction)>,
+    panel: Single<&RelativeCursorPosition, With<InventoryPanel>>,
+) {
+    if !ui.open {
+        return;
+    }
+
+    let hovered = slots
+        .iter()
+        .find_map(|(slot, interaction)| (*interaction != Interaction::None).then_some(slot.0));
+    let whole_stack_modifier = whole_stack_drop_modifier_pressed(&keyboard);
+
+    if keyboard.just_pressed(KeyCode::KeyQ) {
+        if let Some(stack) = ui.cursor_stack {
+            let count = if whole_stack_modifier {
+                stack.count()
+            } else {
+                1
+            };
+            if let Some(dropped) = take_from_stack(&mut ui.cursor_stack, count) {
+                queue_owned_drop(&mut ui, dropped);
+            }
+        } else if let Some(index) = hovered
+            && let Some(stack) = inventory.slot(index)
+        {
+            let count = if whole_stack_modifier {
+                stack.count()
+            } else {
+                1
+            };
+            ui.pending_drops.push_back(PendingInventoryDrop {
+                stack: ItemStack::try_new(stack.item, count).unwrap(),
+                inventory_slot: Some(index),
+            });
+        }
+        return;
+    }
+
+    if ui.cursor_stack.is_none()
+        && let Some(index) = hovered
+        && let Some(hotbar_slot) = pressed_number_slot(&keyboard)
+    {
+        inventory.swap_slots(index, hotbar_slot);
+        return;
+    }
+
+    if mouse.just_pressed(MouseButton::Left)
+        && let Some(held) = ui.cursor_stack
+        && hovered.is_some()
+        && ui.last_left_click.is_some_and(|(item, clicked_at)| {
+            item == held.item && real_time.elapsed_secs_f64() - clicked_at <= 0.25
+        })
+    {
+        collect_matching_stacks(&mut inventory, &mut ui.cursor_stack);
+        ui.last_left_click = None;
+        return;
+    }
+
+    for button in [MouseButton::Left, MouseButton::Right] {
+        if mouse.just_pressed(button) && ui.drag.is_none() {
+            match hovered {
+                Some(index)
+                    if button == MouseButton::Left
+                        && shift_pressed(&keyboard)
+                        && ui.cursor_stack.is_none() =>
+                {
+                    inventory.quick_move(index);
+                }
+                Some(index) if ui.cursor_stack.is_some() => {
+                    ui.drag = Some(StackDrag {
+                        button,
+                        slots: vec![index],
+                    });
+                }
+                Some(index) => {
+                    click_slot(&mut inventory, index, &mut ui.cursor_stack, button);
+                    if button == MouseButton::Left {
+                        ui.last_left_click = ui
+                            .cursor_stack
+                            .map(|stack| (stack.item, real_time.elapsed_secs_f64()));
+                    }
+                }
+                None if !panel.cursor_over() => {
+                    let count = if button == MouseButton::Left {
+                        ui.cursor_stack.map_or(0, ItemStack::count)
+                    } else {
+                        1
+                    };
+                    if let Some(dropped) = take_from_stack(&mut ui.cursor_stack, count) {
+                        queue_owned_drop(&mut ui, dropped);
+                    }
+                }
+                None => {}
+            }
+        }
+    }
+
+    if let Some(drag) = &mut ui.drag
+        && mouse.pressed(drag.button)
+        && let Some(index) = hovered
+        && !drag.slots.contains(&index)
+    {
+        drag.slots.push(index);
+    }
+
+    if let Some(drag) = ui.drag.take_if(|drag| mouse.just_released(drag.button)) {
+        if drag.slots.len() == 1 {
+            click_slot(
+                &mut inventory,
+                drag.slots[0],
+                &mut ui.cursor_stack,
+                drag.button,
+            );
+            if drag.button == MouseButton::Left {
+                ui.last_left_click = ui
+                    .cursor_stack
+                    .map(|stack| (stack.item, real_time.elapsed_secs_f64()));
+            }
+        } else {
+            distribute_drag(
+                &mut inventory,
+                &mut ui.cursor_stack,
+                &drag.slots,
+                drag.button,
+            );
+        }
+    }
+}
+
+fn shift_pressed(keyboard: &ButtonInput<KeyCode>) -> bool {
+    keyboard.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight])
+}
+
+fn whole_stack_drop_modifier_pressed(keyboard: &ButtonInput<KeyCode>) -> bool {
+    keyboard.any_pressed([
+        KeyCode::ShiftLeft,
+        KeyCode::ShiftRight,
+        KeyCode::ControlLeft,
+        KeyCode::ControlRight,
+    ])
+}
+
+fn pressed_number_slot(keyboard: &ButtonInput<KeyCode>) -> Option<usize> {
+    [
+        KeyCode::Digit1,
+        KeyCode::Digit2,
+        KeyCode::Digit3,
+        KeyCode::Digit4,
+        KeyCode::Digit5,
+        KeyCode::Digit6,
+        KeyCode::Digit7,
+        KeyCode::Digit8,
+        KeyCode::Digit9,
+    ]
+    .into_iter()
+    .position(|key| keyboard.just_pressed(key))
+}
+
+fn click_slot(
+    inventory: &mut Inventory,
+    index: usize,
+    cursor: &mut Option<ItemStack>,
+    button: MouseButton,
+) {
+    match button {
+        MouseButton::Left => left_click_slot(inventory, index, cursor),
+        MouseButton::Right => right_click_slot(inventory, index, cursor),
+        _ => {}
+    }
+}
+
+fn left_click_slot(inventory: &mut Inventory, index: usize, cursor: &mut Option<ItemStack>) {
+    let slot = inventory.slot(index);
+    match (*cursor, slot) {
+        (None, _) => {
+            *cursor = slot;
+            inventory.set_slot(index, None);
+        }
+        (Some(held), None) => {
+            inventory.set_slot(index, Some(held));
+            *cursor = None;
+        }
+        (Some(held), Some(target)) if held.item == target.item => {
+            let moved = held.count().min(ItemStack::MAX_COUNT - target.count());
+            inventory.set_slot(
+                index,
+                ItemStack::try_new(target.item, target.count() + moved),
+            );
+            *cursor = ItemStack::try_new(held.item, held.count() - moved);
+        }
+        (Some(held), Some(target)) => {
+            inventory.set_slot(index, Some(held));
+            *cursor = Some(target);
+        }
+    }
+}
+
+fn right_click_slot(inventory: &mut Inventory, index: usize, cursor: &mut Option<ItemStack>) {
+    let slot = inventory.slot(index);
+    match (*cursor, slot) {
+        (None, Some(stack)) => {
+            let picked_up = stack.count().div_ceil(2);
+            *cursor = ItemStack::try_new(stack.item, picked_up);
+            inventory.set_slot(
+                index,
+                ItemStack::try_new(stack.item, stack.count() - picked_up),
+            );
+        }
+        (None, None) => {}
+        (Some(held), None) => {
+            inventory.set_slot(index, Some(ItemStack::one(held.item)));
+            *cursor = ItemStack::try_new(held.item, held.count() - 1);
+        }
+        (Some(held), Some(target))
+            if held.item == target.item && target.count() < ItemStack::MAX_COUNT =>
+        {
+            inventory.set_slot(index, ItemStack::try_new(target.item, target.count() + 1));
+            *cursor = ItemStack::try_new(held.item, held.count() - 1);
+        }
+        (Some(held), Some(target))
+            if held.item == target.item && target.count() == ItemStack::MAX_COUNT => {}
+        (Some(held), Some(target)) => {
+            inventory.set_slot(index, Some(held));
+            *cursor = Some(target);
+        }
+    }
+}
+
+fn distribute_drag(
+    inventory: &mut Inventory,
+    cursor: &mut Option<ItemStack>,
+    slots: &[usize],
+    button: MouseButton,
+) {
+    let rounds = if button == MouseButton::Right {
+        1
+    } else {
+        ItemStack::MAX_COUNT
+    };
+
+    for _ in 0..rounds {
+        let mut moved_any = false;
+        for &index in slots {
+            let Some(held) = *cursor else {
+                return;
+            };
+            if !slot_accepts(inventory.slot(index), held.item) {
+                continue;
+            }
+            add_one_to_slot(inventory, index, held.item);
+            *cursor = ItemStack::try_new(held.item, held.count() - 1);
+            moved_any = true;
+        }
+        if !moved_any {
+            break;
+        }
+    }
+}
+
+fn slot_accepts(slot: Option<ItemStack>, item: crate::item::Item) -> bool {
+    slot.is_none_or(|stack| stack.item == item && stack.count() < ItemStack::MAX_COUNT)
+}
+
+fn add_one_to_slot(inventory: &mut Inventory, index: usize, item: crate::item::Item) {
+    let count = inventory.slot(index).map_or(0, ItemStack::count) + 1;
+    inventory.set_slot(index, ItemStack::try_new(item, count));
+}
+
+fn take_from_stack(stack: &mut Option<ItemStack>, count: u16) -> Option<ItemStack> {
+    let current = (*stack)?;
+    let removed = count.min(current.count());
+    *stack = ItemStack::try_new(current.item, current.count() - removed);
+    ItemStack::try_new(current.item, removed)
+}
+
+fn collect_matching_stacks(inventory: &mut Inventory, cursor: &mut Option<ItemStack>) {
+    let Some(mut held) = *cursor else {
+        return;
+    };
+
+    for index in 0..crate::item::INVENTORY_SLOTS {
+        if held.count() == ItemStack::MAX_COUNT {
+            break;
+        }
+        let Some(stack) = inventory.slot(index) else {
+            continue;
+        };
+        if stack.item != held.item {
+            continue;
+        }
+
+        let capacity = ItemStack::MAX_COUNT - held.count();
+        let Some(taken) = inventory.take(index, capacity) else {
+            continue;
+        };
+        held = ItemStack::try_new(held.item, held.count() + taken.count()).unwrap();
+    }
+    *cursor = Some(held);
+}
+
+fn queue_owned_drop(ui: &mut InventoryUi, stack: ItemStack) {
+    ui.pending_drops.push_back(PendingInventoryDrop {
+        stack,
+        inventory_slot: None,
+    });
+}
+
+fn dispatch_inventory_drop_requests(
+    mut ui: ResMut<InventoryUi>,
+    camera: Single<&Transform, With<MouseCam>>,
+    mut drops: MessageWriter<DropItemRequest>,
+) {
+    for pending in ui.pending_drops.drain(..) {
+        drops.write(DropItemRequest {
+            stack: pending.stack,
+            inventory_slot: pending.inventory_slot,
+            look_direction: *camera.forward(),
+        });
+    }
+}
+
+fn close_inventory(ui: &mut InventoryUi, inventory: &mut Inventory) {
+    if let Some(stack) = ui.cursor_stack.take() {
+        if let Some(remainder) = inventory.insert(stack) {
+            queue_owned_drop(ui, remainder);
+        }
+    }
+    ui.drag = None;
+    ui.last_left_click = None;
+    ui.open = false;
+}
+
+fn close_inventory_on_game_exit(
+    mut ui: ResMut<InventoryUi>,
+    inventory: Single<&mut Inventory, With<Player>>,
+) {
+    let mut inventory = inventory.into_inner();
+    close_inventory(&mut ui, &mut inventory);
+    ui.suppress_pause = false;
+}
+
+fn clear_pause_suppression(mut ui: ResMut<InventoryUi>) {
+    ui.suppress_pause = false;
+}
+
+fn update_inventory_visibility(
+    ui: Res<InventoryUi>,
+    mut overlay: Single<&mut Visibility, With<InventoryOverlay>>,
+    mut gameplay_hud: Query<
+        &mut Visibility,
+        (
+            Or<(With<HotbarHudRoot>, With<CrosshairRoot>)>,
+            Without<InventoryOverlay>,
+        ),
+    >,
+) {
+    **overlay = if ui.open {
+        Visibility::Visible
+    } else {
+        Visibility::Hidden
+    };
+    for mut visibility in &mut gameplay_hud {
+        *visibility = if ui.open {
+            Visibility::Hidden
+        } else {
+            Visibility::Inherited
+        };
+    }
+}
+
+fn update_inventory_slots(
+    inventory: Single<&Inventory, With<Player>>,
+    icons: Res<ItemIcons>,
+    mut slot_icons: Query<(&InventorySlotIcon, &mut ImageNode)>,
+    mut slot_counts: Query<(&InventorySlotCount, &mut Text)>,
+) {
+    for (slot, mut image) in &mut slot_icons {
+        image.image = inventory
+            .slot(slot.0)
+            .and_then(|stack| icons.icons.get(&stack.item))
+            .cloned()
+            .unwrap_or_default();
+    }
+    for (slot, mut text) in &mut slot_counts {
+        text.0 = hotbar_count_label(inventory.slot(slot.0));
+    }
+}
+
+fn update_cursor_stack(
+    ui: Res<InventoryUi>,
+    icons: Res<ItemIcons>,
+    window: Single<&Window, With<PrimaryWindow>>,
+    mut root: Single<&mut Node, With<CursorStackRoot>>,
+    mut image: Single<&mut ImageNode, With<CursorStackIcon>>,
+    mut count: Single<&mut Text, With<CursorStackCount>>,
+) {
+    let Some(stack) = ui.cursor_stack else {
+        root.display = Display::None;
+        return;
+    };
+    root.display = Display::Flex;
+    if let Some(position) = window.cursor_position() {
+        root.left = Val::Px(position.x + 8.0);
+        root.top = Val::Px(position.y + 8.0);
+    }
+    image.image = icons.icons.get(&stack.item).cloned().unwrap_or_default();
+    count.0 = hotbar_count_label(Some(stack));
+}
+
+fn update_slot_highlights(
+    mut slots: Query<(&Interaction, &mut BackgroundColor), With<InventorySlot>>,
+) {
+    for (interaction, mut color) in &mut slots {
+        color.0 = match interaction {
+            Interaction::Pressed => Color::srgb(0.62, 0.62, 0.62),
+            Interaction::Hovered => Color::srgb(0.48, 0.48, 0.48),
+            Interaction::None => Color::srgb(0.32, 0.32, 0.32),
+        };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::item::Item;
+    use bevy::state::app::StatesPlugin;
+
+    #[test]
+    fn left_click_picks_up_merges_and_swaps_stacks() {
+        let mut inventory = Inventory::empty();
+        inventory.set_slot(0, ItemStack::try_new(Item::Dirt, 40));
+        inventory.set_slot(1, ItemStack::try_new(Item::Dirt, 30));
+        inventory.set_slot(2, Some(ItemStack::one(Item::Stone)));
+        let mut cursor = None;
+
+        left_click_slot(&mut inventory, 0, &mut cursor);
+        assert_eq!(cursor, ItemStack::try_new(Item::Dirt, 40));
+        assert_eq!(inventory.slot(0), None);
+
+        left_click_slot(&mut inventory, 1, &mut cursor);
+        assert_eq!(inventory.slot(1), Some(ItemStack::full(Item::Dirt)));
+        assert_eq!(cursor, ItemStack::try_new(Item::Dirt, 6));
+
+        left_click_slot(&mut inventory, 2, &mut cursor);
+        assert_eq!(inventory.slot(2), ItemStack::try_new(Item::Dirt, 6));
+        assert_eq!(cursor, Some(ItemStack::one(Item::Stone)));
+    }
+
+    #[test]
+    fn right_click_splits_and_places_one() {
+        let mut inventory = Inventory::empty();
+        inventory.set_slot(0, ItemStack::try_new(Item::Dirt, 7));
+        let mut cursor = None;
+
+        right_click_slot(&mut inventory, 0, &mut cursor);
+        assert_eq!(inventory.slot(0), ItemStack::try_new(Item::Dirt, 3));
+        assert_eq!(cursor, ItemStack::try_new(Item::Dirt, 4));
+
+        right_click_slot(&mut inventory, 1, &mut cursor);
+        assert_eq!(inventory.slot(1), Some(ItemStack::one(Item::Dirt)));
+        assert_eq!(cursor, ItemStack::try_new(Item::Dirt, 3));
+    }
+
+    #[test]
+    fn drag_distribution_is_even_for_left_and_one_each_for_right() {
+        let mut inventory = Inventory::empty();
+        let mut cursor = ItemStack::try_new(Item::Dirt, 8);
+        distribute_drag(&mut inventory, &mut cursor, &[0, 1, 2], MouseButton::Left);
+        assert_eq!(inventory.slot(0), ItemStack::try_new(Item::Dirt, 3));
+        assert_eq!(inventory.slot(1), ItemStack::try_new(Item::Dirt, 3));
+        assert_eq!(inventory.slot(2), ItemStack::try_new(Item::Dirt, 2));
+        assert_eq!(cursor, None);
+
+        cursor = ItemStack::try_new(Item::Stone, 5);
+        distribute_drag(&mut inventory, &mut cursor, &[3, 4, 5], MouseButton::Right);
+        assert_eq!(inventory.slot(3), Some(ItemStack::one(Item::Stone)));
+        assert_eq!(inventory.slot(4), Some(ItemStack::one(Item::Stone)));
+        assert_eq!(inventory.slot(5), Some(ItemStack::one(Item::Stone)));
+        assert_eq!(cursor, ItemStack::try_new(Item::Stone, 2));
+    }
+
+    #[test]
+    fn taking_from_the_cursor_never_creates_zero_stacks() {
+        let mut cursor = Some(ItemStack::one(Item::Dirt));
+        assert_eq!(
+            take_from_stack(&mut cursor, u16::MAX),
+            Some(ItemStack::one(Item::Dirt))
+        );
+        assert_eq!(cursor, None);
+    }
+
+    #[test]
+    fn double_click_collection_gathers_matching_items_up_to_the_limit() {
+        let mut inventory = Inventory::empty();
+        inventory.set_slot(0, ItemStack::try_new(Item::Dirt, 20));
+        inventory.set_slot(1, ItemStack::try_new(Item::Dirt, 40));
+        inventory.set_slot(2, ItemStack::try_new(Item::Dirt, 10));
+        let mut cursor = ItemStack::try_new(Item::Dirt, 8);
+
+        collect_matching_stacks(&mut inventory, &mut cursor);
+
+        assert_eq!(cursor, Some(ItemStack::full(Item::Dirt)));
+        assert_eq!(inventory.slot(0), None);
+        assert_eq!(inventory.slot(1), ItemStack::try_new(Item::Dirt, 4));
+        assert_eq!(inventory.slot(2), ItemStack::try_new(Item::Dirt, 10));
+    }
+
+    #[test]
+    fn inventory_screen_spawns_all_thirty_six_slots_hidden() {
+        let mut app = App::new();
+        app.add_systems(Startup, spawn_inventory_ui);
+
+        app.update();
+
+        let mut slots = app.world_mut().query::<&InventorySlot>();
+        assert_eq!(
+            slots.iter(app.world()).count(),
+            crate::item::INVENTORY_SLOTS
+        );
+        let mut overlay = app
+            .world_mut()
+            .query_filtered::<&Visibility, With<InventoryOverlay>>();
+        assert_eq!(overlay.single(app.world()).unwrap(), &Visibility::Hidden);
+    }
+
+    #[test]
+    fn inventory_key_opens_and_escape_closes_without_losing_a_carried_stack() {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, StatesPlugin))
+            .insert_state(GameState::Playing)
+            .insert_state(MouseState::Grabbed)
+            .init_resource::<InventoryUi>()
+            .init_resource::<KeyBindings>()
+            .insert_resource(ButtonInput::<KeyCode>::default())
+            .add_systems(PreUpdate, toggle_inventory_ui);
+        let player = app.world_mut().spawn(Player::default()).id();
+
+        let inventory_key = app.world().resource::<KeyBindings>().open_inventory;
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(inventory_key);
+        app.world_mut().run_schedule(PreUpdate);
+        assert!(app.world().resource::<InventoryUi>().open);
+
+        {
+            let mut ui = app.world_mut().resource_mut::<InventoryUi>();
+            ui.cursor_stack = Some(ItemStack::one(Item::Dirt));
+        }
+        {
+            let mut keyboard = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+            keyboard.reset_all();
+            keyboard.press(KeyCode::Escape);
+        }
+        app.world_mut().run_schedule(PreUpdate);
+
+        let ui = app.world().resource::<InventoryUi>();
+        assert!(!ui.open);
+        assert!(ui.cursor_stack.is_none());
+        assert!(ui.blocks_pause_request());
+        assert_eq!(
+            app.world().get::<Inventory>(player).unwrap().slot(9),
+            Some(ItemStack::one(Item::Dirt))
+        );
+    }
+
+    #[test]
+    fn closing_queues_cursor_overflow_instead_of_losing_it() {
+        let mut inventory = Inventory::empty();
+        for index in 0..crate::item::INVENTORY_SLOTS {
+            inventory.set_slot(index, Some(ItemStack::full(Item::Stone)));
+        }
+        let mut ui = InventoryUi {
+            open: true,
+            cursor_stack: Some(ItemStack::one(Item::Dirt)),
+            ..default()
+        };
+
+        close_inventory(&mut ui, &mut inventory);
+
+        assert!(!ui.open);
+        assert!(ui.cursor_stack.is_none());
+        let [drop] = ui.pending_drops.make_contiguous() else {
+            panic!("expected the cursor overflow to be queued");
+        };
+        assert_eq!(drop.stack, ItemStack::one(Item::Dirt));
+        assert_eq!(drop.inventory_slot, None);
+    }
+}

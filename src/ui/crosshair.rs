@@ -14,8 +14,12 @@ const CROSSHAIR_SIZE: f32 = 40.0;
 #[require(Name::new("Crosshair"))]
 struct Crosshair;
 
+#[derive(Component)]
+pub(super) struct CrosshairRoot;
+
 fn spawn_crosshair(mut commands: Commands) {
     commands.spawn((
+        CrosshairRoot,
         Node {
             display: Display::Flex,
             align_items: AlignItems::Center,

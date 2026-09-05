@@ -6,6 +6,7 @@ use bevy::{color::palettes::basic, input::InputSystems, prelude::*};
 
 use crate::{
     game_state::GameState,
+    item::{Inventory, ItemStack},
     ui::Hotbar,
     world::{
         ACTOR_LAYER, WORLD_LAYER,
@@ -17,7 +18,10 @@ use crate::{
     },
 };
 
-use super::cam::{MouseCam, MouseState, PlayerCameraSystems, gameplay_input_active};
+use super::{
+    GameMode, Player,
+    cam::{MouseCam, MouseState, PlayerCameraSystems, gameplay_input_active},
+};
 
 pub struct BlockInteractionPlugin;
 
@@ -203,16 +207,19 @@ fn emit_block_interaction_requests(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn apply_block_interaction_requests(
     mut commands: Commands,
     mut requests: MessageReader<BlockInteractionRequest>,
     mut committed_edits: MessageWriter<BlockEditCommitted>,
     dimension: Single<&mut Dimension, With<Active>>,
+    player: Single<(&Player, &mut Inventory)>,
     mut chunks: Query<(&mut Chunk, &mut ChunkContentCounts)>,
     mut hotbar: ResMut<Hotbar>,
     spatial_query: SpatialQuery,
 ) {
     let mut dimension = dimension.into_inner();
+    let (player, mut inventory) = player.into_inner();
     let mut invalidations = ChunkInvalidationPlan::new();
 
     for request in requests.read().copied() {
@@ -230,7 +237,7 @@ fn apply_block_interaction_requests(
         let delta = match request.kind {
             BlockInteractionKind::Pick => {
                 if let Some(item) = chunk.cell(pos.local()).as_block() {
-                    hotbar.set_selected_item(item);
+                    select_picked_item(player.gamemode, &mut inventory, &mut hotbar, item);
                 }
                 None
             }
@@ -240,10 +247,10 @@ fn apply_block_interaction_requests(
                 editor.break_block(pos.local())
             }
             BlockInteractionKind::Place => {
-                let Some(item) = hotbar.selected_item() else {
+                let Some(stack) = hotbar.selected_stack(&inventory) else {
                     continue;
                 };
-                let Some(cell) = ChunkCell::try_block(item) else {
+                let Some(cell) = ChunkCell::try_block(stack.item) else {
                     continue;
                 };
                 if placement_requires_actor_clearance(cell)
@@ -254,7 +261,14 @@ fn apply_block_interaction_requests(
 
                 let mut editor =
                     ChunkEditor::new(pos.chunk(), &mut chunk, &mut counts, &mut invalidations);
-                editor.place_cell(pos.local(), cell)
+                let delta = editor.place_cell(pos.local(), cell);
+                consume_placed_item(
+                    player.gamemode,
+                    &mut inventory,
+                    hotbar.selected,
+                    delta.is_some(),
+                );
+                delta
             }
         };
 
@@ -264,6 +278,34 @@ fn apply_block_interaction_requests(
     }
 
     apply_chunk_invalidations(&mut commands, &mut dimension, &invalidations);
+}
+
+fn select_picked_item(
+    game_mode: GameMode,
+    inventory: &mut Inventory,
+    hotbar: &mut Hotbar,
+    item: crate::item::Item,
+) {
+    if let Some(slot) = inventory.slot_with(item) {
+        if slot < crate::item::HOTBAR_SLOTS {
+            hotbar.selected = slot;
+        } else {
+            inventory.swap_slots(slot, hotbar.selected);
+        }
+    } else if game_mode == GameMode::Creative {
+        inventory.set_slot(hotbar.selected, Some(ItemStack::full(item)));
+    }
+}
+
+fn consume_placed_item(
+    game_mode: GameMode,
+    inventory: &mut Inventory,
+    selected_slot: usize,
+    edit_committed: bool,
+) {
+    if edit_committed && game_mode == GameMode::Survival {
+        inventory.take(selected_slot, 1);
+    }
 }
 
 fn committed_block_edit(

@@ -2,6 +2,8 @@ use std::time::Duration;
 
 use bevy::{input::InputSystems, prelude::*, window::PrimaryWindow};
 
+use crate::ui::InventoryUi;
+
 pub struct GameStatePlugin;
 
 impl Plugin for GameStatePlugin {
@@ -42,6 +44,7 @@ pub struct Playing;
 fn request_pause_state(
     keys: Option<Res<ButtonInput<KeyCode>>>,
     game_state: Res<State<GameState>>,
+    inventory_ui: Option<Res<InventoryUi>>,
     primary_windows: Query<&Window, With<PrimaryWindow>>,
     mut next_game_state: ResMut<NextState<GameState>>,
     mut previous_focus: Local<Option<bool>>,
@@ -58,6 +61,9 @@ fn request_pause_state(
     }
 
     if !keys.is_some_and(|keys| keys.just_pressed(KeyCode::Escape)) || focus_just_regained {
+        return;
+    }
+    if inventory_ui.is_some_and(|ui| ui.blocks_pause_request()) {
         return;
     }
 

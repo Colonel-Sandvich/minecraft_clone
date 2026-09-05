@@ -4,8 +4,9 @@ use bevy::{input::InputSystems, prelude::*};
 
 use crate::{
     game_state::GameState,
-    item::{DropItemRequest, ItemStack},
+    item::{DropItemRequest, Inventory},
     player::{
+        Player,
         cam::{MouseCam, MouseState, gameplay_input_active},
         control::KeyBindings,
     },
@@ -66,7 +67,9 @@ pub struct GameInputs {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct DropItemInput;
+struct DropItemInput {
+    whole_stack: bool,
+}
 
 fn collect_game_inputs(
     keyboard: Res<ButtonInput<KeyCode>>,
@@ -74,24 +77,39 @@ fn collect_game_inputs(
     mut game_inputs: ResMut<GameInputs>,
 ) {
     if keyboard.just_pressed(bindings.drop_item) {
-        game_inputs.pending_item_drops.push_back(DropItemInput);
+        game_inputs.pending_item_drops.push_back(DropItemInput {
+            whole_stack: keyboard.any_pressed([
+                KeyCode::ShiftLeft,
+                KeyCode::ShiftRight,
+                KeyCode::ControlLeft,
+                KeyCode::ControlRight,
+            ]),
+        });
     }
 }
 
 fn dispatch_game_inputs(
     mut game_inputs: ResMut<GameInputs>,
     hotbar: Res<Hotbar>,
+    inventory: Single<&Inventory, With<Player>>,
     camera: Single<&Transform, With<MouseCam>>,
     mut drop_requests: MessageWriter<DropItemRequest>,
 ) {
     // Dropping is rate-limited to one request per simulation tick. Keeping a
     // FIFO preserves every distinct press and its ordering across render-only
     // frames.
-    if game_inputs.pending_item_drops.pop_front().is_some()
-        && let Some(item) = hotbar.selected_item()
-    {
+    if let Some(drop_input) = game_inputs.pending_item_drops.pop_front() {
+        let Some(stack) = hotbar.selected_stack(&inventory) else {
+            return;
+        };
+        let count = if drop_input.whole_stack {
+            stack.count()
+        } else {
+            1
+        };
         drop_requests.write(DropItemRequest {
-            stack: ItemStack::one(item),
+            stack: crate::item::ItemStack::try_new(stack.item, count).unwrap(),
+            inventory_slot: Some(hotbar.selected),
             look_direction: *camera.forward(),
         });
     }
@@ -198,6 +216,7 @@ mod tests {
             .add_systems(FixedPreUpdate, dispatch_game_inputs)
             .add_systems(FixedUpdate, count_drop_requests);
         app.world_mut().spawn((MouseCam, Transform::default()));
+        app.world_mut().spawn(Player::default());
         app
     }
 
@@ -221,6 +240,21 @@ mod tests {
         keyboard.clear();
     }
 
+    fn collect_whole_stack_drop_press(app: &mut App) {
+        let drop_key = app.world().resource::<KeyBindings>().drop_item;
+        {
+            let mut keyboard = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+            keyboard.press(KeyCode::ShiftLeft);
+            keyboard.press(drop_key);
+        }
+        app.world_mut().run_schedule(PreUpdate);
+
+        let mut keyboard = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+        keyboard.release(drop_key);
+        keyboard.release(KeyCode::ShiftLeft);
+        keyboard.clear();
+    }
+
     #[test]
     fn queued_drop_presses_dispatch_fifo_at_one_per_fixed_tick() {
         let mut app = input_app();
@@ -236,6 +270,8 @@ mod tests {
         assert_eq!(app.world().resource::<ObservedDrops>().0.len(), 1);
         let first = app.world().resource::<ObservedDrops>().0[0];
         assert_eq!(first.stack.item, crate::item::Item::Sand);
+        assert_eq!(first.stack.count(), 1);
+        assert_eq!(first.inventory_slot, Some(2));
         assert!(first.look_direction.abs_diff_eq(Vec3::NEG_Z, 1e-6));
 
         app.world_mut().resource_mut::<Hotbar>().selected = 1;
@@ -245,6 +281,8 @@ mod tests {
         assert_eq!(app.world().resource::<ObservedDrops>().0.len(), 2);
         let second = app.world().resource::<ObservedDrops>().0[1];
         assert_eq!(second.stack.item, crate::item::Item::Stone);
+        assert_eq!(second.stack.count(), 1);
+        assert_eq!(second.inventory_slot, Some(1));
         assert!(second.look_direction.abs_diff_eq(Vec3::X, 1e-6));
 
         app.world_mut().run_schedule(FixedPreUpdate);
@@ -263,5 +301,21 @@ mod tests {
         app.world_mut().run_schedule(FixedUpdate);
 
         assert!(app.world().resource::<ObservedDrops>().0.is_empty());
+    }
+
+    #[test]
+    fn shift_drop_requests_the_selected_whole_stack() {
+        let mut app = input_app();
+        collect_whole_stack_drop_press(&mut app);
+
+        app.world_mut().run_schedule(FixedPreUpdate);
+        app.world_mut().run_schedule(FixedUpdate);
+
+        let [request] = app.world().resource::<ObservedDrops>().0.as_slice() else {
+            panic!("expected exactly one drop request");
+        };
+        assert_eq!(request.stack.item, crate::item::Item::Dirt);
+        assert_eq!(request.stack.count(), crate::item::ItemStack::MAX_COUNT);
+        assert_eq!(request.inventory_slot, Some(0));
     }
 }
