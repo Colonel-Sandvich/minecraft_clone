@@ -26,7 +26,7 @@ pub(super) struct InventoryUiPlugin;
 impl Plugin for InventoryUiPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<InventoryUi>()
-            .add_systems(Startup, spawn_inventory_ui)
+            .add_observer(return_carried_stack)
             .add_systems(
                 PreUpdate,
                 (toggle_inventory_ui, handle_inventory_ui_input)
@@ -42,14 +42,16 @@ impl Plugin for InventoryUiPlugin {
             .add_systems(
                 Update,
                 (
-                    update_inventory_visibility,
-                    update_inventory_slots,
-                    update_cursor_stack,
-                    update_slot_highlights,
-                    update_drag_preview,
+                    update_gameplay_hud_visibility,
+                    (
+                        update_inventory_slots,
+                        update_cursor_stack,
+                        update_slot_highlights,
+                        update_drag_preview,
+                    )
+                        .run_if(inventory_ui_open),
                 ),
-            )
-            .add_systems(OnExit(GameState::Playing), close_inventory_on_game_exit);
+            );
     }
 }
 
@@ -132,10 +134,14 @@ const SLOT_GAP: f32 = 4.0;
 const PREVIEW_VEIL: Color = Color::srgba(0.05, 0.05, 0.05, 0.4);
 const GHOST_ALPHA: f32 = 0.55;
 
-fn spawn_inventory_ui(mut commands: Commands) {
+/// Spawns the panel. The overlay's lifetime is the open state: it is spawned
+/// by the toggle and despawned on close (or by [`DespawnOnExit`] when gameplay
+/// ends), with [`return_carried_stack`] handling the teardown.
+fn spawn_inventory_ui(commands: &mut Commands) {
     commands
         .spawn((
             InventoryOverlay,
+            DespawnOnExit(GameState::Playing),
             Node {
                 position_type: PositionType::Absolute,
                 width: Val::Percent(100.0),
@@ -147,7 +153,6 @@ fn spawn_inventory_ui(mut commands: Commands) {
             BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.58)),
             GlobalZIndex(2_000),
             FocusPolicy::Block,
-            Visibility::Hidden,
         ))
         .with_children(|overlay| {
             overlay
@@ -348,29 +353,26 @@ fn stack_count_text() -> (Text, TextFont, TextColor, TextShadow) {
 }
 
 fn toggle_inventory_ui(
+    mut commands: Commands,
     keyboard: Res<ButtonInput<KeyCode>>,
     bindings: Res<KeyBindings>,
     game_state: Res<State<GameState>>,
     mut next_mouse_state: ResMut<NextState<MouseState>>,
     mut ui: ResMut<InventoryUi>,
-    inventory: Single<&mut Inventory, With<Player>>,
+    overlay: Query<Entity, With<InventoryOverlay>>,
 ) {
-    if ui.take_close_request() {
-        let mut inventory = inventory.into_inner();
-        close_inventory(&mut ui, &mut inventory);
+    if ui.take_close_request() || (ui.is_open() && keyboard.just_pressed(bindings.open_inventory)) {
+        close_inventory(&mut ui, &mut commands, &overlay);
         next_mouse_state.set(MouseState::Grabbed);
         return;
     }
 
-    if !keyboard.just_pressed(bindings.open_inventory) {
-        return;
-    }
-    if ui.open {
-        let mut inventory = inventory.into_inner();
-        close_inventory(&mut ui, &mut inventory);
-        next_mouse_state.set(MouseState::Grabbed);
-    } else if *game_state.get() == GameState::Playing {
+    if !ui.is_open()
+        && *game_state.get() == GameState::Playing
+        && keyboard.just_pressed(bindings.open_inventory)
+    {
         ui.open = true;
+        spawn_inventory_ui(&mut commands);
         next_mouse_state.set(MouseState::Free);
     }
 }
@@ -735,45 +737,50 @@ fn dispatch_inventory_drop_requests(
     }
 }
 
-fn close_inventory(ui: &mut InventoryUi, inventory: &mut Inventory) {
-    if let Some(stack) = ui.cursor_stack.take()
+/// Closes the panel by despawning its overlay.
+///
+/// `open` flips immediately so the rest of this frame's input routing sees the
+/// close; [`return_carried_stack`] performs the item cleanup at command flush.
+fn close_inventory(
+    ui: &mut InventoryUi,
+    commands: &mut Commands,
+    overlay: &Query<Entity, With<InventoryOverlay>>,
+) {
+    ui.open = false;
+    for entity in overlay {
+        commands.entity(entity).despawn();
+    }
+}
+
+/// Returns the carried stack when the overlay goes away.
+///
+/// The overlay only exists while the inventory is open, so any despawn —
+/// toggling closed or leaving gameplay via `DespawnOnExit` — funnels through
+/// this one teardown, mirroring the pause menu's lifecycle.
+fn return_carried_stack(
+    _: On<Despawn, InventoryOverlay>,
+    mut ui: ResMut<InventoryUi>,
+    mut inventories: Query<&mut Inventory, With<Player>>,
+) {
+    if let Ok(mut inventory) = inventories.single_mut()
+        && let Some(stack) = ui.cursor_stack.take()
         && let Some(remainder) = inventory.insert(stack)
     {
-        queue_owned_drop(ui, remainder);
+        queue_owned_drop(&mut ui, remainder);
     }
+    ui.open = false;
     ui.drag = None;
     ui.last_left_click = None;
-    ui.open = false;
 }
 
-fn close_inventory_on_game_exit(
-    mut ui: ResMut<InventoryUi>,
-    inventory: Single<&mut Inventory, With<Player>>,
-) {
-    let mut inventory = inventory.into_inner();
-    close_inventory(&mut ui, &mut inventory);
+fn inventory_ui_open(ui: Res<InventoryUi>) -> bool {
+    ui.is_open()
 }
 
-type GameplayHudVisibility<'w, 's> = Query<
-    'w,
-    's,
-    &'static mut Visibility,
-    (
-        Or<(With<HotbarHudRoot>, With<CrosshairRoot>)>,
-        Without<InventoryOverlay>,
-    ),
->;
+type GameplayHudVisibility<'w, 's> =
+    Query<'w, 's, &'static mut Visibility, Or<(With<HotbarHudRoot>, With<CrosshairRoot>)>>;
 
-fn update_inventory_visibility(
-    ui: Res<InventoryUi>,
-    mut overlay: Single<&mut Visibility, With<InventoryOverlay>>,
-    mut gameplay_hud: GameplayHudVisibility,
-) {
-    **overlay = if ui.open {
-        Visibility::Visible
-    } else {
-        Visibility::Hidden
-    };
+fn update_gameplay_hud_visibility(ui: Res<InventoryUi>, mut gameplay_hud: GameplayHudVisibility) {
     for mut visibility in &mut gameplay_hud {
         *visibility = if ui.open {
             Visibility::Hidden
@@ -1021,9 +1028,11 @@ mod tests {
     }
 
     #[test]
-    fn inventory_screen_spawns_all_thirty_six_slots_hidden() {
+    fn inventory_overlay_spawns_all_thirty_six_slots() {
         let mut app = App::new();
-        app.add_systems(Startup, spawn_inventory_ui);
+        app.add_systems(Startup, |mut commands: Commands| {
+            spawn_inventory_ui(&mut commands);
+        });
 
         app.update();
 
@@ -1032,10 +1041,6 @@ mod tests {
             slots.iter(app.world()).count(),
             crate::item::INVENTORY_SLOTS
         );
-        let mut overlay = app
-            .world_mut()
-            .query_filtered::<&Visibility, With<InventoryOverlay>>();
-        assert_eq!(overlay.single(app.world()).unwrap(), &Visibility::Hidden);
     }
 
     #[test]
@@ -1047,6 +1052,7 @@ mod tests {
             .init_resource::<InventoryUi>()
             .init_resource::<KeyBindings>()
             .insert_resource(ButtonInput::<KeyCode>::default())
+            .add_observer(return_carried_stack)
             .add_systems(PreUpdate, crate::game_state::route_back_input)
             .add_systems(
                 PreUpdate,
@@ -1058,6 +1064,7 @@ mod tests {
         press_key(&mut app, inventory_key);
         app.world_mut().run_schedule(PreUpdate);
         assert!(app.world().resource::<InventoryUi>().is_open());
+        assert_eq!(overlay_count(&mut app), 1, "opening spawns the overlay");
 
         {
             let mut ui = app.world_mut().resource_mut::<InventoryUi>();
@@ -1077,10 +1084,16 @@ mod tests {
             ),
             "closing the inventory must not also pause the game"
         );
+        assert_eq!(overlay_count(&mut app), 0, "closing despawns the overlay");
         assert_eq!(
             app.world().get::<Inventory>(player).unwrap().slot(9),
             Some(ItemStack::one(Item::Dirt))
         );
+    }
+
+    fn overlay_count(app: &mut App) -> usize {
+        let mut overlays = app.world_mut().query::<&InventoryOverlay>();
+        overlays.iter(app.world()).count()
     }
 
     fn press_key(app: &mut App, key: KeyCode) {
@@ -1090,26 +1103,41 @@ mod tests {
     }
 
     #[test]
-    fn closing_queues_cursor_overflow_instead_of_losing_it() {
-        let mut inventory = Inventory::empty();
-        for index in 0..crate::item::INVENTORY_SLOTS {
-            inventory.set_slot(index, Some(ItemStack::full(Item::Stone)));
+    fn despawn_queues_cursor_overflow_instead_of_losing_it() {
+        let mut app = App::new();
+        app.add_observer(return_carried_stack)
+            .init_resource::<InventoryUi>();
+        let player = app.world_mut().spawn(Player::default()).id();
+        {
+            let mut inventories = app.world_mut().query::<&mut Inventory>();
+            let mut inventory = inventories.single_mut(app.world_mut()).unwrap();
+            for index in 0..crate::item::INVENTORY_SLOTS {
+                inventory.set_slot(index, Some(ItemStack::full(Item::Stone)));
+            }
         }
-        let mut ui = InventoryUi {
-            open: true,
-            cursor_stack: Some(ItemStack::one(Item::Dirt)),
-            ..default()
-        };
+        {
+            let mut ui = app.world_mut().resource_mut::<InventoryUi>();
+            ui.open = true;
+            ui.cursor_stack = Some(ItemStack::one(Item::Dirt));
+        }
+        let overlay = app.world_mut().spawn(InventoryOverlay).id();
 
-        close_inventory(&mut ui, &mut inventory);
+        app.world_mut().despawn(overlay);
 
+        let ui = app.world().resource::<InventoryUi>();
         assert!(!ui.open);
         assert!(ui.cursor_stack.is_none());
-        let [drop] = ui.pending_drops.make_contiguous() else {
+        let mut drops = ui.pending_drops.iter();
+        let Some(drop) = drops.next() else {
             panic!("expected the cursor overflow to be queued");
         };
+        assert!(drops.next().is_none(), "only the overflow may be queued");
         assert_eq!(drop.stack, ItemStack::one(Item::Dirt));
         assert_eq!(drop.inventory_slot, None);
+        assert_eq!(
+            app.world().get::<Inventory>(player).unwrap().slot(9),
+            Some(ItemStack::full(Item::Stone))
+        );
     }
 
     #[test]
