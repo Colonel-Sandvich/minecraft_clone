@@ -10,7 +10,7 @@ pub const INVENTORY_SLOTS: usize = 36;
 ///
 /// An empty slot is `None`; an occupied slot always contains a non-empty,
 /// size-limited [`ItemStack`].
-#[derive(Component, Debug, PartialEq, Eq)]
+#[derive(Component, Clone, Debug, PartialEq, Eq)]
 pub struct Inventory {
     slots: [Option<ItemStack>; INVENTORY_SLOTS],
 }

@@ -46,6 +46,7 @@ impl Plugin for InventoryUiPlugin {
                     update_inventory_slots,
                     update_cursor_stack,
                     update_slot_highlights,
+                    update_drag_preview,
                 ),
             )
             .add_systems(OnExit(GameState::Playing), close_inventory_on_game_exit)
@@ -97,6 +98,15 @@ struct InventorySlotIcon(usize);
 struct InventorySlotCount(usize);
 
 #[derive(Component)]
+struct InventorySlotPreview(usize);
+
+#[derive(Component)]
+struct InventoryPreviewIcon(usize);
+
+#[derive(Component)]
+struct InventoryPreviewCount(usize);
+
+#[derive(Component)]
 struct CursorStackRoot;
 
 #[derive(Component)]
@@ -108,6 +118,10 @@ struct CursorStackCount;
 const SLOT_SIZE: f32 = 54.0;
 const ITEM_ICON_SIZE: f32 = 44.0;
 const SLOT_GAP: f32 = 4.0;
+/// Translucent veils and ghost icons mark slots a drag would change without
+/// hiding what they currently hold.
+const PREVIEW_VEIL: Color = Color::srgba(0.05, 0.05, 0.05, 0.4);
+const GHOST_ALPHA: f32 = 0.55;
 
 fn spawn_inventory_ui(mut commands: Commands) {
     commands
@@ -265,6 +279,45 @@ fn spawn_slot_row(parent: &mut ChildSpawnerCommands, slots: impl IntoIterator<It
                         },
                         Pickable::IGNORE,
                     ));
+                    slot.spawn((
+                        InventorySlotPreview(index),
+                        Node {
+                            position_type: PositionType::Absolute,
+                            left: Val::Px(0.0),
+                            top: Val::Px(0.0),
+                            width: Val::Percent(100.0),
+                            height: Val::Percent(100.0),
+                            align_items: AlignItems::Center,
+                            justify_content: JustifyContent::Center,
+                            ..default()
+                        },
+                        BackgroundColor(Color::NONE),
+                        Visibility::Hidden,
+                        Pickable::IGNORE,
+                    ))
+                    .with_children(|preview| {
+                        preview.spawn((
+                            InventoryPreviewIcon(index),
+                            ImageNode::default(),
+                            Node {
+                                width: Val::Px(ITEM_ICON_SIZE),
+                                height: Val::Px(ITEM_ICON_SIZE),
+                                ..default()
+                            },
+                            Pickable::IGNORE,
+                        ));
+                        preview.spawn((
+                            InventoryPreviewCount(index),
+                            stack_count_text(),
+                            Node {
+                                position_type: PositionType::Absolute,
+                                right: Val::Px(2.0),
+                                bottom: Val::Px(1.0),
+                                ..default()
+                            },
+                            Pickable::IGNORE,
+                        ));
+                    });
                 });
             }
         });
@@ -585,6 +638,29 @@ fn distribute_drag(
     }
 }
 
+/// The slots a drag would change and the stack each would end up holding.
+///
+/// Runs the release-time distribution against a copy of the inventory so the
+/// preview cannot drift from what releasing the drag actually does.
+fn drag_preview(
+    inventory: &Inventory,
+    cursor: ItemStack,
+    slots: &[usize],
+    button: MouseButton,
+) -> Vec<(usize, ItemStack)> {
+    let mut projected = inventory.clone();
+    let mut projected_cursor = Some(cursor);
+    distribute_drag(&mut projected, &mut projected_cursor, slots, button);
+
+    slots
+        .iter()
+        .filter_map(|&index| {
+            let after = projected.slot(index)?;
+            (inventory.slot(index) != Some(after)).then_some((index, after))
+        })
+        .collect()
+}
+
 fn slot_accepts(slot: Option<ItemStack>, item: crate::item::Item) -> bool {
     slot.is_none_or(|stack| stack.item == item && stack.count() < ItemStack::MAX_COUNT)
 }
@@ -751,6 +827,53 @@ fn update_slot_highlights(
     }
 }
 
+fn update_drag_preview(
+    ui: Res<InventoryUi>,
+    inventory: Single<&Inventory, With<Player>>,
+    icons: Res<ItemIcons>,
+    mut previews: Query<(&InventorySlotPreview, &mut Visibility, &mut BackgroundColor)>,
+    mut preview_icons: Query<(&InventoryPreviewIcon, &mut ImageNode)>,
+    mut preview_counts: Query<(&InventoryPreviewCount, &mut Text)>,
+) {
+    // A one-slot drag releases as a plain click, which the ghost cannot
+    // predict, so only multi-slot painting previews a distribution.
+    let planned = ui
+        .drag
+        .as_ref()
+        .filter(|drag| drag.slots.len() > 1)
+        .zip(ui.cursor_stack)
+        .map(|(drag, cursor)| drag_preview(&inventory, cursor, &drag.slots, drag.button));
+    let planned = planned.as_deref();
+
+    for (slot, mut visibility, mut background) in &mut previews {
+        let previewed = planned_stack(planned, slot.0).is_some();
+        *visibility = if previewed {
+            Visibility::Visible
+        } else {
+            Visibility::Hidden
+        };
+        background.0 = if previewed { PREVIEW_VEIL } else { Color::NONE };
+    }
+    for (slot, mut image) in &mut preview_icons {
+        image.image = planned_stack(planned, slot.0)
+            .and_then(|stack| icons.icons.get(&stack.item))
+            .cloned()
+            .unwrap_or_default();
+        image.color = Color::srgba(1.0, 1.0, 1.0, GHOST_ALPHA);
+    }
+    for (slot, mut text) in &mut preview_counts {
+        text.0 = planned_stack(planned, slot.0)
+            .map_or(String::new(), |stack| hotbar_count_label(Some(stack)));
+    }
+}
+
+fn planned_stack(planned: Option<&[(usize, ItemStack)]>, index: usize) -> Option<ItemStack> {
+    planned?
+        .iter()
+        .find(|(slot, _)| *slot == index)
+        .map(|(_, stack)| *stack)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -809,6 +932,59 @@ mod tests {
         assert_eq!(inventory.slot(4), Some(ItemStack::one(Item::Stone)));
         assert_eq!(inventory.slot(5), Some(ItemStack::one(Item::Stone)));
         assert_eq!(cursor, ItemStack::try_new(Item::Stone, 2));
+    }
+
+    #[test]
+    fn drag_preview_plans_the_same_result_as_release() {
+        let mut inventory = Inventory::empty();
+        inventory.set_slot(1, Some(ItemStack::full(Item::Stone)));
+
+        let preview = drag_preview(
+            &inventory,
+            ItemStack::try_new(Item::Dirt, 8).unwrap(),
+            &[0, 1, 2],
+            MouseButton::Left,
+        );
+
+        // Slot 1 rejects the wrong item, so the eight items split evenly
+        // across the two remaining slots, exactly as release would distribute.
+        assert_eq!(
+            preview,
+            vec![
+                (0, ItemStack::try_new(Item::Dirt, 4).unwrap()),
+                (2, ItemStack::try_new(Item::Dirt, 4).unwrap()),
+            ]
+        );
+        assert_eq!(inventory.slot(0), None);
+    }
+
+    #[test]
+    fn drag_preview_stops_at_a_full_slot_and_right_drag_places_one_each() {
+        let mut inventory = Inventory::empty();
+        inventory.set_slot(0, ItemStack::try_new(Item::Dirt, 62));
+        inventory.set_slot(1, Some(ItemStack::full(Item::Stone)));
+
+        assert_eq!(
+            drag_preview(
+                &inventory,
+                ItemStack::try_new(Item::Dirt, 5).unwrap(),
+                &[0, 1],
+                MouseButton::Left,
+            ),
+            vec![(0, ItemStack::full(Item::Dirt))]
+        );
+        assert_eq!(
+            drag_preview(
+                &inventory,
+                ItemStack::try_new(Item::Dirt, 5).unwrap(),
+                &[0, 1, 2],
+                MouseButton::Right,
+            ),
+            vec![
+                (0, ItemStack::try_new(Item::Dirt, 63).unwrap()),
+                (2, ItemStack::one(Item::Dirt)),
+            ]
+        );
     }
 
     #[test]
@@ -991,6 +1167,68 @@ mod tests {
         assert_eq!(inventory.slot(0), ItemStack::try_new(Item::Dirt, 2));
         assert_eq!(inventory.slot(1), ItemStack::try_new(Item::Dirt, 2));
         assert_eq!(app.world().resource::<InventoryUi>().cursor_stack, None);
+    }
+
+    #[test]
+    fn drag_preview_marks_planned_slots_and_clears_when_the_drag_ends() {
+        let mut app = inventory_input_app();
+        app.init_resource::<ItemIcons>();
+        app.add_systems(Update, update_drag_preview);
+        let overlays: Vec<Entity> = (0..2)
+            .map(|index| {
+                app.world_mut()
+                    .spawn((
+                        InventorySlotPreview(index),
+                        BackgroundColor(Color::NONE),
+                        Visibility::Hidden,
+                    ))
+                    .id()
+            })
+            .collect();
+        for index in 0..2 {
+            app.world_mut()
+                .spawn((InventoryPreviewIcon(index), ImageNode::default()));
+            app.world_mut()
+                .spawn((InventoryPreviewCount(index), Text::new("")));
+        }
+        {
+            let mut ui = app.world_mut().resource_mut::<InventoryUi>();
+            ui.cursor_stack = ItemStack::try_new(Item::Dirt, 5);
+            ui.drag = Some(StackDrag {
+                button: MouseButton::Left,
+                slots: vec![0, 1],
+            });
+        }
+
+        app.update();
+
+        for overlay in &overlays {
+            assert_eq!(
+                app.world().get::<Visibility>(*overlay),
+                Some(&Visibility::Visible)
+            );
+        }
+        let mut counts = app.world_mut().query::<(&InventoryPreviewCount, &Text)>();
+        let mut labels: Vec<_> = counts
+            .iter(app.world())
+            .map(|(slot, text)| (slot.0, text.0.clone()))
+            .collect();
+        labels.sort();
+        assert_eq!(labels, vec![(0, "3".to_string()), (1, "2".to_string())]);
+
+        app.world_mut().resource_mut::<InventoryUi>().drag = None;
+        app.update();
+
+        for overlay in &overlays {
+            assert_eq!(
+                app.world().get::<Visibility>(*overlay),
+                Some(&Visibility::Hidden)
+            );
+            assert_eq!(
+                app.world().get::<BackgroundColor>(*overlay).map(|bg| bg.0),
+                Some(Color::NONE)
+            );
+        }
     }
 
     #[test]
