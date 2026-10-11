@@ -229,6 +229,7 @@ fn spawn_slot_row(parent: &mut ChildSpawnerCommands, slots: impl IntoIterator<It
             for index in slots {
                 row.spawn((
                     InventorySlot(index),
+                    RelativeCursorPosition::default(),
                     Button,
                     Node {
                         width: Val::Px(SLOT_SIZE),
@@ -312,23 +313,24 @@ fn toggle_inventory_ui(
 #[allow(clippy::too_many_arguments)]
 fn handle_inventory_ui_input(
     keyboard: Res<ButtonInput<KeyCode>>,
+    bindings: Res<KeyBindings>,
     mouse: Res<ButtonInput<MouseButton>>,
     real_time: Res<Time<Real>>,
     mut ui: ResMut<InventoryUi>,
     mut inventory: Single<&mut Inventory, With<Player>>,
-    slots: Query<(&InventorySlot, &Interaction)>,
+    slots: Query<(&InventorySlot, &RelativeCursorPosition)>,
     panel: Single<&RelativeCursorPosition, With<InventoryPanel>>,
 ) {
     if !ui.open {
         return;
     }
 
-    let hovered = slots
-        .iter()
-        .find_map(|(slot, interaction)| (*interaction != Interaction::None).then_some(slot.0));
+    // `Interaction::Pressed` deliberately remains on the press origin while
+    // the mouse is held. Dragging must instead follow the physical cursor.
+    let hovered = hovered_inventory_slot(&slots);
     let whole_stack_modifier = whole_stack_drop_modifier_pressed(&keyboard);
 
-    if keyboard.just_pressed(KeyCode::KeyQ) {
+    if keyboard.just_pressed(bindings.drop_item) {
         if let Some(stack) = ui.cursor_stack {
             let count = if whole_stack_modifier {
                 stack.count()
@@ -443,6 +445,14 @@ fn handle_inventory_ui_input(
             );
         }
     }
+}
+
+fn hovered_inventory_slot(
+    slots: &Query<(&InventorySlot, &RelativeCursorPosition)>,
+) -> Option<usize> {
+    slots
+        .iter()
+        .find_map(|(slot, cursor)| cursor.cursor_over().then_some(slot.0))
 }
 
 fn shift_pressed(keyboard: &ButtonInput<KeyCode>) -> bool {
@@ -638,10 +648,10 @@ fn dispatch_inventory_drop_requests(
 }
 
 fn close_inventory(ui: &mut InventoryUi, inventory: &mut Inventory) {
-    if let Some(stack) = ui.cursor_stack.take() {
-        if let Some(remainder) = inventory.insert(stack) {
-            queue_owned_drop(ui, remainder);
-        }
+    if let Some(stack) = ui.cursor_stack.take()
+        && let Some(remainder) = inventory.insert(stack)
+    {
+        queue_owned_drop(ui, remainder);
     }
     ui.drag = None;
     ui.last_left_click = None;
@@ -661,16 +671,20 @@ fn clear_pause_suppression(mut ui: ResMut<InventoryUi>) {
     ui.suppress_pause = false;
 }
 
+type GameplayHudVisibility<'w, 's> = Query<
+    'w,
+    's,
+    &'static mut Visibility,
+    (
+        Or<(With<HotbarHudRoot>, With<CrosshairRoot>)>,
+        Without<InventoryOverlay>,
+    ),
+>;
+
 fn update_inventory_visibility(
     ui: Res<InventoryUi>,
     mut overlay: Single<&mut Visibility, With<InventoryOverlay>>,
-    mut gameplay_hud: Query<
-        &mut Visibility,
-        (
-            Or<(With<HotbarHudRoot>, With<CrosshairRoot>)>,
-            Without<InventoryOverlay>,
-        ),
-    >,
+    mut gameplay_hud: GameplayHudVisibility,
 ) {
     **overlay = if ui.open {
         Visibility::Visible
@@ -902,5 +916,179 @@ mod tests {
         };
         assert_eq!(drop.stack, ItemStack::one(Item::Dirt));
         assert_eq!(drop.inventory_slot, None);
+    }
+
+    #[test]
+    fn drag_uses_current_cursor_slot_not_stale_pressed_origin() {
+        let mut app = inventory_input_app();
+        let origin = app
+            .world_mut()
+            .spawn((
+                InventorySlot(0),
+                Interaction::Pressed,
+                RelativeCursorPosition {
+                    cursor_over: false,
+                    normalized: None,
+                },
+            ))
+            .id();
+        let current = app
+            .world_mut()
+            .spawn((
+                InventorySlot(1),
+                Interaction::Hovered,
+                RelativeCursorPosition {
+                    cursor_over: true,
+                    normalized: Some(Vec2::splat(0.5)),
+                },
+            ))
+            .id();
+        app.world_mut()
+            .spawn((InventoryPanel, RelativeCursorPosition::default()));
+        {
+            let mut ui = app.world_mut().resource_mut::<InventoryUi>();
+            ui.cursor_stack = ItemStack::try_new(Item::Dirt, 4);
+            ui.drag = Some(StackDrag {
+                button: MouseButton::Left,
+                slots: vec![0],
+            });
+        }
+        app.world_mut()
+            .resource_mut::<ButtonInput<MouseButton>>()
+            .press(MouseButton::Left);
+
+        app.world_mut().run_schedule(PreUpdate);
+
+        assert_eq!(
+            app.world()
+                .resource::<InventoryUi>()
+                .drag
+                .as_ref()
+                .unwrap()
+                .slots,
+            vec![0, 1]
+        );
+        // Bevy keeps Pressed on the origin during a drag; cursor geometry is
+        // the authoritative current target.
+        assert_eq!(
+            app.world().get::<Interaction>(origin),
+            Some(&Interaction::Pressed)
+        );
+        assert_eq!(
+            app.world().get::<Interaction>(current),
+            Some(&Interaction::Hovered)
+        );
+
+        app.world_mut()
+            .resource_mut::<ButtonInput<MouseButton>>()
+            .release(MouseButton::Left);
+        app.world_mut().run_schedule(PreUpdate);
+        let inventory = app
+            .world_mut()
+            .query::<&Inventory>()
+            .single(app.world())
+            .unwrap();
+        assert_eq!(inventory.slot(0), ItemStack::try_new(Item::Dirt, 2));
+        assert_eq!(inventory.slot(1), ItemStack::try_new(Item::Dirt, 2));
+        assert_eq!(app.world().resource::<InventoryUi>().cursor_stack, None);
+    }
+
+    #[test]
+    fn drop_key_queues_one_item_from_the_hovered_slot() {
+        let mut app = inventory_input_app();
+        app.world_mut().spawn((
+            InventorySlot(0),
+            RelativeCursorPosition {
+                cursor_over: true,
+                normalized: Some(Vec2::splat(0.5)),
+            },
+        ));
+        app.world_mut()
+            .spawn((InventoryPanel, RelativeCursorPosition::default()));
+        let mut inventories = app.world_mut().query::<&mut Inventory>();
+        inventories
+            .single_mut(app.world_mut())
+            .unwrap()
+            .set_slot(0, ItemStack::try_new(Item::Dirt, 5));
+
+        let drop_key = app.world().resource::<KeyBindings>().drop_item;
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(drop_key);
+        app.world_mut().run_schedule(PreUpdate);
+
+        let ui = app.world().resource::<InventoryUi>();
+        assert_eq!(ui.pending_drops.len(), 1);
+        let drop = ui.pending_drops.front().unwrap();
+        assert_eq!(drop.stack, ItemStack::one(Item::Dirt));
+        assert_eq!(drop.inventory_slot, Some(0));
+        // The slot is only consumed when the request dispatches on a fixed tick.
+        let inventory = app
+            .world_mut()
+            .query::<&Inventory>()
+            .single(app.world())
+            .unwrap();
+        assert_eq!(inventory.slot(0), ItemStack::try_new(Item::Dirt, 5));
+    }
+
+    #[test]
+    fn inventory_drop_respects_configured_drop_binding() {
+        let mut app = inventory_input_app();
+        app.world_mut().spawn((
+            InventorySlot(0),
+            RelativeCursorPosition {
+                cursor_over: true,
+                normalized: Some(Vec2::splat(0.5)),
+            },
+        ));
+        app.world_mut()
+            .spawn((InventoryPanel, RelativeCursorPosition::default()));
+        app.world_mut().resource_mut::<KeyBindings>().drop_item = KeyCode::KeyR;
+        app.world_mut().resource_mut::<InventoryUi>().cursor_stack =
+            Some(ItemStack::one(Item::Dirt));
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::KeyQ);
+        app.world_mut().run_schedule(PreUpdate);
+        assert_eq!(
+            app.world().resource::<InventoryUi>().cursor_stack,
+            Some(ItemStack::one(Item::Dirt))
+        );
+        assert!(
+            app.world()
+                .resource::<InventoryUi>()
+                .pending_drops
+                .is_empty()
+        );
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .reset_all();
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::KeyR);
+
+        app.world_mut().run_schedule(PreUpdate);
+
+        let ui = app.world().resource::<InventoryUi>();
+        assert_eq!(ui.cursor_stack, None);
+        assert_eq!(ui.pending_drops.len(), 1);
+        assert_eq!(
+            ui.pending_drops.front().unwrap().stack,
+            ItemStack::one(Item::Dirt)
+        );
+    }
+
+    fn inventory_input_app() -> App {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .init_resource::<InventoryUi>()
+            .init_resource::<KeyBindings>()
+            .insert_resource(ButtonInput::<KeyCode>::default())
+            .insert_resource(ButtonInput::<MouseButton>::default())
+            .add_systems(PreUpdate, handle_inventory_ui_input);
+        app.world_mut()
+            .spawn((Player::default(), Inventory::empty()));
+        app.world_mut().resource_mut::<InventoryUi>().open = true;
+        app
     }
 }
