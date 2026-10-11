@@ -67,14 +67,27 @@ fn set_cursor_grabbed(cursor_options: &mut CursorOptions) {
     cursor_options.visible = false;
 }
 
-fn set_cursor_free(cursor_options: &mut CursorOptions) {
+/// Releases the cursor and recenters it in the window, like vanilla screens.
+///
+/// `MouseHelper.ungrabMouseCursor` warps to the middle of the window before
+/// ungrabbing (`Mouse.unlockCursor` in modern versions), so the cursor is
+/// already usable where the player expects it. Vanilla only does this on an
+/// actual ungrab, so a window that never captured the cursor (app start,
+/// redundant release) is left alone. Compositors that forbid pointer warps,
+/// notably Wayland, ignore the request; vanilla is broken there too.
+fn set_cursor_free(window: &mut Window, cursor_options: &mut CursorOptions) {
+    let was_captured = cursor_options.grab_mode != CursorGrabMode::None || !cursor_options.visible;
     cursor_options.grab_mode = CursorGrabMode::None;
     cursor_options.visible = true;
+    if was_captured && window.focused {
+        let center = window.size() / 2.0;
+        window.set_cursor_position(Some(center));
+    }
 }
 
 fn apply_grabbed_cursor(
     game_state: Res<State<GameState>>,
-    mut primary_windows: Query<(&Window, &mut CursorOptions), With<PrimaryWindow>>,
+    mut primary_windows: Query<(&mut Window, &mut CursorOptions), With<PrimaryWindow>>,
     mut next_mouse_state: ResMut<NextState<MouseState>>,
 ) {
     if *game_state.get() == GameState::Playing
@@ -85,20 +98,22 @@ fn apply_grabbed_cursor(
         return;
     }
 
-    for (_, mut cursor_options) in &mut primary_windows {
-        set_cursor_free(&mut cursor_options);
+    for (mut window, mut cursor_options) in &mut primary_windows {
+        set_cursor_free(&mut window, &mut cursor_options);
     }
     next_mouse_state.set(MouseState::Free);
 }
 
-fn apply_free_cursor(mut primary_windows: Query<&mut CursorOptions, With<PrimaryWindow>>) {
-    for mut cursor_options in &mut primary_windows {
-        set_cursor_free(&mut cursor_options);
+fn apply_free_cursor(
+    mut primary_windows: Query<(&mut Window, &mut CursorOptions), With<PrimaryWindow>>,
+) {
+    for (mut window, mut cursor_options) in &mut primary_windows {
+        set_cursor_free(&mut window, &mut cursor_options);
     }
 }
 
 fn enter_gameplay_cursor(
-    mut primary_windows: Query<(&Window, &mut CursorOptions), With<PrimaryWindow>>,
+    mut primary_windows: Query<(&mut Window, &mut CursorOptions), With<PrimaryWindow>>,
     mut next_mouse_state: ResMut<NextState<MouseState>>,
 ) {
     if let Ok((window, mut cursor_options)) = primary_windows.single_mut()
@@ -111,26 +126,26 @@ fn enter_gameplay_cursor(
         return;
     }
 
-    for (_, mut cursor_options) in &mut primary_windows {
-        set_cursor_free(&mut cursor_options);
+    for (mut window, mut cursor_options) in &mut primary_windows {
+        set_cursor_free(&mut window, &mut cursor_options);
     }
     next_mouse_state.set(MouseState::Free);
 }
 
 fn leave_gameplay_cursor(
-    mut primary_windows: Query<&mut CursorOptions, With<PrimaryWindow>>,
+    mut primary_windows: Query<(&mut Window, &mut CursorOptions), With<PrimaryWindow>>,
     mut next_mouse_state: ResMut<NextState<MouseState>>,
 ) {
     // Releasing directly here avoids waiting an extra state-transition frame
     // before the OS cursor becomes usable by the pause menu.
-    for mut cursor_options in &mut primary_windows {
-        set_cursor_free(&mut cursor_options);
+    for (mut window, mut cursor_options) in &mut primary_windows {
+        set_cursor_free(&mut window, &mut cursor_options);
     }
     next_mouse_state.set(MouseState::Free);
 }
 
 fn release_unfocused_cursor(
-    mut primary_windows: Query<(&Window, &mut CursorOptions), With<PrimaryWindow>>,
+    mut primary_windows: Query<(&mut Window, &mut CursorOptions), With<PrimaryWindow>>,
     mouse_state: Res<State<MouseState>>,
     mut next_mouse_state: ResMut<NextState<MouseState>>,
 ) {
@@ -148,8 +163,8 @@ fn release_unfocused_cursor(
         return;
     }
 
-    for (_, mut cursor_options) in &mut primary_windows {
-        set_cursor_free(&mut cursor_options);
+    for (mut window, mut cursor_options) in &mut primary_windows {
+        set_cursor_free(&mut window, &mut cursor_options);
     }
     next_mouse_state.set(MouseState::Free);
 }
@@ -208,5 +223,80 @@ mod tests {
                 .iter(app.world())
                 .all(|cursor| cursor.grab_mode == CursorGrabMode::None && cursor.visible)
         );
+    }
+
+    #[test]
+    fn releasing_a_focused_window_centers_the_cursor() {
+        let mut app = App::new();
+        app.add_systems(Update, apply_free_cursor);
+
+        let window_entity = app
+            .world_mut()
+            .spawn((
+                Window::default(),
+                CursorOptions {
+                    grab_mode: CursorGrabMode::Locked,
+                    visible: false,
+                    ..default()
+                },
+                PrimaryWindow,
+            ))
+            .id();
+
+        app.update();
+
+        let window = app.world().get::<Window>(window_entity).unwrap();
+        assert_eq!(window.cursor_position(), Some(window.size() / 2.0));
+        let cursor = app.world().get::<CursorOptions>(window_entity).unwrap();
+        assert_eq!(cursor.grab_mode, CursorGrabMode::None);
+        assert!(cursor.visible);
+    }
+
+    #[test]
+    fn releasing_a_free_window_does_not_move_the_cursor() {
+        let mut app = App::new();
+        app.add_systems(Update, apply_free_cursor);
+
+        let window_entity = app
+            .world_mut()
+            .spawn((Window::default(), CursorOptions::default(), PrimaryWindow))
+            .id();
+
+        app.update();
+
+        let window = app.world().get::<Window>(window_entity).unwrap();
+        assert!(window.physical_cursor_position().is_none());
+    }
+
+    #[test]
+    fn releasing_an_unfocused_window_leaves_the_cursor_alone() {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, StatesPlugin))
+            .init_state::<MouseState>()
+            .add_systems(Update, release_unfocused_cursor);
+
+        let window_entity = app
+            .world_mut()
+            .spawn((
+                Window {
+                    focused: false,
+                    ..default()
+                },
+                CursorOptions {
+                    grab_mode: CursorGrabMode::Locked,
+                    visible: false,
+                    ..default()
+                },
+                PrimaryWindow,
+            ))
+            .id();
+
+        app.update();
+
+        let window = app.world().get::<Window>(window_entity).unwrap();
+        assert!(window.physical_cursor_position().is_none());
+        let cursor = app.world().get::<CursorOptions>(window_entity).unwrap();
+        assert_eq!(cursor.grab_mode, CursorGrabMode::None);
+        assert!(cursor.visible);
     }
 }
