@@ -76,6 +76,9 @@ player-like entities.
 **Stage 0 - now (single player)**
 - Route world mutations through a `Command`/`Intent` enum and validated events;
   derive `serde` on them (`serde` and `bincode` are already dependencies).
+- Dimension scoping and multi-dimension simulation wait until this intent
+  pipeline is done and capped off; dimension transfers must be intents. See
+  `dimension_switching_plan.md` (Simulation Scoping And Dead Ends).
 - Keep simulation in `FixedUpdate` at 20 Hz; presentation in `Update`.
 - Split plugins into `ClientPlugin` / `ServerPlugin` groups. The sim must build
   without rendering.

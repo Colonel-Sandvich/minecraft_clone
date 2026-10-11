@@ -133,6 +133,38 @@ Avoid these limiting shortcuts:
 - destroying dirty authoritative data before persistence owns a retryable
   snapshot.
 
+## Simulation Scoping And Dead Ends
+
+Dimensions stay a partition inside one ECS world. Per-dimension gravity is
+configuration in `DimensionDefinition` applied at switch time; dimensions that
+are resident together are isolated with dimension-filtered queries and
+collision layers, not separate simulations.
+
+Recorded dead ends, so they are not re-litigated without new information:
+
+- **Avian multiple physics worlds.** Not supported in 0.7 (verified against
+  the crate). Upstream issue #935 is designed-but-not-built and not on the
+  0.8 roadmap; the archetype-partition design is blocked on Bevy indexed
+  queries (PR #17608, still open and conflicted; not in 0.20). Do not fork.
+- **One `SubApp` per dimension.** Subapps update sequentially on one thread,
+  so there is no free parallelism; presentation, UI, and assets only exist in
+  the main world; plugins in subapps are an acknowledged workaround; moving
+  entities between worlds is despawn, copy, and manual reference remapping.
+  Portal transfers would inherit frame-ordering and crash-consistency hazards.
+- **One `App` per dimension.** Only if a dimension later needs independent
+  rules or scheduling, and then as a server-side concern. Entity transfer
+  should reuse the networking serialization path, not raw ECS moves.
+
+Sequencing: multi-dimension simulation and dimension-scoped entities are
+architected only after the intent -> validate -> event pipeline is done and
+capped off. Dimension transfers must travel as intents so portals behave the
+same in one world and across any future shard boundary, and server-side
+simulation needs that plumbing anyway.
+
+Watch items: avian #935 and Bevy #17608 from above, plus dimension-tagging
+mobs and dropped items (they are not dimension-tagged today and are not
+despawned on switch).
+
 ## Deferred Extensions
 
 - Keep inactive dimensions warm by changing residency policy, without changing
