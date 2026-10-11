@@ -1,2 +1,4 @@
 [toolchain]
+# Rolling nightly. Known-good fallback: nightly-2026-06-06 (1.98.0-nightly,
+# 61d7280f3) — pin that date here if a newer nightly breaks the build.
 channel = "nightly"
