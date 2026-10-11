@@ -1,22 +1,15 @@
 use std::collections::HashMap;
 
 use bevy::{
-    asset::RenderAssetUsages,
-    input::mouse::MouseWheel,
-    prelude::*,
-    render::render_resource::*,
-    window::{CursorOptions, PrimaryWindow},
+    asset::RenderAssetUsages, input::mouse::MouseWheel, prelude::*, render::render_resource::*,
 };
 use image::{Rgba, RgbaImage, imageops::FilterType};
 
 use crate::quad::Direction;
 use crate::{
-    game_state::GameState,
+    game_state::{InputMode, InputRouting, gameplay_input_active},
     item::{HOTBAR_SLOTS, Inventory, Item},
-    player::{
-        Player,
-        cam::{MouseState, gameplay_input_is_active},
-    },
+    player::Player,
 };
 
 pub struct HotbarPlugin;
@@ -33,10 +26,7 @@ impl Plugin for HotbarPlugin {
                     update_hotbar_ui,
                 ),
             )
-            .add_systems(
-                PreUpdate,
-                handle_hotbar_input.after(bevy::input::InputSystems),
-            );
+            .add_systems(PreUpdate, handle_hotbar_input.after(InputRouting::Derive));
     }
 }
 
@@ -385,23 +375,9 @@ fn handle_hotbar_input(
     mut hotbar: ResMut<Hotbar>,
     keyboard: Res<ButtonInput<KeyCode>>,
     mut mouse_wheel: MessageReader<MouseWheel>,
-    game_state: Res<State<GameState>>,
-    mouse_state: Res<State<MouseState>>,
-    primary_windows: Query<(&Window, &CursorOptions), With<PrimaryWindow>>,
+    input_mode: Option<Res<InputMode>>,
 ) {
-    let input_active = primary_windows
-        .single()
-        .is_ok_and(|(window, cursor_options)| {
-            gameplay_input_is_active(
-                *game_state.get(),
-                *mouse_state.get(),
-                window.focused,
-                cursor_options.grab_mode,
-                keyboard.just_pressed(KeyCode::Escape),
-            )
-        });
-
-    if !input_active {
+    if !gameplay_input_active(input_mode) {
         // Advance the reader so scroll input generated over the pause menu
         // cannot select a different slot immediately after resuming.
         mouse_wheel.read().for_each(drop);

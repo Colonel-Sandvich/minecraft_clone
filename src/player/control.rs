@@ -1,14 +1,11 @@
 use crate::{
+    game_state::{InputRouting, gameplay_input_active},
     input::DoubleTap,
     mob::controller::{FlyController, Flying, Velocity},
     world::dimension::{Active, Dimension, ViewDistance},
 };
 
-use super::{
-    GameMode, Player, PlayerDimension,
-    cam::{MouseCam, gameplay_input_active},
-    spawn::make_player_collider,
-};
+use super::{GameMode, Player, PlayerDimension, cam::MouseCam, spawn::make_player_collider};
 use avian3d::prelude::*;
 use bevy::prelude::*;
 use bevy_settings::SaveSettingsDeferred;
@@ -28,7 +25,7 @@ impl Plugin for ControlPlayerPlugin {
                 adjust_view_distance,
             )
                 .run_if(gameplay_input_active)
-                .after(bevy::input::InputSystems),
+                .after(InputRouting::Derive),
         );
     }
 }

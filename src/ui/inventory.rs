@@ -1,14 +1,13 @@
 use std::collections::VecDeque;
 
 use bevy::{
-    input::InputSystems,
     prelude::*,
     ui::{FocusPolicy, RelativeCursorPosition, UiSystems},
     window::PrimaryWindow,
 };
 
 use crate::{
-    game_state::GameState,
+    game_state::{GameState, InputRouting},
     item::{DropItemRequest, HOTBAR_SLOTS, Inventory, Item, ItemStack},
     player::{
         Player,
@@ -32,8 +31,9 @@ impl Plugin for InventoryUiPlugin {
                 PreUpdate,
                 (toggle_inventory_ui, handle_inventory_ui_input)
                     .chain()
-                    .after(InputSystems)
-                    .after(UiSystems::Focus),
+                    .after(UiSystems::Focus)
+                    .after(InputRouting::Route)
+                    .before(InputRouting::Derive),
             )
             .add_systems(
                 FixedPreUpdate,
@@ -49,15 +49,14 @@ impl Plugin for InventoryUiPlugin {
                     update_drag_preview,
                 ),
             )
-            .add_systems(OnExit(GameState::Playing), close_inventory_on_game_exit)
-            .add_systems(PostUpdate, clear_pause_suppression);
+            .add_systems(OnExit(GameState::Playing), close_inventory_on_game_exit);
     }
 }
 
 #[derive(Resource, Default)]
 pub(crate) struct InventoryUi {
     open: bool,
-    suppress_pause: bool,
+    close_requested: bool,
     cursor_stack: Option<ItemStack>,
     drag: Option<StackDrag>,
     last_left_click: Option<(Item, f64)>,
@@ -65,8 +64,18 @@ pub(crate) struct InventoryUi {
 }
 
 impl InventoryUi {
-    pub(crate) fn blocks_pause_request(&self) -> bool {
-        self.open || self.suppress_pause
+    pub(crate) fn is_open(&self) -> bool {
+        self.open
+    }
+
+    /// Asks the next inventory update to close, keeping teardown on the
+    /// inventory side while the back router stays ignorant of item state.
+    pub(crate) fn request_close(&mut self) {
+        self.close_requested = true;
+    }
+
+    fn take_close_request(&mut self) -> bool {
+        std::mem::take(&mut self.close_requested)
     }
 }
 
@@ -346,18 +355,21 @@ fn toggle_inventory_ui(
     mut ui: ResMut<InventoryUi>,
     inventory: Single<&mut Inventory, With<Player>>,
 ) {
-    if ui.open
-        && (keyboard.just_pressed(bindings.open_inventory)
-            || keyboard.just_pressed(KeyCode::Escape))
-    {
-        ui.suppress_pause = keyboard.just_pressed(KeyCode::Escape);
+    if ui.take_close_request() {
         let mut inventory = inventory.into_inner();
         close_inventory(&mut ui, &mut inventory);
         next_mouse_state.set(MouseState::Grabbed);
-    } else if !ui.open
-        && *game_state.get() == GameState::Playing
-        && keyboard.just_pressed(bindings.open_inventory)
-    {
+        return;
+    }
+
+    if !keyboard.just_pressed(bindings.open_inventory) {
+        return;
+    }
+    if ui.open {
+        let mut inventory = inventory.into_inner();
+        close_inventory(&mut ui, &mut inventory);
+        next_mouse_state.set(MouseState::Grabbed);
+    } else if *game_state.get() == GameState::Playing {
         ui.open = true;
         next_mouse_state.set(MouseState::Free);
     }
@@ -740,11 +752,6 @@ fn close_inventory_on_game_exit(
 ) {
     let mut inventory = inventory.into_inner();
     close_inventory(&mut ui, &mut inventory);
-    ui.suppress_pause = false;
-}
-
-fn clear_pause_suppression(mut ui: ResMut<InventoryUi>) {
-    ui.suppress_pause = false;
 }
 
 type GameplayHudVisibility<'w, 's> = Query<
@@ -1040,35 +1047,46 @@ mod tests {
             .init_resource::<InventoryUi>()
             .init_resource::<KeyBindings>()
             .insert_resource(ButtonInput::<KeyCode>::default())
-            .add_systems(PreUpdate, toggle_inventory_ui);
+            .add_systems(PreUpdate, crate::game_state::route_back_input)
+            .add_systems(
+                PreUpdate,
+                toggle_inventory_ui.after(crate::game_state::route_back_input),
+            );
         let player = app.world_mut().spawn(Player::default()).id();
 
         let inventory_key = app.world().resource::<KeyBindings>().open_inventory;
-        app.world_mut()
-            .resource_mut::<ButtonInput<KeyCode>>()
-            .press(inventory_key);
+        press_key(&mut app, inventory_key);
         app.world_mut().run_schedule(PreUpdate);
-        assert!(app.world().resource::<InventoryUi>().open);
+        assert!(app.world().resource::<InventoryUi>().is_open());
 
         {
             let mut ui = app.world_mut().resource_mut::<InventoryUi>();
             ui.cursor_stack = Some(ItemStack::one(Item::Dirt));
         }
-        {
-            let mut keyboard = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
-            keyboard.reset_all();
-            keyboard.press(KeyCode::Escape);
-        }
+        press_key(&mut app, KeyCode::Escape);
         app.world_mut().run_schedule(PreUpdate);
 
         let ui = app.world().resource::<InventoryUi>();
-        assert!(!ui.open);
+        assert!(!ui.is_open());
+        assert!(!ui.close_requested, "the back request must be consumed");
         assert!(ui.cursor_stack.is_none());
-        assert!(ui.blocks_pause_request());
+        assert!(
+            matches!(
+                *app.world().resource::<NextState<GameState>>(),
+                NextState::Unchanged
+            ),
+            "closing the inventory must not also pause the game"
+        );
         assert_eq!(
             app.world().get::<Inventory>(player).unwrap().slot(9),
             Some(ItemStack::one(Item::Dirt))
         );
+    }
+
+    fn press_key(app: &mut App, key: KeyCode) {
+        let mut keyboard = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+        keyboard.reset_all();
+        keyboard.press(key);
     }
 
     #[test]

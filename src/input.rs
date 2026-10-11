@@ -1,13 +1,13 @@
 use std::collections::VecDeque;
 
-use bevy::{input::InputSystems, prelude::*};
+use bevy::prelude::*;
 
 use crate::{
-    game_state::GameState,
+    game_state::{GameState, InputRouting, gameplay_input_active},
     item::{DropItemRequest, Inventory},
     player::{
         Player,
-        cam::{MouseCam, MouseState, gameplay_input_active},
+        cam::{MouseCam, MouseState},
         control::KeyBindings,
     },
     ui::Hotbar,
@@ -23,7 +23,7 @@ impl Plugin for GameInputPlugin {
             .add_message::<DropItemRequest>()
             .configure_sets(
                 PreUpdate,
-                InputCollectionSystems::Collect.after(InputSystems),
+                InputCollectionSystems::Collect.after(InputRouting::Derive),
             )
             .configure_sets(FixedUpdate, GameActionSystems)
             .add_systems(

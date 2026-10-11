@@ -1,12 +1,11 @@
 use avian3d::prelude::{Collider, Position};
-use bevy::{input::InputSystems, prelude::*};
+use bevy::prelude::*;
 
 use crate::{
-    game_state::GameState,
+    game_state::{GameState, InputRouting, gameplay_input_active},
     mob::controller::{CharacterController, Grounded, Velocity},
     player::{
         Player, PlayerDimension,
-        cam::gameplay_input_active,
         control::KeyBindings,
         interaction::{BlockInteractionRequest, BlockInteractionSystems, CurrentBlockTarget},
     },
@@ -25,7 +24,7 @@ pub(super) fn install(app: &mut App) {
     app.add_systems(
         PreUpdate,
         begin_dimension_switch
-            .after(InputSystems)
+            .after(InputRouting::Derive)
             .run_if(in_state(GameState::Playing))
             .run_if(gameplay_input_active),
     )

@@ -1,6 +1,10 @@
 use std::time::Duration;
 
-use bevy::{input::InputSystems, prelude::*, window::PrimaryWindow};
+use bevy::{
+    input::InputSystems,
+    prelude::*,
+    window::{CursorGrabMode, CursorOptions, PrimaryWindow},
+};
 
 use crate::ui::InventoryUi;
 
@@ -9,7 +13,16 @@ pub struct GameStatePlugin;
 impl Plugin for GameStatePlugin {
     fn build(&self, app: &mut App) {
         app.init_state::<GameState>()
-            .add_systems(PreUpdate, request_pause_state.after(InputSystems))
+            .init_resource::<InputMode>()
+            .configure_sets(
+                PreUpdate,
+                (
+                    InputRouting::Route.after(InputSystems),
+                    InputRouting::Derive.after(InputRouting::Route),
+                ),
+            )
+            .add_systems(PreUpdate, route_back_input.in_set(InputRouting::Route))
+            .add_systems(PreUpdate, update_input_mode.in_set(InputRouting::Derive))
             .add_systems(
                 OnEnter(GameState::Paused),
                 (pause_virtual_time, reset_gameplay_inputs),
@@ -41,10 +54,108 @@ pub enum GameState {
 #[derive(Debug, SystemSet, Hash, PartialEq, Eq, Clone, Copy)]
 pub struct Playing;
 
-fn request_pause_state(
+/// PreUpdate ordering for frame input ownership.
+///
+/// [`InputRouting::Route`] owns the back button and settles which screen
+/// consumes it. Screens that process routing intents run between the two sets.
+/// [`InputRouting::Derive`] then freezes this frame's [`InputMode`], and every
+/// gameplay input system runs after it.
+#[derive(Debug, SystemSet, Hash, PartialEq, Eq, Clone, Copy)]
+pub enum InputRouting {
+    /// Runs the back button through its priority chain exactly once per frame.
+    Route,
+    /// Derives [`InputMode`] after screens have settled their intent.
+    Derive,
+}
+
+/// Who owns device input for the current frame.
+///
+/// [`update_input_mode`] derives this once per frame, after back-input routing
+/// has settled, so gameplay systems make one shared decision instead of each
+/// re-checking state, focus, and cursor capture. Gameplay systems must run
+/// after [`InputRouting::Derive`] to see the current frame's mode.
+#[derive(Resource, Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum InputMode {
+    /// Gameplay owns the cursor and may read device input.
+    Gameplay,
+    /// A screen (inventory, menu) owns the cursor, or the game is not running.
+    #[default]
+    Ui,
+    /// The pause transition is pending or the game is already paused.
+    Paused,
+}
+
+impl InputMode {
+    pub(crate) fn is_gameplay(self) -> bool {
+        self == Self::Gameplay
+    }
+}
+
+/// Gate for every gameplay input system.
+///
+/// Systems using this condition must be ordered after [`InputRouting::Derive`].
+pub(crate) fn gameplay_input_active(input_mode: Option<Res<InputMode>>) -> bool {
+    input_mode.is_some_and(|mode| mode.is_gameplay())
+}
+
+fn update_input_mode(
+    game_state: Res<State<GameState>>,
+    next_game_state: Res<NextState<GameState>>,
+    inventory_ui: Option<Res<InventoryUi>>,
+    primary_windows: Query<(&Window, &CursorOptions), With<PrimaryWindow>>,
+    mut input_mode: ResMut<InputMode>,
+) {
+    let (window_focused, cursor_captured) =
+        primary_windows
+            .single()
+            .map_or((false, false), |(window, cursor_options)| {
+                (
+                    window.focused,
+                    cursor_options.grab_mode != CursorGrabMode::None,
+                )
+            });
+
+    *input_mode = classify_input_mode(
+        *game_state.get(),
+        pause_is_pending(&next_game_state),
+        inventory_ui.is_some_and(|ui| ui.is_open()),
+        window_focused,
+        cursor_captured,
+    );
+}
+
+fn pause_is_pending(next_game_state: &NextState<GameState>) -> bool {
+    matches!(
+        next_game_state,
+        NextState::Pending(GameState::Paused) | NextState::PendingIfNeq(GameState::Paused)
+    )
+}
+
+fn classify_input_mode(
+    game_state: GameState,
+    pause_pending: bool,
+    screen_open: bool,
+    window_focused: bool,
+    cursor_captured: bool,
+) -> InputMode {
+    if pause_pending || game_state == GameState::Paused {
+        InputMode::Paused
+    } else if game_state != GameState::Playing || screen_open || !window_focused || !cursor_captured
+    {
+        InputMode::Ui
+    } else {
+        InputMode::Gameplay
+    }
+}
+
+/// The single owner of the back button (Escape).
+///
+/// Screens take priority: a press closes the open screen instead of toggling
+/// pause, so one press can never both close a screen and pause the game.
+pub(crate) fn route_back_input(
     keys: Option<Res<ButtonInput<KeyCode>>>,
     game_state: Res<State<GameState>>,
-    inventory_ui: Option<Res<InventoryUi>>,
+    mut inventory_ui: Option<ResMut<InventoryUi>>,
     primary_windows: Query<&Window, With<PrimaryWindow>>,
     mut next_game_state: ResMut<NextState<GameState>>,
     mut previous_focus: Local<Option<bool>>,
@@ -63,7 +174,11 @@ fn request_pause_state(
     if !keys.is_some_and(|keys| keys.just_pressed(KeyCode::Escape)) || focus_just_regained {
         return;
     }
-    if inventory_ui.is_some_and(|ui| ui.blocks_pause_request()) {
+
+    if let Some(ui) = inventory_ui.as_mut()
+        && ui.is_open()
+    {
+        ui.request_close();
         return;
     }
 
@@ -250,6 +365,40 @@ mod tests {
                 .get_pressed()
                 .next()
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn input_mode_requires_playing_focused_and_actually_captured() {
+        assert_eq!(
+            classify_input_mode(GameState::Playing, false, false, true, true),
+            InputMode::Gameplay
+        );
+
+        for (game_state, pause_pending, screen_open, focused, captured) in [
+            (GameState::Paused, false, false, true, true),
+            (GameState::Playing, true, false, true, true),
+            (GameState::Playing, false, true, true, true),
+            (GameState::Playing, false, false, false, true),
+            (GameState::Playing, false, false, true, false),
+            (GameState::GenWorld, false, false, true, true),
+            (GameState::MainMenu, false, false, true, true),
+        ] {
+            let mode =
+                classify_input_mode(game_state, pause_pending, screen_open, focused, captured);
+            assert!(
+                !mode.is_gameplay(),
+                "{mode:?} must not let {game_state:?} read gameplay input"
+            );
+        }
+
+        assert_eq!(
+            classify_input_mode(GameState::Playing, true, false, true, true),
+            InputMode::Paused
+        );
+        assert_eq!(
+            classify_input_mode(GameState::Playing, false, false, false, true),
+            InputMode::Ui
         );
     }
 

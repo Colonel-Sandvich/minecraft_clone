@@ -5,7 +5,7 @@ use bevy::prelude::*;
 use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
 use bevy_settings::{ReflectSettingsGroup, SettingsGroup};
 
-use crate::game_state::GameState;
+use crate::game_state::{GameState, InputRouting, gameplay_input_active};
 
 pub struct PlayerCamPlugin;
 
@@ -16,7 +16,7 @@ impl Plugin for PlayerCamPlugin {
                 PreUpdate,
                 player_look
                     .in_set(PlayerCameraSystems::Look)
-                    .after(InputSystems)
+                    .after(InputRouting::Derive)
                     .run_if(gameplay_input_active),
             )
             .add_systems(OnEnter(MouseState::Grabbed), apply_grabbed_cursor)
@@ -60,43 +60,6 @@ pub enum MouseState {
     #[default]
     Free,
     Grabbed,
-}
-
-pub(crate) fn gameplay_input_active(
-    game_state: Option<Res<State<GameState>>>,
-    mouse_state: Option<Res<State<MouseState>>>,
-    keyboard: Option<Res<ButtonInput<KeyCode>>>,
-    primary_windows: Query<(&Window, &CursorOptions), With<PrimaryWindow>>,
-) -> bool {
-    let (Some(game_state), Some(mouse_state), Some(keyboard)) = (game_state, mouse_state, keyboard)
-    else {
-        return false;
-    };
-    let Ok((window, cursor_options)) = primary_windows.single() else {
-        return false;
-    };
-
-    gameplay_input_is_active(
-        *game_state.get(),
-        *mouse_state.get(),
-        window.focused,
-        cursor_options.grab_mode,
-        keyboard.just_pressed(KeyCode::Escape),
-    )
-}
-
-pub(crate) fn gameplay_input_is_active(
-    game_state: GameState,
-    mouse_state: MouseState,
-    window_focused: bool,
-    cursor_grab_mode: CursorGrabMode,
-    pause_requested: bool,
-) -> bool {
-    game_state == GameState::Playing
-        && mouse_state == MouseState::Grabbed
-        && window_focused
-        && cursor_grab_mode != CursorGrabMode::None
-        && !pause_requested
 }
 
 fn set_cursor_grabbed(cursor_options: &mut CursorOptions) {
@@ -217,63 +180,6 @@ fn player_look(
 mod tests {
     use super::*;
     use bevy::state::app::StatesPlugin;
-
-    #[test]
-    fn gameplay_input_requires_playing_focused_and_actually_grabbed() {
-        assert!(gameplay_input_is_active(
-            GameState::Playing,
-            MouseState::Grabbed,
-            true,
-            CursorGrabMode::Locked,
-            false,
-        ));
-
-        for (game_state, mouse_state, focused, grab_mode, pause_requested) in [
-            (
-                GameState::Paused,
-                MouseState::Grabbed,
-                true,
-                CursorGrabMode::Locked,
-                false,
-            ),
-            (
-                GameState::Playing,
-                MouseState::Free,
-                true,
-                CursorGrabMode::Locked,
-                false,
-            ),
-            (
-                GameState::Playing,
-                MouseState::Grabbed,
-                false,
-                CursorGrabMode::Locked,
-                false,
-            ),
-            (
-                GameState::Playing,
-                MouseState::Grabbed,
-                true,
-                CursorGrabMode::None,
-                false,
-            ),
-            (
-                GameState::Playing,
-                MouseState::Grabbed,
-                true,
-                CursorGrabMode::Locked,
-                true,
-            ),
-        ] {
-            assert!(!gameplay_input_is_active(
-                game_state,
-                mouse_state,
-                focused,
-                grab_mode,
-                pause_requested,
-            ));
-        }
-    }
 
     #[test]
     fn multiple_primary_windows_are_forcibly_released() {

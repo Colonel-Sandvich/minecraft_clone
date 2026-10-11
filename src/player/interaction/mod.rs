@@ -2,10 +2,10 @@ use avian3d::{
     prelude::Collider,
     spatial_query::{SpatialQuery, SpatialQueryFilter},
 };
-use bevy::{color::palettes::basic, input::InputSystems, prelude::*};
+use bevy::{color::palettes::basic, prelude::*};
 
 use crate::{
-    game_state::GameState,
+    game_state::{GameState, InputRouting, gameplay_input_active},
     item::{Inventory, ItemStack},
     ui::Hotbar,
     world::{
@@ -20,7 +20,7 @@ use crate::{
 
 use super::{
     GameMode, Player,
-    cam::{MouseCam, MouseState, PlayerCameraSystems, gameplay_input_active},
+    cam::{MouseCam, MouseState, PlayerCameraSystems},
 };
 
 pub struct BlockInteractionPlugin;
@@ -34,7 +34,7 @@ impl Plugin for BlockInteractionPlugin {
                 PreUpdate,
                 update_block_target
                     .run_if(gameplay_input_active)
-                    .after(InputSystems)
+                    .after(InputRouting::Derive)
                     .after(PlayerCameraSystems::Look),
             )
             .add_systems(OnEnter(GameState::Paused), clear_block_interaction_state)
