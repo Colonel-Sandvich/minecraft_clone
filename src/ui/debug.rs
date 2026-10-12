@@ -9,8 +9,10 @@ use crate::{
     memory::GameMemorySnapshot,
     player::Player,
     player::cam::MouseCam,
+    player::interaction::{BlockTarget, CurrentBlockTarget},
     world::chunk::{
-        CHUNK_ISIZE, ChunkBlockPos, ChunkLight, ChunkPos, ChunkPosition, WorldBlockPos,
+        CHUNK_ISIZE, Chunk, ChunkBlockPos, ChunkCell, ChunkLight, ChunkPos, ChunkPosition,
+        FluidProfile, FluidState, WorldBlockPos,
     },
     world::dimension::{Active, Dimension, ViewDistance},
 };
@@ -94,6 +96,7 @@ fn toggle_debug(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn update_debug_text(
     visible: Res<DebugVisible>,
     diagnostics: Res<DiagnosticsStore>,
@@ -102,7 +105,9 @@ fn update_debug_text(
     view_distance: Res<ViewDistance>,
     memory: Option<Res<GameMemorySnapshot>>,
     active_dimension: Option<Single<&Dimension, With<Active>>>,
+    block_target: Res<CurrentBlockTarget>,
     chunk_lights: Query<&ChunkLight>,
+    chunks: Query<&Chunk>,
     mut text: Single<&mut Text, With<DebugOverlay>>,
 ) {
     if !visible.0 {
@@ -133,6 +138,16 @@ fn update_debug_text(
     let current_sky = current_light >> 4;
     let current_block = current_light & 0x0F;
 
+    let target = block_target.0;
+    let target_cell = target.and_then(|target| {
+        active_dimension.as_ref().and_then(|dimension| {
+            cell_at(dimension, target.hit_block, |entity| {
+                chunks.get(entity).ok()
+            })
+        })
+    });
+    let target_lines = target_report(target, target_cell);
+
     let facing = facing_dir(cam_transform);
     let (loaded, published) = active_dimension.as_ref().map_or((0, 0), |dimension| {
         (
@@ -153,6 +168,7 @@ fn update_debug_text(
          Block: {bx} {by} {bz}\n\
          Light: {ft_sky} sky  {ft_block} block\n\
          Chunk: {cx} {cy} {cz}\n\
+         {target_lines}\n\
          \n\
          Facing: {facing}\n\
          Chunks loaded: {loaded}  published: {published}\n\
@@ -168,6 +184,7 @@ fn update_debug_text(
         cz = chunk.z,
         ft_sky = current_sky,
         ft_block = current_block,
+        target_lines = target_lines,
         facing = facing,
         loaded = loaded,
         vd = view_distance.chunks(),
@@ -192,6 +209,64 @@ fn facing_dir(cam: &Transform) -> String {
     };
 
     format!("{dir} ({norm:.1})")
+}
+
+/// The crosshair "looking at" section: the block the interaction raycast
+/// points at, plus the fluid state when that cell holds fluid.
+fn target_report(target: Option<BlockTarget>, cell: Option<ChunkCell>) -> String {
+    let Some(target) = target else {
+        return "Block: none".to_owned();
+    };
+
+    let block_line = block_target_line(target, cell);
+    match cell.and_then(ChunkCell::as_fluid) {
+        Some(fluid) => format!(
+            "{block_line}\n{}",
+            fluid_target_line(target.hit_block, fluid)
+        ),
+        None => block_line,
+    }
+}
+
+fn block_target_line(target: BlockTarget, cell: Option<ChunkCell>) -> String {
+    let world = target.hit_block.world().as_ivec3();
+    let chunk = target.hit_block.chunk().as_ivec3();
+    let local = target.hit_block.local().as_uvec3();
+    let name = cell.map_or_else(|| "unloaded".to_owned(), ChunkCell::name);
+
+    format!(
+        "Block: {name} @ ({wx}, {wy}, {wz}) chunk ({cx}, {cy}, {cz}) local ({lx}, {ly}, {lz})",
+        wx = world.x,
+        wy = world.y,
+        wz = world.z,
+        cx = chunk.x,
+        cy = chunk.y,
+        cz = chunk.z,
+        lx = local.x,
+        ly = local.y,
+        lz = local.z,
+    )
+}
+
+fn fluid_target_line(position: ChunkBlockPos, fluid: FluidState) -> String {
+    let world = position.world().as_ivec3();
+
+    format!(
+        "Fluid: {ty} level={level} {form} falling={falling} @ ({x}, {y}, {z})",
+        ty = fluid.ty(),
+        level = fluid.level(),
+        form = fluid.form(),
+        falling = fluid_is_falling(fluid),
+        x = world.x,
+        y = world.y,
+        z = world.z,
+    )
+}
+
+/// Falling fluid is stored as a full-level flow; the simulation marks any
+/// cell under the same fluid that way.
+fn fluid_is_falling(fluid: FluidState) -> bool {
+    fluid == FluidProfile::default_for_type(fluid.ty()).falling()
 }
 
 fn toggle_chunk_borders(
@@ -382,10 +457,69 @@ fn packed_light_at<'a>(
     light_for_entity(entity).map(|light| light.packed_light(address.local()))
 }
 
+fn cell_at<'a>(
+    dimension: &Dimension,
+    position: ChunkBlockPos,
+    chunk_for_entity: impl FnOnce(Entity) -> Option<&'a Chunk>,
+) -> Option<ChunkCell> {
+    let entity = dimension.published_chunk_entity(position.chunk())?;
+    chunk_for_entity(entity).map(|chunk| chunk.cell(position.local()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::world::chunk::LocalBlockPos;
+    use crate::{item::Item, world::chunk::LocalBlockPos};
+
+    fn sample_target() -> BlockTarget {
+        BlockTarget {
+            hit_block: ChunkBlockPos::new(ChunkPos::new(258, 1, 258), LocalBlockPos::new(5, 13, 5)),
+            adjacent_block: ChunkBlockPos::new(
+                ChunkPos::new(258, 1, 258),
+                LocalBlockPos::new(5, 14, 5),
+            ),
+        }
+    }
+
+    #[test]
+    fn target_report_is_compact_without_a_target() {
+        assert_eq!(target_report(None, None), "Block: none");
+    }
+
+    #[test]
+    fn target_report_names_the_block_and_every_coordinate_space() {
+        let report = target_report(Some(sample_target()), Some(ChunkCell::block(Item::Stone)));
+
+        assert_eq!(
+            report,
+            "Block: stone @ (4133, 29, 4133) chunk (258, 1, 258) local (5, 13, 5)"
+        );
+    }
+
+    #[test]
+    fn target_report_adds_a_fluid_line_for_fluid_cells() {
+        let target = sample_target();
+
+        assert_eq!(
+            target_report(Some(target), Some(ChunkCell::water_source())),
+            "Block: water_source_8 @ (4133, 29, 4133) chunk (258, 1, 258) local (5, 13, 5)\n\
+             Fluid: water level=8 source falling=false @ (4133, 29, 4133)"
+        );
+    }
+
+    #[test]
+    fn fluid_target_line_reports_flow_levels_and_falling() {
+        let position = sample_target().hit_block;
+
+        assert_eq!(
+            fluid_target_line(position, FluidState::water_flow(5)),
+            "Fluid: water level=5 flow falling=false @ (4133, 29, 4133)"
+        );
+        assert_eq!(
+            fluid_target_line(position, FluidProfile::WATER.falling()),
+            "Fluid: water level=8 flow falling=true @ (4133, 29, 4133)"
+        );
+    }
 
     #[test]
     fn debug_light_lookup_uses_the_selected_dimension_registry() {
