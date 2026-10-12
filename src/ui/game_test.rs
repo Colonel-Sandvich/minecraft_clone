@@ -118,7 +118,7 @@ fn update_game_test_overlay(
 
     if let Ok(mut header) = header_q.single_mut() {
         header.0 = format!(
-            "water tests: {} pass / {} fail\nF8 run all   F9 teleport to failure   F7 hide",
+            "water tests: {} pass / {} fail\nF8 run + fly to field   F9 next test   F7 hide",
             suite.passed(),
             suite.failed(),
         );
@@ -128,7 +128,16 @@ fn update_game_test_overlay(
         let Some(entry) = suite.entries.get(row.0) else {
             continue;
         };
-        text.0 = format!("{:>7}  {}", entry.status.label(), entry.scenario.name);
+        let marker = if suite.viewing() == Some(row.0) {
+            '>'
+        } else {
+            ' '
+        };
+        text.0 = format!(
+            "{marker} {:>7}  {}",
+            entry.status.label(),
+            entry.scenario.name
+        );
         color.0 = status_color(entry.status);
     }
 

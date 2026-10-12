@@ -18,7 +18,7 @@ use avian3d::prelude::Position;
 use bevy::prelude::*;
 
 use crate::{
-    mob::controller::Velocity,
+    mob::controller::{Flying, Velocity},
     player::{Player, PlayerDimension, cam::MouseCam},
     world::{
         chunk::{
@@ -99,6 +99,8 @@ pub(crate) struct WaterTestSuite {
     request_run: bool,
     request_teleport: bool,
     clear_field_defer: u32,
+    /// The entry the player is currently parked above, shown in the overlay.
+    viewing: Option<usize>,
 }
 
 impl WaterTestSuite {
@@ -119,6 +121,7 @@ impl WaterTestSuite {
             request_run: false,
             request_teleport: false,
             clear_field_defer: 0,
+            viewing: None,
         }
     }
 
@@ -134,6 +137,12 @@ impl WaterTestSuite {
             .iter()
             .filter(|entry| matches!(entry.status, TestStatus::Failed | TestStatus::TimedOut))
             .count()
+    }
+
+    /// The entry the player is parked above, shown with a marker by the
+    /// overlay.
+    pub(crate) fn viewing(&self) -> Option<usize> {
+        self.viewing
     }
 }
 
@@ -177,15 +186,23 @@ fn handle_suite_hotkeys(keys: Res<ButtonInput<KeyCode>>, mut suite: ResMut<Water
     }
 }
 
-/// Builds or rebuilds every scenario when a run was requested.
+/// Builds or rebuilds every scenario when a run was requested, then flies the
+/// player out to the field so there is something to see.
 fn start_requested_suite(
     mut commands: Commands,
     mut suite: ResMut<WaterTestSuite>,
     dimension: Option<Single<&mut Dimension, With<Active>>>,
     mut player_q: Query<
-        (&PlayerDimension, &mut Transform, &mut Position, &mut Velocity),
+        (
+            Entity,
+            &PlayerDimension,
+            &mut Transform,
+            &mut Position,
+            &mut Velocity,
+        ),
         With<Player>,
     >,
+    mut camera_q: Query<&mut Transform, (With<MouseCam>, Without<Player>)>,
 ) {
     if !suite.request_run {
         return;
@@ -201,7 +218,9 @@ fn start_requested_suite(
     // Running the suite usually means the dev is standing in the test field,
     // so move them clear and wait for the streamer to release the field.
     if player_is_in_test_field(&player_q, dimension.id()) {
-        if let Some((_, mut transform, mut position, mut velocity)) = player_q.iter_mut().next() {
+        if let Some((_, _, mut transform, mut position, mut velocity)) =
+            player_q.iter_mut().next()
+        {
             let spawn = dimension.arrival();
             **velocity = Vec3::ZERO;
             position.0 = spawn;
@@ -216,6 +235,8 @@ fn start_requested_suite(
     }
 
     suite.request_run = false;
+    suite.overlay_visible = true;
+    suite.viewing = None;
 
     for entry in &mut suite.entries {
         if let Some(plot) = entry.plot.take() {
@@ -239,17 +260,29 @@ fn start_requested_suite(
             }
         }
     }
+
+    // Land on the first plot, but leave the cycle cursor unset so the first F9
+    // press can jump straight to a failure if the run produced one.
+    if let Some(plot) = suite.entries.first().and_then(|entry| entry.plot.as_ref()) {
+        fly_player_to_plot(&mut commands, &dimension, &mut player_q, &mut camera_q, plot);
+    }
 }
 
 fn player_is_in_test_field(
     player_q: &Query<
-        (&PlayerDimension, &mut Transform, &mut Position, &mut Velocity),
+        (
+            Entity,
+            &PlayerDimension,
+            &mut Transform,
+            &mut Position,
+            &mut Velocity,
+        ),
         With<Player>,
     >,
     dimension_id: crate::world::DimensionId,
 ) -> bool {
     let field_center = TEST_FIELD_ORIGIN.as_vec3() + Vec3::new(96.0, 8.0, 64.0);
-    player_q.iter().any(|(player_dimension, transform, _, _)| {
+    player_q.iter().any(|(_, player_dimension, transform, _, _)| {
         player_dimension.id() == dimension_id
             && transform.translation.distance(field_center) <= FIELD_CLEAR_RADIUS
     })
@@ -485,11 +518,25 @@ fn actual_row(
         .collect()
 }
 
-/// Teleports the player above the first failed plot, or the current run.
+/// Cycles the player through the test plots. The first press with nothing
+/// viewed yet starts at the first failure if there is one, otherwise the first
+/// scenario; later presses move to the next built plot and wrap around. With
+/// nothing built at all, asking to teleport starts a run, which also flies the
+/// player out to the field.
 fn handle_teleport_request(
+    mut commands: Commands,
     mut suite: ResMut<WaterTestSuite>,
     dimension: Option<Single<&Dimension, With<Active>>>,
-    mut player_q: Query<(&PlayerDimension, &mut Transform, &mut Position, &mut Velocity), With<Player>>,
+    mut player_q: Query<
+        (
+            Entity,
+            &PlayerDimension,
+            &mut Transform,
+            &mut Position,
+            &mut Velocity,
+        ),
+        With<Player>,
+    >,
     mut camera_q: Query<&mut Transform, (With<MouseCam>, Without<Player>)>,
 ) {
     if !std::mem::take(&mut suite.request_teleport) {
@@ -499,44 +546,88 @@ fn handle_teleport_request(
         return;
     };
 
-    let target_entry = suite
-        .entries
-        .iter()
-        .find(|entry| {
-            entry.plot.is_some()
-                && matches!(entry.status, TestStatus::Failed | TestStatus::TimedOut)
-        })
-        .or_else(|| {
-            suite
-                .entries
-                .iter()
-                .find(|entry| entry.plot.is_some() && entry.status == TestStatus::Running)
-        });
-    let Some(entry) = target_entry else {
+    let Some(index) = next_plotted_entry(&suite.entries, suite.viewing) else {
+        suite.request_run = true;
         return;
     };
-    let Some(plot) = &entry.plot else {
+    let Some(plot) = suite.entries[index].plot.as_ref() else {
         return;
     };
 
-    let Some((player_dimension, mut transform, mut position, mut velocity)) =
-        player_q.iter_mut().next()
-    else {
-        return;
-    };
-    if player_dimension.id() != dimension.id() {
-        return;
+    if fly_player_to_plot(
+        &mut commands,
+        &dimension,
+        &mut player_q,
+        &mut camera_q,
+        plot,
+    ) {
+        suite.viewing = Some(index);
+    }
+}
+
+/// The next entry with a built plot: the first failure when the cycle starts
+/// fresh, then the following entries in order, wrapping and skipping unbuilt
+/// ones.
+fn next_plotted_entry(entries: &[WaterTestEntry], viewing: Option<usize>) -> Option<usize> {
+    if entries.is_empty() {
+        return None;
     }
 
-    let size = plot.size;
-    let destination = plot.scene_origin + IVec3::new(size.x / 2, size.y + 2, size.z / 2);
+    let start = match viewing {
+        Some(viewed) => (viewed + 1) % entries.len(),
+        None => entries
+            .iter()
+            .position(|entry| matches!(entry.status, TestStatus::Failed | TestStatus::TimedOut))
+            .unwrap_or(0),
+    };
+
+    (0..entries.len())
+        .map(|offset| (start + offset) % entries.len())
+        .find(|&index| entries[index].plot.is_some())
+}
+
+/// Places the player above a plot, looking down into it, and turns on flight
+/// so the dev can hover and move between plots. Returns whether the player was
+/// moved.
+fn fly_player_to_plot(
+    commands: &mut Commands,
+    dimension: &Dimension,
+    player_q: &mut Query<
+        (
+            Entity,
+            &PlayerDimension,
+            &mut Transform,
+            &mut Position,
+            &mut Velocity,
+        ),
+        With<Player>,
+    >,
+    camera_q: &mut Query<&mut Transform, (With<MouseCam>, Without<Player>)>,
+    plot: &TestPlot,
+) -> bool {
+    let Some((entity, player_dimension, mut transform, mut position, mut velocity)) =
+        player_q.iter_mut().next()
+    else {
+        return false;
+    };
+    if player_dimension.id() != dimension.id() {
+        return false;
+    }
+
+    let destination =
+        plot.scene_origin + IVec3::new(plot.size.x / 2, plot.size.y + 4, plot.size.z / 2);
     let destination = destination.as_vec3();
     **velocity = Vec3::ZERO;
     position.0 = destination;
     *transform = Transform::from_translation(destination);
     if let Some(mut camera) = camera_q.iter_mut().next() {
-        camera.rotation = Transform::default().looking_to(Vec3::NEG_Y, Vec3::Z).rotation;
+        // Tilted rather than straight down so WASD still moves sensibly.
+        camera.rotation = Transform::default()
+            .looking_to(Vec3::new(0.0, -1.0, -1.0), Vec3::Y)
+            .rotation;
     }
+    commands.entity(entity).insert(Flying);
+    true
 }
 
 /// Test chunks must never be captured by the save system; the fluid solver
@@ -624,6 +715,82 @@ mod tests {
                 entry.detail
             );
         }
+    }
+
+    fn entry_with_plot(scenario_index: usize, status: TestStatus, plotted: bool) -> WaterTestEntry {
+        WaterTestEntry {
+            scenario: &WATER_SCENARIOS[scenario_index],
+            status,
+            detail: String::new(),
+            start_tick: 0,
+            plot: plotted.then(|| TestPlot {
+                scene_origin: IVec3::ZERO,
+                size: IVec3::ONE,
+                chunks: Vec::new(),
+            }),
+        }
+    }
+
+    #[test]
+    fn teleport_cycle_starts_at_the_first_failure_then_advances() {
+        let entries = vec![
+            entry_with_plot(0, TestStatus::Passed, true),
+            entry_with_plot(1, TestStatus::Failed, true),
+            entry_with_plot(2, TestStatus::Passed, true),
+        ];
+
+        assert_eq!(next_plotted_entry(&entries, None), Some(1));
+        assert_eq!(next_plotted_entry(&entries, Some(1)), Some(2));
+        assert_eq!(
+            next_plotted_entry(&entries, Some(2)),
+            Some(0),
+            "the cycle wraps around"
+        );
+    }
+
+    #[test]
+    fn teleport_cycle_skips_entries_without_plots() {
+        let entries = vec![
+            entry_with_plot(0, TestStatus::Passed, false),
+            entry_with_plot(1, TestStatus::Passed, true),
+            entry_with_plot(2, TestStatus::Passed, false),
+        ];
+
+        assert_eq!(next_plotted_entry(&entries, None), Some(1));
+        assert_eq!(
+            next_plotted_entry(&entries, Some(1)),
+            Some(1),
+            "a lone built plot must stay reachable"
+        );
+    }
+
+    #[test]
+    fn teleport_cycle_is_empty_without_any_plot() {
+        let entries = vec![
+            entry_with_plot(0, TestStatus::Pending, false),
+            entry_with_plot(1, TestStatus::Pending, false),
+        ];
+        assert_eq!(next_plotted_entry(&entries, None), None);
+    }
+
+    #[test]
+    fn teleport_with_nothing_built_requests_a_run() {
+        let mut app = test_app();
+        app.world_mut().resource_mut::<WaterTestSuite>().request_teleport = true;
+
+        // The teleport handler runs after the start system in the chain, so the
+        // run it requests is picked up on the following update.
+        app.update();
+        app.update();
+
+        assert!(
+            app.world()
+                .resource::<WaterTestSuite>()
+                .entries
+                .iter()
+                .any(|entry| entry.plot.is_some()),
+            "F9 with nothing built should start a run"
+        );
     }
 }
 

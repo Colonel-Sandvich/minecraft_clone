@@ -79,20 +79,24 @@ world coordinates, and the full actual scene.
 
 | Key | Action |
 | --- | --- |
-| `F7` | Toggle the status overlay |
-| `F8` | Build/rebuild and run every registered scenario |
-| `F9` | Teleport above the first failed/timed-out plot (or the running one) |
+| `F7` | Toggle the status overlay (shown automatically when a run starts) |
+| `F8` | Rebuild and run every registered scenario, then fly the player to the field |
+| `F9` | Fly to the next test plot: the first failure on a fresh cycle, then each plot in order, wrapping around. With nothing built yet, `F9` starts a run instead. |
+| `R` | The existing debug reset, which returns the player to the dimension arrival. |
 
 Plots are laid out in a grid starting at world `(4096, 64, 4096)`, spaced 64
 blocks apart. Each plot is an independently registered chunk column built from
 the same `SceneLayout` as the headless runner. Chunks get a real light rebuild,
-mesh, and colliders, so the developer sees actual rendered water.
+mesh, and colliders, so the developer sees actual rendered water. The teleports
+enable flight and tilt the camera down into the open-topped scene, so the water
+is visible immediately; `F9` moves along the grid and the overlay marks the
+plot currently being viewed with `>`.
 
 Pressing `F8` while standing in the test field first moves the player back to
-the dimension arrival and waits a few frames. The streamer owns every column
-around the player, and a plot chunk cannot be registered inside a streamed
-column, so the field must be released before a rerun. Without this, rebuilding
-while inspecting a failure would report collisions instead of running.
+the spawn and waits a few frames. The streamer owns every column around the
+player, and a plot chunk cannot be registered inside a streamed column, so the
+field must be released before a rerun. The arrival teleport then carries the
+player back out to the first plot.
 
 The runner does not tick fluids itself. It builds the scene, marks chunks for
 the normal `ChunkNeedsFluidStep` pipeline, and waits for every plot chunk to go
@@ -109,7 +113,7 @@ has no command system, no structure files, and far fewer tests:
   dev watch all of them settle at once.
 - Failures are left standing in place (like Minecraft); `F8` rebuilds
   everything from scratch on the next run.
-- Teleport/inspection replaces `/test locate` + `/test runclosest`.
+- `F8`/`F9` teleport the player instead of `/test locate` + `/test runclosest`.
 - Rotation sweeps, retries, environments/undo-logs, mock players, and barrier
   shells are intentionally not implemented.
 
