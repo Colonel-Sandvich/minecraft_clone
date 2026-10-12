@@ -18,6 +18,8 @@ pub struct Inventory {
 impl Default for Inventory {
     fn default() -> Self {
         let mut slots = [None; INVENTORY_SLOTS];
+        // The nine hotbar slots. Water is the ninth (digit 9) so a developer
+        // can seed ponds by hand.
         for (slot, item) in slots.iter_mut().zip([
             Item::Dirt,
             Item::Stone,
@@ -27,14 +29,13 @@ impl Default for Inventory {
             Item::OakLeaves,
             Item::Glowstone,
             Item::Grass,
+            Item::Water,
         ]) {
             *slot = Some(ItemStack::full(item));
         }
 
-        // Water sits in the ninth hotbar slot so a developer can seed ponds by
-        // hand, and ice sits in the main-grid slot directly above it (the last
-        // slot of the inventory grid).
-        slots[HOTBAR_SLOTS - 1] = Some(ItemStack::full(Item::Water));
+        // Ice sits in the main-grid slot directly above the water hotbar slot
+        // (the last slot of the inventory grid).
         slots[INVENTORY_SLOTS - 1] = Some(ItemStack::full(Item::Ice));
         Self { slots }
     }
