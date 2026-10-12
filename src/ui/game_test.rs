@@ -30,6 +30,13 @@ struct GameTestOverlayHeader;
 #[derive(Component)]
 struct GameTestOverlayRow(usize);
 
+#[derive(Component)]
+struct GameTestOverlayDetail;
+
+/// Cap on detail lines rendered in the overlay so a noisy failure cannot
+/// swallow the whole screen; the full text remains available on the entry.
+const MAX_OVERLAY_DETAIL_LINES: usize = 10;
+
 fn spawn_game_test_overlay(mut commands: Commands) {
     commands
         .spawn((
@@ -72,6 +79,15 @@ fn spawn_game_test_overlay(mut commands: Commands) {
                     GameTestOverlayRow(index),
                 ));
             }
+            overlay.spawn((
+                Text::new(""),
+                TextFont {
+                    font_size: FontSize::Px(12.0),
+                    ..default()
+                },
+                TextColor(Color::srgb(1.0, 0.75, 0.75)),
+                GameTestOverlayDetail,
+            ));
         });
 }
 
@@ -81,7 +97,15 @@ fn update_game_test_overlay(
     mut header_q: Query<&mut Text, (With<GameTestOverlayHeader>, Without<GameTestOverlayRow>)>,
     mut rows_q: Query<
         (&GameTestOverlayRow, &mut Text, &mut TextColor),
-        Without<GameTestOverlayHeader>,
+        (Without<GameTestOverlayHeader>, Without<GameTestOverlayDetail>),
+    >,
+    mut detail_q: Query<
+        &mut Text,
+        (
+            With<GameTestOverlayDetail>,
+            Without<GameTestOverlayHeader>,
+            Without<GameTestOverlayRow>,
+        ),
     >,
 ) {
     for mut node in &mut root_q {
@@ -107,6 +131,33 @@ fn update_game_test_overlay(
         text.0 = format!("{:>7}  {}", entry.status.label(), entry.scenario.name);
         color.0 = status_color(entry.status);
     }
+
+    if let Ok(mut detail) = detail_q.single_mut() {
+        detail.0 = first_failure_report(&suite);
+    }
+}
+
+/// Shows the first failure's diff under the list; the dev can still press F9
+/// to stand inside the scene for the full picture.
+fn first_failure_report(suite: &WaterTestSuite) -> String {
+    let Some(entry) = suite
+        .entries
+        .iter()
+        .find(|entry| matches!(entry.status, TestStatus::Failed | TestStatus::TimedOut))
+    else {
+        return String::new();
+    };
+
+    let mut lines = Vec::with_capacity(MAX_OVERLAY_DETAIL_LINES + 1);
+    lines.push(format!("{}:", entry.scenario.name));
+    for line in entry.detail.lines().take(MAX_OVERLAY_DETAIL_LINES) {
+        lines.push(format!("  {line}"));
+    }
+    let shown = lines.len() - 1;
+    if entry.detail.lines().count() > shown {
+        lines.push("  ...".to_owned());
+    }
+    lines.join("\n")
 }
 
 fn status_color(status: TestStatus) -> Color {
@@ -116,5 +167,29 @@ fn status_color(status: TestStatus) -> Color {
         TestStatus::Passed => Color::srgb(0.4, 0.92, 0.4),
         TestStatus::Failed => Color::srgb(1.0, 0.4, 0.4),
         TestStatus::TimedOut => Color::srgb(1.0, 0.62, 0.2),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn first_failure_report_is_empty_without_failures() {
+        let suite = WaterTestSuite::new();
+        assert!(first_failure_report(&suite).is_empty());
+    }
+
+    #[test]
+    fn first_failure_report_names_the_scenario_and_caps_lines() {
+        let mut suite = WaterTestSuite::new();
+        suite.entries[0].status = TestStatus::Failed;
+        suite.entries[0].detail = (0..50).map(|i| format!("row {i}")).collect::<Vec<_>>().join("\n");
+
+        let report = first_failure_report(&suite);
+        let lines = report.lines().count();
+        assert!(report.starts_with(suite.entries[0].scenario.name));
+        assert_eq!(lines, MAX_OVERLAY_DETAIL_LINES + 2, "name + cap + ellipsis");
+        assert!(report.ends_with("  ..."));
     }
 }
