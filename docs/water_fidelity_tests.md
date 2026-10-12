@@ -84,13 +84,18 @@ world coordinates, and the full actual scene.
 | `F9` | Fly to the next test plot: the first failure on a fresh cycle, then each plot in order, wrapping around. With nothing built yet, `F9` starts a run instead. |
 | `R` | The existing debug reset, which returns the player to the dimension arrival. |
 
-Plots are laid out in a grid starting at world `(4096, 64, 4096)`, spaced 64
-blocks apart. Each plot is an independently registered chunk column built from
-the same `SceneLayout` as the headless runner. Chunks get a real light rebuild,
-mesh, and colliders, so the developer sees actual rendered water. The teleports
-enable flight and tilt the camera down into the open-topped scene, so the water
-is visible immediately; `F9` moves along the grid and the overlay marks the
-plot currently being viewed with `>`.
+Plots are packed row by row, starting at world `(4096, 64, 4096)`. Each origin
+sits one block past a chunk boundary so a scene and its stone shell occupy whole
+chunk columns; the next plot starts in the chunk column after that, so the
+fixtures sit a few blocks apart instead of spread over a wide field. Each plot
+is an independently registered chunk column built from the same `SceneLayout` as
+the headless runner. Chunks get a real light rebuild, mesh, and colliders, so
+the developer sees actual rendered water.
+
+The teleports enable flight and frame the scene: the player is placed a few
+blocks back along a fixed 45° view ray through the scene centre, so the water is
+watched from the same angle every time. `F9` moves between plots and the overlay
+marks the plot currently being viewed with `>`.
 
 Pressing `F8` while standing in the test field first moves the player back to
 the spawn and waits a few frames. The streamer owns every column around the

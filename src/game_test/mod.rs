@@ -13,6 +13,7 @@
 //! player's world save.
 
 use std::collections::HashMap;
+use std::f32::consts::FRAC_1_SQRT_2;
 
 use avian3d::prelude::Position;
 use bevy::prelude::*;
@@ -22,7 +23,7 @@ use crate::{
     player::{Player, PlayerDimension, cam::MouseCam},
     world::{
         chunk::{
-            Chunk, ChunkCell, ChunkHeightmap, ChunkInvalidationPlan, ChunkLight,
+            CHUNK_SIZE, Chunk, ChunkCell, ChunkHeightmap, ChunkInvalidationPlan, ChunkLight,
             ChunkNeedsFluidStep, ChunkNeedsLightRebuild, ChunkNeedsSave, ChunkPos, ChunkPosition,
             WATER_SCENARIOS, WaterScenario, WorldBlockPos, char_from_cell, layout_scene,
             scene_size,
@@ -33,12 +34,13 @@ use crate::{
 
 pub(crate) struct GameTestPlugin;
 
-/// Where the plot grid starts. Far from any sane play area, and high enough to
+/// Where the plot field starts. Far from any sane play area, and high enough to
 /// float above average terrain.
 const TEST_FIELD_ORIGIN: IVec3 = IVec3::new(4096, 64, 4096);
-/// Distance between plot origins; comfortably wider than any scene.
-const PLOT_PITCH: i32 = 64;
 const PLOTS_PER_ROW: usize = 4;
+/// Plot origins sit one block past a chunk boundary so a scene's shell (one
+/// cell outside the scene) starts exactly on that boundary.
+const PLOT_ORIGIN_OFFSET: i32 = 1;
 /// Fluid steps happen every fifth fixed tick in the running game.
 const TICKS_PER_FLUID_STEP: u64 = 5;
 /// Grace period before a quiet plot is trusted to have settled, guaranteeing
@@ -55,6 +57,12 @@ const FIELD_CLEAR_RADIUS: f32 = 256.0;
 const CLEAR_FIELD_DEFER_FRAMES: u32 = 3;
 /// Cap on how many mismatching rows are reported per failed scenario.
 const MAX_REPORTED_ROWS: usize = 8;
+/// Fixed direction the inspection camera looks: 45° down and towards -Z, so
+/// every plot is read from the same angle.
+const INSPECTION_VIEW_DIR: Vec3 = Vec3::new(0.0, -FRAC_1_SQRT_2, -FRAC_1_SQRT_2);
+/// Distance from the scene centre along the view ray when teleporting to a
+/// plot; wider scenes get more room so they still fit the frame.
+const INSPECTION_BASE_DISTANCE: f32 = 10.0;
 
 pub(crate) struct WaterTestEntry {
     pub(crate) scenario: &'static WaterScenario,
@@ -281,11 +289,24 @@ fn player_is_in_test_field(
     >,
     dimension_id: crate::world::DimensionId,
 ) -> bool {
-    let field_center = TEST_FIELD_ORIGIN.as_vec3() + Vec3::new(96.0, 8.0, 64.0);
+    let field_center = field_center();
     player_q.iter().any(|(_, player_dimension, transform, _, _)| {
         player_dimension.id() == dimension_id
             && transform.translation.distance(field_center) <= FIELD_CLEAR_RADIUS
     })
+}
+
+/// Centre of the packed plot field, used to decide whether the player is close
+/// enough to the field to interfere with plot chunk registration.
+fn field_center() -> Vec3 {
+    let mut min = IVec3::MAX;
+    let mut max = IVec3::MIN;
+    for (origin, scenario) in plot_origins().into_iter().zip(WATER_SCENARIOS) {
+        let size = scene_size(scenario.input);
+        min = min.min(origin - IVec3::ONE);
+        max = max.max(origin + size);
+    }
+    (min.as_vec3() + max.as_vec3()) * 0.5
 }
 
 fn teardown_plot(commands: &mut Commands, dimension: &mut Dimension, plot: TestPlot) {
@@ -295,13 +316,42 @@ fn teardown_plot(commands: &mut Commands, dimension: &mut Dimension, plot: TestP
     }
 }
 
+/// Steps from one plot origin to the next along an axis: the scene's cells
+/// plus its shell span `extent + 2` blocks from the (chunk-aligned) shell
+/// edge, where `extent` is the scene's interior size, so round that up to
+/// whole chunks.
+///
+/// Chunk positions are addressed in 3D and every plot occupies the same y
+/// layers, so two plots packed into one chunk column would collide when the
+/// runner registers them.
+fn plot_advance(extent: i32) -> i32 {
+    let chunk = CHUNK_SIZE as i32;
+    let columns = (extent + 1).div_euclid(chunk) + 1;
+    chunk * columns
+}
+
+/// Row-major plot origins, packed against the scenes' real extents so the
+/// fixtures sit a few blocks apart instead of spread over a wide field.
+fn plot_origins() -> Vec<IVec3> {
+    let mut origins = Vec::with_capacity(WATER_SCENARIOS.len());
+    let mut cursor = TEST_FIELD_ORIGIN + IVec3::new(PLOT_ORIGIN_OFFSET, 0, PLOT_ORIGIN_OFFSET);
+    let mut row_depth = 0;
+    for (index, scenario) in WATER_SCENARIOS.iter().enumerate() {
+        if index > 0 && index.is_multiple_of(PLOTS_PER_ROW) {
+            cursor.x = TEST_FIELD_ORIGIN.x + PLOT_ORIGIN_OFFSET;
+            cursor.z += plot_advance(row_depth);
+            row_depth = 0;
+        }
+        let size = scene_size(scenario.input);
+        origins.push(cursor);
+        cursor.x += plot_advance(size.x);
+        row_depth = row_depth.max(size.z);
+    }
+    origins
+}
+
 fn plot_origin(index: usize) -> IVec3 {
-    TEST_FIELD_ORIGIN
-        + IVec3::new(
-            PLOT_PITCH * (index % PLOTS_PER_ROW) as i32,
-            0,
-            PLOT_PITCH * (index / PLOTS_PER_ROW) as i32,
-        )
+    plot_origins()[index]
 }
 
 fn build_plot(
@@ -586,6 +636,17 @@ fn next_plotted_entry(entries: &[WaterTestEntry], viewing: Option<usize>) -> Opt
         .find(|&index| entries[index].plot.is_some())
 }
 
+/// Where the player hovers to inspect `plot`, and which way the camera looks.
+///
+/// The camera keeps one fixed angle and the position is pulled back along the
+/// view ray from the scene centre, so the scene sits in the middle of the
+/// frame instead of below it.
+fn inspection_viewpoint(plot: &TestPlot) -> (Vec3, Vec3) {
+    let anchor = plot.scene_origin.as_vec3() + plot.size.as_vec3() * 0.5;
+    let distance = INSPECTION_BASE_DISTANCE + plot.size.x.max(plot.size.z) as f32 * 0.5;
+    (anchor - INSPECTION_VIEW_DIR * distance, INSPECTION_VIEW_DIR)
+}
+
 /// Places the player above a plot, looking down into it, and turns on flight
 /// so the dev can hover and move between plots. Returns whether the player was
 /// moved.
@@ -614,17 +675,13 @@ fn fly_player_to_plot(
         return false;
     }
 
-    let destination =
-        plot.scene_origin + IVec3::new(plot.size.x / 2, plot.size.y + 4, plot.size.z / 2);
-    let destination = destination.as_vec3();
+    let (destination, view) = inspection_viewpoint(plot);
     **velocity = Vec3::ZERO;
     position.0 = destination;
     *transform = Transform::from_translation(destination);
     if let Some(mut camera) = camera_q.iter_mut().next() {
         // Tilted rather than straight down so WASD still moves sensibly.
-        camera.rotation = Transform::default()
-            .looking_to(Vec3::new(0.0, -1.0, -1.0), Vec3::Y)
-            .rotation;
+        camera.rotation = Transform::default().looking_to(view, Vec3::Y).rotation;
     }
     commands.entity(entity).insert(Flying);
     true
@@ -790,6 +847,49 @@ mod tests {
                 .iter()
                 .any(|entry| entry.plot.is_some()),
             "F9 with nothing built should start a run"
+        );
+    }
+
+    #[test]
+    fn plot_layout_keeps_every_plot_on_its_own_chunks() {
+        let mut seen = std::collections::HashSet::new();
+        for (origin, scenario) in plot_origins().into_iter().zip(WATER_SCENARIOS) {
+            let mut chunks = std::collections::HashSet::new();
+            for &(position, _) in &layout_scene(origin, scenario.input).cells {
+                chunks.insert(WorldBlockPos::from_ivec3(position).split().chunk());
+            }
+            for chunk in chunks {
+                assert!(
+                    seen.insert(chunk),
+                    "scenario `{}` shares chunk {chunk:?} with an earlier plot",
+                    scenario.name
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn inspection_viewpoint_looks_at_the_scene_centre_from_one_fixed_angle() {
+        let plot = TestPlot {
+            scene_origin: IVec3::new(4097, 64, 4097),
+            size: IVec3::new(24, 3, 9),
+            chunks: Vec::new(),
+        };
+        let anchor = plot.scene_origin.as_vec3() + plot.size.as_vec3() * 0.5;
+        let (destination, view) = inspection_viewpoint(&plot);
+
+        let to_scene = (anchor - destination).normalize();
+        assert!(
+            to_scene.distance(view) < 1e-4,
+            "the scene centre must sit on the view ray: {to_scene} vs {view}"
+        );
+        assert!(
+            destination.z > anchor.z,
+            "the player stands back from the scene"
+        );
+        assert!(
+            destination.y > anchor.y,
+            "the player looks down into the scene"
         );
     }
 }
