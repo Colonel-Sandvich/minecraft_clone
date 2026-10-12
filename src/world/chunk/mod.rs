@@ -11,6 +11,8 @@ pub mod mesh;
 mod mutation;
 pub(crate) mod neighborhood;
 mod state;
+#[cfg(test)]
+mod water_scenarios;
 
 use bevy::prelude::*;
 
