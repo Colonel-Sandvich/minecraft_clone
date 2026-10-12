@@ -421,6 +421,88 @@ pub(crate) const WATER_SCENARIOS: &[WaterScenario] = &[
                       dissipation time is pinned so it cannot become instant.",
         ..Default::default()
     },
+    WaterScenario {
+        name: "reported_block_in_basin",
+        input: &[
+            &["#############"; 13],
+            &[
+                "#############",
+                "#############",
+                "#############",
+                "#############",
+                "#############",
+                "#############",
+                "#####65######",
+                "#####76######",
+                "#####87######",
+                "#############",
+                "#############",
+                "#############",
+                "#############",
+            ],
+            &[
+                "###########..",
+                "##########...",
+                "######.......",
+                "#234321......",
+                "#345432......",
+                "#4565#1......",
+                "#567#........",
+                "#67S#........",
+                "#56765.......",
+                "#............",
+                "#............",
+                "##...........",
+                "###..........",
+            ],
+        ],
+        expected: &[
+            &["#############"; 13],
+            &[
+                "#############",
+                "#############",
+                "#############",
+                "#############",
+                "#############",
+                "#############",
+                "#####65######",
+                "#####76######",
+                "#####87######",
+                "#############",
+                "#############",
+                "#############",
+                "#############",
+            ],
+            &[
+                "###########..",
+                "##########...",
+                "######.......",
+                "#234321......",
+                "#345432......",
+                "#4565#1......",
+                "#567#........",
+                "#67S#........",
+                "#56765.......",
+                "#............",
+                "#............",
+                "##...........",
+                "###..........",
+            ],
+        ],
+        description: "Hand-reported case in the developer's save, chunk (258,1,258): \
+                      crop world x4128..=4140, z4128..=4140, layers y=27..29 (layer 0 \
+                      is world y=27). `input` is the exact saved field; the reported \
+                      block is the `#` at world (4133,29,4133), placed into the pool. \
+                      `expected` repeats the input only because the saved field is \
+                      already a fixpoint of the current solver: replace it with the \
+                      field Minecraft is expected to show and every wrong cell becomes \
+                      a failing diff. The wide pool itself is leftover history: from a \
+                      fresh build with the pocket open, the nearest-drop rule sends the \
+                      source straight down the stream to (4133,29,4136) and this pool \
+                      never forms (vanilla `FlowingFluid.getSpread` keeps only the \
+                      nearest-drop directions, so it pools the same way).",
+        ..Default::default()
+    },
 ];
 
 /// The expected map for `phase`, where phase 0 is [`WaterScenario::expected`]
