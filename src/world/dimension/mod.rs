@@ -6,7 +6,7 @@
     )
 )]
 mod derived_work;
-mod fluid;
+pub(crate) mod fluid;
 mod invalidation;
 mod light;
 mod light_patch;

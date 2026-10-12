@@ -1,5 +1,6 @@
 mod crosshair;
 mod debug;
+mod game_test;
 mod hotbar;
 mod inventory;
 mod pause_menu;
@@ -9,6 +10,7 @@ use bevy::prelude::*;
 use bevy_dev_tools::diagnostics_overlay::{DiagnosticsOverlay, DiagnosticsOverlayPlugin};
 use crosshair::CrosshairPlugin;
 use debug::DebugPlugin;
+use game_test::GameTestOverlayPlugin;
 use hotbar::HotbarPlugin;
 use inventory::InventoryUiPlugin;
 use pause_menu::PauseMenuPlugin;
@@ -22,6 +24,7 @@ impl Plugin for UIPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(CrosshairPlugin);
         app.add_plugins(DebugPlugin);
+        app.add_plugins(GameTestOverlayPlugin);
         app.add_plugins(HotbarPlugin);
         app.add_plugins(InventoryUiPlugin);
         app.add_plugins(PauseMenuPlugin);

@@ -18,6 +18,7 @@ use bevy_settings::SettingsPlugin;
 use crate::{
     audio::{GameAudioPlugin, GameAudioSettings},
     game_state::GameStatePlugin,
+    game_test::GameTestPlugin,
     input::GameInputPlugin,
     item::DroppedItemPlugin,
     light::LightPlugin,
@@ -82,6 +83,7 @@ impl Plugin for AppPlugin {
             }
         })
         .add_plugins(WorldPlugin)
+        .add_plugins(GameTestPlugin)
         .add_plugins(UIPlugin)
         .insert_resource(Time::<Fixed>::from_hz(FIXED_TICK_RATE_HZ))
         .insert_resource(Time::<Virtual>::from_max_delta(Duration::from_secs_f64(

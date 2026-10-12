@@ -28,11 +28,10 @@
 //! [`layout_scene`].
 
 use bevy::prelude::*;
-use std::collections::HashMap;
 
 use crate::item::Item;
 
-use super::{Chunk, ChunkCell, FluidProfile};
+use super::{ChunkCell, FluidProfile};
 
 pub(crate) type SceneLayers = [&'static [&'static str]];
 
@@ -45,6 +44,8 @@ pub(crate) struct WaterScenario {
     pub(crate) input: &'static SceneLayers,
     /// Expected final state once the scene stops changing.
     pub(crate) expected: &'static SceneLayers,
+    /// Maximum fluid steps the scene may take before it must have settled.
+    pub(crate) max_steps: u32,
     /// Why this scenario exists and what vanilla behaviour it pins down.
     pub(crate) description: &'static str,
 }
@@ -54,6 +55,7 @@ pub(crate) const WATER_SCENARIOS: &[WaterScenario] = &[
     WaterScenario {
         name: "flat_floor_diamond",
         origin: IVec3::ZERO,
+        max_steps: 64,
         input: &[
             &["#########"; 9],
             &[
@@ -88,6 +90,7 @@ pub(crate) const WATER_SCENARIOS: &[WaterScenario] = &[
     WaterScenario {
         name: "channel_seven_block_range",
         origin: IVec3::ZERO,
+        max_steps: 64,
         input: &[
             &["##########"; 3],
             &["##########", "#S........", "##########"],
@@ -103,6 +106,7 @@ pub(crate) const WATER_SCENARIOS: &[WaterScenario] = &[
     WaterScenario {
         name: "infinite_source_gap_over_stone",
         origin: IVec3::ZERO,
+        max_steps: 64,
         input: &[
             &["########"; 3],
             &["########", "#S.S....", "########"],
@@ -117,6 +121,7 @@ pub(crate) const WATER_SCENARIOS: &[WaterScenario] = &[
     WaterScenario {
         name: "nearest_drop_preference",
         origin: IVec3::ZERO,
+        max_steps: 64,
         input: &[
             &["#############"; 3],
             &["#############", "######.######", "#############"],
@@ -134,6 +139,7 @@ pub(crate) const WATER_SCENARIOS: &[WaterScenario] = &[
     WaterScenario {
         name: "falling_water_landing_spread",
         origin: IVec3::ZERO,
+        max_steps: 64,
         input: &[
             &["#########"; 3],
             &["#########", "####.....", "#########"],
@@ -150,6 +156,7 @@ pub(crate) const WATER_SCENARIOS: &[WaterScenario] = &[
     WaterScenario {
         name: "cross_chunk_channel_flow",
         origin: IVec3::ZERO,
+        max_steps: 64,
         input: &[
             &["########################"; 3],
             &[
@@ -276,7 +283,10 @@ pub(crate) fn char_from_cell(cell: ChunkCell) -> char {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::world::chunk::{ChunkPos, FluidSnapshot, WorldBlockPos, simulate_fluid_step};
+    use crate::world::chunk::{
+        Chunk, ChunkPos, FluidSnapshot, WorldBlockPos, simulate_fluid_step,
+    };
+    use std::collections::HashMap;
 
     /// A tiny multi-chunk world that can only be driven by the fluid solver.
     struct FluidSceneWorld {
@@ -447,7 +457,7 @@ mod tests {
     fn check_scenario(scenario: &WaterScenario) {
         let layout = layout_scene(scenario.origin, scenario.input);
         let mut world = FluidSceneWorld::from_layout(&layout);
-        let steps = world.settle(128);
+        let steps = world.settle(scenario.max_steps as usize);
         if let Err(problem) = world.diff(scenario.expected) {
             panic!(
                 "scenario `{}` did not match the expected final state after {steps} settling \

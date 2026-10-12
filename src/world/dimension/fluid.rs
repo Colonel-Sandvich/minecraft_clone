@@ -27,7 +27,7 @@ impl Default for FluidStepBudget {
 /// when counter % 5 == 0, giving 4 updates/second — matching Minecraft’s
 /// 4 blocks/second water spread rate.
 #[derive(Resource, Debug, Default)]
-struct FluidTickCounter(u32);
+pub(crate) struct FluidTickCounter(pub(crate) u32);
 
 type FluidChunkRead = (
     &'static Chunk,
@@ -49,11 +49,11 @@ impl Plugin for DimensionFluidPlugin {
     }
 }
 
-fn tick_counter(mut counter: ResMut<FluidTickCounter>) {
+pub(crate) fn tick_counter(mut counter: ResMut<FluidTickCounter>) {
     counter.0 = counter.0.wrapping_add(1);
 }
 
-fn step_chunk_fluids(
+pub(crate) fn step_chunk_fluids(
     mut commands: Commands,
     budget: Res<FluidStepBudget>,
     counter: Res<FluidTickCounter>,

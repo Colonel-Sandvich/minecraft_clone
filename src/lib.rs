@@ -3,6 +3,7 @@
 pub mod app;
 pub mod audio;
 pub mod block;
+mod game_test;
 pub mod game_state;
 pub mod input;
 pub mod item;

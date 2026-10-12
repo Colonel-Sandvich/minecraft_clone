@@ -1,0 +1,120 @@
+//! In-game water test status overlay.
+//!
+//! The runner lives in [`crate::game_test`]; this plugin only renders its
+//! status so a developer can watch the scenes settle and see which ones pass.
+//! Toggled with `F7` by the runner.
+
+use bevy::prelude::*;
+
+use crate::{
+    game_test::{TestStatus, WaterTestSuite},
+    world::chunk::WATER_SCENARIOS,
+};
+
+pub(super) struct GameTestOverlayPlugin;
+
+impl Plugin for GameTestOverlayPlugin {
+    fn build(&self, app: &mut App) {
+        app.init_resource::<WaterTestSuite>()
+            .add_systems(Startup, spawn_game_test_overlay)
+            .add_systems(Update, update_game_test_overlay);
+    }
+}
+
+#[derive(Component)]
+struct GameTestOverlayRoot;
+
+#[derive(Component)]
+struct GameTestOverlayHeader;
+
+#[derive(Component)]
+struct GameTestOverlayRow(usize);
+
+fn spawn_game_test_overlay(mut commands: Commands) {
+    commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                top: Val::Px(6.0),
+                right: Val::Px(6.0),
+                flex_direction: FlexDirection::Column,
+                row_gap: Val::Px(2.0),
+                padding: UiRect::all(Val::Px(8.0)),
+                display: Display::None,
+                max_width: Val::Px(360.0),
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.6)),
+            GameTestOverlayRoot,
+        ))
+        .with_children(|overlay| {
+            overlay.spawn((
+                Text::new(""),
+                TextFont {
+                    font_size: FontSize::Px(14.0),
+                    ..default()
+                },
+                TextColor(Color::WHITE),
+                GameTestOverlayHeader,
+            ));
+            for (index, scenario) in WATER_SCENARIOS.iter().enumerate() {
+                overlay.spawn((
+                    Text::new(format!(
+                        "{:>7}  {}",
+                        TestStatus::Pending.label(),
+                        scenario.name
+                    )),
+                    TextFont {
+                        font_size: FontSize::Px(13.0),
+                        ..default()
+                    },
+                    TextColor(status_color(TestStatus::Pending)),
+                    GameTestOverlayRow(index),
+                ));
+            }
+        });
+}
+
+fn update_game_test_overlay(
+    suite: Res<WaterTestSuite>,
+    mut root_q: Query<&mut Node, With<GameTestOverlayRoot>>,
+    mut header_q: Query<&mut Text, (With<GameTestOverlayHeader>, Without<GameTestOverlayRow>)>,
+    mut rows_q: Query<
+        (&GameTestOverlayRow, &mut Text, &mut TextColor),
+        Without<GameTestOverlayHeader>,
+    >,
+) {
+    for mut node in &mut root_q {
+        node.display = if suite.overlay_visible {
+            Display::Flex
+        } else {
+            Display::None
+        };
+    }
+
+    if let Ok(mut header) = header_q.single_mut() {
+        header.0 = format!(
+            "water tests: {} pass / {} fail\nF8 run all   F9 teleport to failure   F7 hide",
+            suite.passed(),
+            suite.failed(),
+        );
+    }
+
+    for (row, mut text, mut color) in &mut rows_q {
+        let Some(entry) = suite.entries.get(row.0) else {
+            continue;
+        };
+        text.0 = format!("{:>7}  {}", entry.status.label(), entry.scenario.name);
+        color.0 = status_color(entry.status);
+    }
+}
+
+fn status_color(status: TestStatus) -> Color {
+    match status {
+        TestStatus::Pending => Color::srgb(0.72, 0.72, 0.72),
+        TestStatus::Running => Color::srgb(1.0, 0.92, 0.4),
+        TestStatus::Passed => Color::srgb(0.4, 0.92, 0.4),
+        TestStatus::Failed => Color::srgb(1.0, 0.4, 0.4),
+        TestStatus::TimedOut => Color::srgb(1.0, 0.62, 0.2),
+    }
+}

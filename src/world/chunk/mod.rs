@@ -11,7 +11,6 @@ pub mod mesh;
 mod mutation;
 pub(crate) mod neighborhood;
 mod state;
-#[cfg(test)]
 mod water_scenarios;
 
 use bevy::prelude::*;
@@ -40,6 +39,9 @@ pub use state::{
 };
 
 pub(crate) use neighborhood::chunk_neighbor_offsets;
+pub(crate) use water_scenarios::{
+    WATER_SCENARIOS, WaterScenario, char_from_cell, layout_scene, scene_size,
+};
 
 pub struct ChunkPlugin;
 
