@@ -4,8 +4,8 @@
 //! let the real fluid simulation settle each scene, and compare the result cell
 //! by cell against the expected ASCII maps. `F7` toggles the results overlay and
 //! `F9` teleports the player to the first failure so the scene can be inspected
-//! by eye. Scenes are sealed stone shells with an open top, so failures can be
-//! read from above without digging in.
+//! by eye. Scenes are sealed glass shells with an open top, so failures can be
+//! read from above or through the walls without digging in.
 //!
 //! Test chunks are registered as independent published chunks (the streaming
 //! system ignores columns that already contain a loaded chunk). They are never

@@ -14,8 +14,8 @@
 //!
 //! Character legend:
 //! - `.` air
-//! - `#` stone
-//! - `G` glass
+//! - `#` glass (the solid fixture block, kept see-through so in-game scenes
+//!   can be read from the side)
 //! - `L` oak log
 //! - `S` water source (level 8)
 //! - `1`..`7` flowing water level
@@ -269,11 +269,13 @@ pub(crate) struct SceneLayout {
 
 /// Expands scene text into world-space cells at `origin`.
 ///
-/// The scene is walled in with a one-block stone shell on every side except the
-/// top. Scenes describe only the cells under review; without a shell water
-/// would silently escape sideways along the open chunk and read as a mysterious
-/// test failure. The top stays open so a developer can look into the scene from
-/// above; water never flows upward.
+/// The scene is walled in with a one-block glass shell on every side except
+/// the top; glass keeps the fixture see-through so the water can be watched
+/// from a standing camera angle, not only from directly overhead. Scenes
+/// describe only the cells under review; without a shell water would silently
+/// escape sideways along the open chunk and read as a mysterious test failure.
+/// The top stays open so a developer can look into the scene from above; water
+/// never flows upward.
 pub(crate) fn layout_scene(origin: IVec3, layers: &SceneLayers) -> SceneLayout {
     let size = scene_size(layers);
     let mut cells = Vec::new();
@@ -294,7 +296,7 @@ pub(crate) fn layout_scene(origin: IVec3, layers: &SceneLayers) -> SceneLayout {
             for x in -1..=size.x {
                 let on_shell = x == -1 || y == -1 || z == -1 || x == size.x || z == size.z;
                 if on_shell {
-                    cells.push((origin + IVec3::new(x, y, z), Item::Stone.into()));
+                    cells.push((origin + IVec3::new(x, y, z), Item::Glass.into()));
                 }
             }
         }
@@ -337,8 +339,7 @@ pub(crate) fn scene_size(layers: &SceneLayers) -> IVec3 {
 pub(crate) fn cell_from_char(c: char) -> ChunkCell {
     match c {
         '.' | ' ' => ChunkCell::EMPTY,
-        '#' => ChunkCell::block(Item::Stone),
-        'G' => ChunkCell::block(Item::Glass),
+        '#' => ChunkCell::block(Item::Glass),
         'L' => ChunkCell::block(Item::OakLog),
         'S' => ChunkCell::water_source(),
         '1'..='7' => ChunkCell::water_flow(c.to_digit(10).expect("digit") as u8),
@@ -350,8 +351,7 @@ pub(crate) fn cell_from_char(c: char) -> ChunkCell {
 pub(crate) fn char_from_cell(cell: ChunkCell) -> char {
     match cell {
         ChunkCell::Empty => '.',
-        ChunkCell::Block(Item::Stone) => '#',
-        ChunkCell::Block(Item::Glass) => 'G',
+        ChunkCell::Block(Item::Glass) => '#',
         ChunkCell::Block(Item::OakLog) => 'L',
         ChunkCell::Block(other) => panic!("scene renderer has no character for {other:?}"),
         ChunkCell::Fluid(fluid) if fluid.is_source() => 'S',
@@ -560,6 +560,22 @@ mod tests {
         let before = names.len();
         names.dedup();
         assert_eq!(before, names.len(), "water scenario names must be unique");
+    }
+
+    #[test]
+    fn fixtures_are_glass_not_stone() {
+        for scenario in WATER_SCENARIOS {
+            let layout = layout_scene(scenario.origin, scenario.input);
+            assert!(
+                layout
+                    .cells
+                    .iter()
+                    .all(|(_, cell)| *cell != ChunkCell::block(Item::Stone)),
+                "scenario `{}` still contains stone; fixtures are glass so the \
+                 water can be watched through the shell",
+                scenario.name
+            );
+        }
     }
 
     #[test]

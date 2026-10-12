@@ -21,8 +21,7 @@ Scenes are layered text maps. `layers[y]` is the horizontal slice at height
 | Char | Cell |
 | --- | --- |
 | `.` / ` ` | air |
-| `#` | stone |
-| `G` | glass |
+| `#` | glass |
 | `L` | oak log |
 | `S` | water source (level 8) |
 | `1`..`7` | flowing water level |
@@ -51,12 +50,14 @@ Every layer must have the same number of rows and every row the same width.
 `max_steps` is the fluid-step budget: the scene must stop changing within it,
 in both runners.
 
-### The stone shell is implicit
+### The glass shell is implicit
 
-`layout_scene` walls the scene in with a one-block stone shell on every side
+`layout_scene` walls the scene in with a one-block glass shell on every side
 except the top. Authors should not draw outer walls; the shell stops water
 escaping sideways along the open chunk and falling out of the world, which
-otherwise shows up as an inscrutable test failure. The top stays open so the
+otherwise shows up as an inscrutable test failure. Glass (rather than stone)
+keeps every fixture see-through, so water can be watched from the pulled-back
+camera angle as well as from directly overhead. The top stays open so the
 in-game runner can be inspected from above. The headless driver's `diff()`
 also fails loudly if any fluid ends up outside the reviewed box, which catches
 shell bugs and accidentally-unsealed scenes.
@@ -85,7 +86,7 @@ world coordinates, and the full actual scene.
 | `R` | The existing debug reset, which returns the player to the dimension arrival. |
 
 Plots are packed row by row, starting at world `(4096, 64, 4096)`. Each origin
-sits one block past a chunk boundary so a scene and its stone shell occupy whole
+sits one block past a chunk boundary so a scene and its glass shell occupy whole
 chunk columns; the next plot starts in the chunk column after that, so the
 fixtures sit a few blocks apart instead of spread over a wide field. Each plot
 is an independently registered chunk column built from the same `SceneLayout` as
