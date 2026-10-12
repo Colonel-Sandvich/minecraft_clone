@@ -46,6 +46,13 @@ const TICKS_PER_FLUID_STEP: u64 = 5;
 const SETTLE_GRACE_TICKS: u64 = TICKS_PER_FLUID_STEP;
 /// Extra ticks over the scenario budget before a run counts as timed out.
 const TIMEOUT_SLACK_TICKS: u64 = 20;
+/// Player must be at least this far from the test field before plots are
+/// rebuilt; the streamer owns chunks around the player, and plot chunks cannot
+/// be registered inside a streamed column.
+const FIELD_CLEAR_RADIUS: f32 = 256.0;
+/// Frames to wait after moving the player clear, so the streamer can evict the
+/// field's columns before registration.
+const CLEAR_FIELD_DEFER_FRAMES: u32 = 3;
 /// Cap on how many mismatching rows are reported per failed scenario.
 const MAX_REPORTED_ROWS: usize = 8;
 
@@ -91,6 +98,7 @@ pub(crate) struct WaterTestSuite {
     fixed_clock: u64,
     request_run: bool,
     request_teleport: bool,
+    clear_field_defer: u32,
 }
 
 impl WaterTestSuite {
@@ -110,6 +118,7 @@ impl WaterTestSuite {
             fixed_clock: 0,
             request_run: false,
             request_teleport: false,
+            clear_field_defer: 0,
         }
     }
 
@@ -173,6 +182,10 @@ fn start_requested_suite(
     mut commands: Commands,
     mut suite: ResMut<WaterTestSuite>,
     dimension: Option<Single<&mut Dimension, With<Active>>>,
+    mut player_q: Query<
+        (&PlayerDimension, &mut Transform, &mut Position, &mut Velocity),
+        With<Player>,
+    >,
 ) {
     if !suite.request_run {
         return;
@@ -182,8 +195,27 @@ fn start_requested_suite(
     let Some(dimension) = dimension else {
         return;
     };
-    suite.request_run = false;
     let mut dimension = dimension.into_inner();
+
+    // Plot chunks cannot be registered while the streamer owns their columns.
+    // Running the suite usually means the dev is standing in the test field,
+    // so move them clear and wait for the streamer to release the field.
+    if player_is_in_test_field(&player_q, dimension.id()) {
+        if let Some((_, mut transform, mut position, mut velocity)) = player_q.iter_mut().next() {
+            let spawn = dimension.arrival();
+            **velocity = Vec3::ZERO;
+            position.0 = spawn;
+            *transform = Transform::from_translation(spawn);
+        }
+        suite.clear_field_defer = CLEAR_FIELD_DEFER_FRAMES;
+        return;
+    }
+    if suite.clear_field_defer > 0 {
+        suite.clear_field_defer -= 1;
+        return;
+    }
+
+    suite.request_run = false;
 
     for entry in &mut suite.entries {
         if let Some(plot) = entry.plot.take() {
@@ -207,6 +239,20 @@ fn start_requested_suite(
             }
         }
     }
+}
+
+fn player_is_in_test_field(
+    player_q: &Query<
+        (&PlayerDimension, &mut Transform, &mut Position, &mut Velocity),
+        With<Player>,
+    >,
+    dimension_id: crate::world::DimensionId,
+) -> bool {
+    let field_center = TEST_FIELD_ORIGIN.as_vec3() + Vec3::new(96.0, 8.0, 64.0);
+    player_q.iter().any(|(player_dimension, transform, _, _)| {
+        player_dimension.id() == dimension_id
+            && transform.translation.distance(field_center) <= FIELD_CLEAR_RADIUS
+    })
 }
 
 fn teardown_plot(commands: &mut Commands, dimension: &mut Dimension, plot: TestPlot) {

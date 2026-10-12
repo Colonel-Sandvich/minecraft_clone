@@ -88,6 +88,12 @@ blocks apart. Each plot is an independently registered chunk column built from
 the same `SceneLayout` as the headless runner. Chunks get a real light rebuild,
 mesh, and colliders, so the developer sees actual rendered water.
 
+Pressing `F8` while standing in the test field first moves the player back to
+the dimension arrival and waits a few frames. The streamer owns every column
+around the player, and a plot chunk cannot be registered inside a streamed
+column, so the field must be released before a rerun. Without this, rebuilding
+while inspecting a failure would report collisions instead of running.
+
 The runner does not tick fluids itself. It builds the scene, marks chunks for
 the normal `ChunkNeedsFluidStep` pipeline, and waits for every plot chunk to go
 quiet (no pending fluid step) for at least one fluid period before comparing.
