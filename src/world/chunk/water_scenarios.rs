@@ -154,6 +154,85 @@ pub(crate) const WATER_SCENARIOS: &[WaterScenario] = &[
                       from the landing cell with the usual decay.",
     },
     WaterScenario {
+        name: "source_above_is_falling_not_source",
+        origin: IVec3::ZERO,
+        max_steps: 64,
+        input: &[
+            &["#####"; 3],
+            &["#####", "#S..#", "#####"],
+            &["#####", "##S##", "#####"],
+        ],
+        expected: &[
+            &["#####"; 3],
+            &["#####", "#S87#", "#####"],
+            &["#####", "##S##", "#####"],
+        ],
+        description: "Java Edition has no one-source-plus-source-above conversion rule; \
+                      the cell under a source becomes falling water and feeds the open \
+                      neighbour at level 7.",
+    },
+    WaterScenario {
+        name: "three_sources_spread_while_falling",
+        origin: IVec3::ZERO,
+        max_steps: 64,
+        input: &[
+            &["######", "##.###", "######"],
+            &["##S###", "#S....", "##S###"],
+        ],
+        expected: &[
+            &["######", "##8###", "######"],
+            &["##S###", "#S76..", "##S###"],
+        ],
+        description: "A water cell with three horizontal source neighbours spreads \
+                      sideways even while it pours into a hole; the sideways flow is \
+                      one level weaker.",
+    },
+    WaterScenario {
+        name: "source_over_hole_spreads_sideways",
+        origin: IVec3::ZERO,
+        max_steps: 64,
+        input: &[
+            &["#######", "###.###", "#######"],
+            &["#######", "#..S...", "#######"],
+        ],
+        expected: &[
+            &["#######", "###8###", "#######"],
+            &["#######", "#67S765", "#######"],
+        ],
+        description: "A source pours into a hole on its first tick, then pours fail \
+                      and, being a source, it spreads sideways on the next tick.",
+    },
+    WaterScenario {
+        name: "gap_over_source_becomes_source",
+        origin: IVec3::ZERO,
+        max_steps: 64,
+        input: &[
+            &["#####", "##S##", "#####"],
+            &["#####", "#S.S#", "#####"],
+        ],
+        expected: &[
+            &["#####", "##S##", "#####"],
+            &["#####", "#SSS#", "#####"],
+        ],
+        description: "Vanilla's conversion support also accepts a water source below, \
+                      not just a solid block, so a gap above a source converts too.",
+    },
+    WaterScenario {
+        name: "flow_into_hole_stays_narrow",
+        origin: IVec3::ZERO,
+        max_steps: 64,
+        input: &[
+            &["#######", "###.###", "#######"],
+            &["#######", "#S.....", "#######"],
+        ],
+        expected: &[
+            &["#######", "###8###", "#######"],
+            &["#######", "#S76...", "#######"],
+        ],
+        description: "A flowing cell above a hole pours into it and never spreads \
+                      sideways there, so the stream stays one block wide.",
+    },
+    WaterScenario {
         name: "cross_chunk_channel_flow",
         origin: IVec3::ZERO,
         max_steps: 64,

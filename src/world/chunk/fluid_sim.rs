@@ -113,36 +113,29 @@ pub(crate) fn simulate_fluid_step(
 ) -> FluidStep {
     let mut cleared = HashSet::new();
     let mut next_fluids = HashMap::new();
+    let mut own_states = Vec::new();
 
+    // Phase 1 mirrors FlowingFluid.getNewLiquid: every existing fluid cell
+    // recomputes its own state from its surroundings. This is what keeps
+    // stationary water alive when nothing pours into it any more, and what
+    // raises and lowers levels without upstream writes.
     for &chunk_pos in source_chunks {
         for (pos, fluid) in snapshot.fluid_positions_in_chunk(chunk_pos, profile) {
             cleared.insert(pos);
-
-            if fluid.is_source() {
-                write_next_fluid(snapshot, &mut next_fluids, profile, pos, profile.source());
-            }
-
-            if can_flow_down_from(snapshot, pos, profile) {
-                write_next_fluid(
-                    snapshot,
-                    &mut next_fluids,
-                    profile,
-                    pos + IVec3::NEG_Y,
-                    profile.falling(),
-                );
-                continue;
-            }
-
-            let Some(next_fluid) = profile.decayed_flow(fluid) else {
+            let Some(state) = recompute_fluid(snapshot, pos, fluid, profile) else {
                 continue;
             };
-            for dir in spread_dirs(snapshot, pos, profile) {
-                write_next_fluid(snapshot, &mut next_fluids, profile, pos + dir, next_fluid);
-            }
+            write_next_fluid(snapshot, &mut next_fluids, profile, pos, state);
+            own_states.push((pos, state));
         }
     }
 
-    promote_new_sources(snapshot, &cleared, &mut next_fluids, profile);
+    // Phase 2 mirrors FlowingFluid.spread: pour downward first; otherwise (or
+    // additionally, when three or more sources surround the cell) spread
+    // sideways.
+    for (pos, state) in own_states {
+        spread_fluid(snapshot, &mut next_fluids, profile, pos, state);
+    }
 
     let mut changed_positions = cleared;
     changed_positions.extend(next_fluids.keys().copied());
@@ -167,6 +160,75 @@ pub(crate) fn simulate_fluid_step(
 
     updates.sort_by_key(|update| (update.pos.x, update.pos.y, update.pos.z));
     FluidStep { updates }
+}
+
+/// Recomputes one existing fluid cell, following `getNewLiquid` order.
+///
+/// Returns `None` when the cell dries up.
+fn recompute_fluid(
+    snapshot: &FluidSnapshot,
+    pos: IVec3,
+    fluid: FluidState,
+    profile: FluidProfile,
+) -> Option<FluidState> {
+    if fluid.is_source() {
+        return Some(profile.source());
+    }
+
+    // A cell under the same fluid is falling, no matter how it was fed.
+    if has_same_fluid_above(snapshot, pos, profile) {
+        return Some(profile.falling());
+    }
+
+    // Two horizontal sources plus replaceable support convert a flowing cell
+    // back into a source. Java Edition only has this two-source rule; the
+    // one-source-plus-source-above variant is Bedrock behaviour.
+    if profile.creates_sources
+        && horizontal_source_neighbors(snapshot, pos, profile) >= 2
+        && source_conversion_support(snapshot, pos, profile)
+    {
+        return Some(profile.source());
+    }
+
+    // The level is one below the fullest reachable horizontal neighbour; with
+    // no neighbours the cell drains away.
+    let highest = highest_horizontal_fluid_level(snapshot, pos, profile)?;
+    let next_level = highest.checked_sub(profile.horizontal_decay.get())?;
+    profile.flowing_level(next_level)
+}
+
+/// Spreads one recomputed fluid cell into the surrounding cells.
+fn spread_fluid(
+    snapshot: &FluidSnapshot,
+    next_fluids: &mut HashMap<IVec3, FluidState>,
+    profile: FluidProfile,
+    pos: IVec3,
+    state: FluidState,
+) {
+    let sideways = profile.decayed_flow(state);
+
+    if can_pour_down(snapshot, pos) {
+        write_next_fluid(
+            snapshot,
+            next_fluids,
+            profile,
+            pos + IVec3::NEG_Y,
+            profile.falling(),
+        );
+        // Java also spreads sideways from a cell that is pouring when it has
+        // three or more horizontal source neighbours (wide pools spill over
+        // their lip).
+        if horizontal_source_neighbors(snapshot, pos, profile) >= 3 {
+            write_sideways(snapshot, next_fluids, profile, pos, sideways);
+        }
+        return;
+    }
+
+    // With the pour blocked: a source always spreads sideways, while flowing
+    // water over a water hole stays put.
+    if state.is_source() || !is_water_hole(snapshot, pos) {
+        write_sideways(snapshot, next_fluids, profile, pos, sideways);
+    }
 }
 
 fn write_next_fluid(
@@ -224,8 +286,64 @@ fn can_flow_into(snapshot: &FluidSnapshot, pos: IVec3, profile: FluidProfile) ->
         .is_none_or(|fluid| fluid.ty() == profile.ty && !fluid.is_source())
 }
 
-fn can_flow_down_from(snapshot: &FluidSnapshot, pos: IVec3, profile: FluidProfile) -> bool {
-    can_flow_into(snapshot, pos + IVec3::NEG_Y, profile)
+/// Vanilla pours downward only into a replaceable cell. Once the cell below
+/// already holds water the pour fails until that water is gone.
+fn can_pour_down(snapshot: &FluidSnapshot, pos: IVec3) -> bool {
+    snapshot
+        .cell(pos + IVec3::NEG_Y)
+        .is_some_and(ChunkCell::is_empty)
+}
+
+/// A "water hole" is a cell below that fluid can occupy or is already in:
+/// vanilla checks that the block below does not block motion.
+fn is_water_hole(snapshot: &FluidSnapshot, pos: IVec3) -> bool {
+    snapshot
+        .cell(pos + IVec3::NEG_Y)
+        .is_some_and(|cell| !cell.is_block())
+}
+
+fn has_same_fluid_above(snapshot: &FluidSnapshot, pos: IVec3, profile: FluidProfile) -> bool {
+    snapshot
+        .cell(pos + IVec3::Y)
+        .and_then(ChunkCell::as_fluid)
+        .is_some_and(|above| above.ty() == profile.ty)
+}
+
+fn horizontal_source_neighbors(
+    snapshot: &FluidSnapshot,
+    pos: IVec3,
+    profile: FluidProfile,
+) -> usize {
+    HORIZONTAL_DIRS
+        .iter()
+        .filter(|&&dir| {
+            snapshot
+                .cell(pos + dir)
+                .and_then(ChunkCell::as_fluid)
+                .is_some_and(|fluid| fluid.ty() == profile.ty && fluid.is_source())
+        })
+        .count()
+}
+
+fn write_sideways(
+    snapshot: &FluidSnapshot,
+    next_fluids: &mut HashMap<IVec3, FluidState>,
+    profile: FluidProfile,
+    pos: IVec3,
+    fluid: Option<FluidState>,
+) {
+    let Some(fluid) = fluid else {
+        return;
+    };
+    for dir in spread_dirs(snapshot, pos, profile) {
+        let target = pos + dir;
+        // Vanilla never overwrites water with water: a horizontal spread only
+        // fills replaceable cells, and existing water raises or lowers itself
+        // in the recompute phase instead.
+        if snapshot.cell(target).is_some_and(ChunkCell::is_empty) {
+            write_next_fluid(snapshot, next_fluids, profile, target, fluid);
+        }
+    }
 }
 
 fn spread_dirs(snapshot: &FluidSnapshot, pos: IVec3, profile: FluidProfile) -> Vec<IVec3> {
@@ -259,7 +377,7 @@ fn nearest_drop_distance(
     start: IVec3,
     profile: FluidProfile,
 ) -> Option<u8> {
-    if can_flow_down_from(snapshot, start, profile) {
+    if is_water_hole(snapshot, start) {
         return Some(0);
     }
 
@@ -276,7 +394,7 @@ fn nearest_drop_distance(
             if !visited.insert(next) || !can_flow_into(snapshot, next, profile) {
                 continue;
             }
-            if can_flow_down_from(snapshot, next, profile) {
+            if is_water_hole(snapshot, next) {
                 return Some(distance + 1);
             }
             queue.push_back((next, distance + 1));
@@ -286,58 +404,34 @@ fn nearest_drop_distance(
     None
 }
 
-fn promote_new_sources(
+/// Returns the level of the fullest horizontal same-fluid neighbour.
+///
+/// Sources count as level 8, matching vanilla `getNewLiquid`.
+fn highest_horizontal_fluid_level(
     snapshot: &FluidSnapshot,
-    cleared: &HashSet<IVec3>,
-    next_fluids: &mut HashMap<IVec3, FluidState>,
+    pos: IVec3,
     profile: FluidProfile,
-) {
-    if !profile.creates_sources {
-        return;
-    }
-
-    let mut candidates = next_fluids
+) -> Option<u8> {
+    HORIZONTAL_DIRS
         .iter()
-        .filter_map(|(&pos, &fluid)| (!fluid.is_source()).then_some(pos))
-        .collect::<Vec<_>>();
-    candidates.sort_by_key(|pos| (pos.x, pos.y, pos.z));
-
-    let mut promotions = Vec::new();
-    for pos in candidates {
-        if !is_source_supported(snapshot, cleared, next_fluids, pos, profile) {
-            continue;
-        }
-
-        let source_neighbors = HORIZONTAL_DIRS
-            .iter()
-            .filter(|&&dir| is_source_after(snapshot, cleared, next_fluids, pos + dir, profile))
-            .count();
-        if source_neighbors >= 2 {
-            promotions.push(pos);
-            continue;
-        }
-
-        if source_neighbors >= 1
-            && is_source_after(snapshot, cleared, next_fluids, pos + IVec3::Y, profile)
-        {
-            promotions.push(pos);
-        }
-    }
-
-    for pos in promotions {
-        next_fluids.insert(pos, profile.source());
-    }
+        .filter_map(|&dir| {
+            snapshot
+                .cell(pos + dir)
+                .and_then(ChunkCell::as_fluid)
+                .filter(|fluid| fluid.ty() == profile.ty)
+                .map(|fluid| fluid.level().get())
+        })
+        .max()
 }
 
-fn is_source_supported(
+/// Vanilla converts a flowing cell into a source when the block below is solid
+/// or is itself a source of the same fluid.
+fn source_conversion_support(
     snapshot: &FluidSnapshot,
-    cleared: &HashSet<IVec3>,
-    next_fluids: &HashMap<IVec3, FluidState>,
     pos: IVec3,
     profile: FluidProfile,
 ) -> bool {
-    let below = pos + IVec3::NEG_Y;
-    let Some(cell) = cell_after(snapshot, cleared, next_fluids, below) else {
+    let Some(cell) = snapshot.cell(pos + IVec3::NEG_Y) else {
         return false;
     };
 
@@ -345,33 +439,6 @@ fn is_source_supported(
         || cell
             .as_fluid()
             .is_some_and(|fluid| fluid.ty() == profile.ty && fluid.is_source())
-}
-
-fn is_source_after(
-    snapshot: &FluidSnapshot,
-    cleared: &HashSet<IVec3>,
-    next_fluids: &HashMap<IVec3, FluidState>,
-    pos: IVec3,
-    profile: FluidProfile,
-) -> bool {
-    cell_after(snapshot, cleared, next_fluids, pos)
-        .and_then(ChunkCell::as_fluid)
-        .is_some_and(|fluid| fluid.ty() == profile.ty && fluid.is_source())
-}
-
-fn cell_after(
-    snapshot: &FluidSnapshot,
-    cleared: &HashSet<IVec3>,
-    next_fluids: &HashMap<IVec3, FluidState>,
-    pos: IVec3,
-) -> Option<ChunkCell> {
-    if let Some(&fluid) = next_fluids.get(&pos) {
-        return Some(ChunkCell::fluid(fluid));
-    }
-    if cleared.contains(&pos) {
-        return Some(ChunkCell::EMPTY);
-    }
-    snapshot.cell(pos)
 }
 
 #[cfg(test)]
@@ -456,6 +523,10 @@ mod tests {
         world.set_cell(ivec3(7, 1, 8), ChunkCell::water_source());
         world.set_cell(ivec3(9, 1, 8), ChunkCell::water_source());
 
+        // The gap is filled on the first step, then converts on its own next
+        // update, matching vanilla's placed-fluid scheduling.
+        world.step();
+        assert_eq!(world.cell(ivec3(8, 1, 8)), Some(ChunkCell::water_flow(7)));
         world.step();
 
         assert_eq!(world.cell(ivec3(8, 1, 8)), Some(ChunkCell::water_source()));
@@ -509,5 +580,52 @@ mod tests {
 
         assert_eq!(world.cell(ivec3(9, 1, 8)), Some(Item::Stone.into()));
         assert_eq!(world.cell(ivec3(8, 1, 7)), Some(ChunkCell::water_flow(7)));
+    }
+
+    #[test]
+    fn falling_column_descends_one_cell_per_step() {
+        let mut world = TestFluidWorld::default();
+        let shaft = |y: i32| ivec3(8, y, 8);
+
+        // A one-cell shaft above a stone floor with the source on top; every
+        // side is sealed so the only thing the test can observe is the descent.
+        for y in 1..=5 {
+            world.set_cell(ivec3(7, y, 8), Item::Stone.into());
+            world.set_cell(ivec3(9, y, 8), Item::Stone.into());
+            world.set_cell(ivec3(8, y, 7), Item::Stone.into());
+            world.set_cell(ivec3(8, y, 9), Item::Stone.into());
+        }
+        world.set_cell(ivec3(8, 0, 8), Item::Stone.into());
+        world.set_cell(shaft(5), ChunkCell::water_source());
+
+        // One step is five game ticks, so the leading edge should advance
+        // exactly one block per step, matching vanilla's measured cadence.
+        for step in 1..=4 {
+            world.step();
+            let tip_y = 5 - step;
+            assert_eq!(
+                world.cell(shaft(tip_y)),
+                Some(ChunkCell::water_flow(8)),
+                "falling column should reach y={tip_y} after {step} steps"
+            );
+            if tip_y > 1 {
+                assert_eq!(
+                    world.cell(shaft(tip_y - 1)),
+                    Some(ChunkCell::EMPTY),
+                    "column should not outrun one block per step"
+                );
+            }
+        }
+
+        // The bottom cell rests on the floor as falling water; nothing may
+        // spread sideways out of the sealed shaft.
+        world.step();
+        assert_eq!(world.cell(shaft(1)), Some(ChunkCell::water_flow(8)));
+        for y in 1..=5 {
+            assert_eq!(world.cell(ivec3(7, y, 8)), Some(Item::Stone.into()));
+            assert_eq!(world.cell(ivec3(9, y, 8)), Some(Item::Stone.into()));
+            assert_eq!(world.cell(ivec3(8, y, 7)), Some(Item::Stone.into()));
+            assert_eq!(world.cell(ivec3(8, y, 9)), Some(Item::Stone.into()));
+        }
     }
 }
