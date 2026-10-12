@@ -21,6 +21,7 @@ use bevy::prelude::*;
 use crate::{
     mob::controller::{Flying, Velocity},
     player::{Player, PlayerDimension, cam::MouseCam},
+    tick_control::{TickControl, TickControlSet, simulation_ticks_allowed},
     world::{
         chunk::{
             CHUNK_SIZE, Chunk, ChunkCell, ChunkHeightmap, ChunkInvalidationPlan, ChunkLight,
@@ -161,7 +162,12 @@ impl Default for WaterTestSuite {
 impl Plugin for GameTestPlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(WaterTestSuite::new())
-            .add_systems(FixedUpdate, tick_suite_clock)
+            .add_systems(
+                FixedUpdate,
+                tick_suite_clock
+                    .in_set(TickControlSet::Simulation)
+                    .run_if(simulation_ticks_allowed),
+            )
             .add_systems(
                 Update,
                 (
@@ -209,9 +215,16 @@ fn start_requested_suite(
         With<Player>,
     >,
     mut camera_q: Query<&mut Transform, (With<MouseCam>, Without<Player>)>,
+    mut tick_control: Option<ResMut<TickControl>>,
 ) {
     if !suite.request_run {
         return;
+    }
+
+    // A frozen simulation would never settle the fresh plots, so a run always
+    // resumes normal ticking. Freeze again after starting to step by hand.
+    if let Some(control) = tick_control.as_deref_mut() {
+        control.resume();
     }
 
     // Keep the request pending while no dimension is active (main menu).
@@ -224,8 +237,7 @@ fn start_requested_suite(
     // Running the suite usually means the dev is standing in the test field,
     // so move them clear and wait for the streamer to release the field.
     if player_is_in_test_field(&player_q, dimension.id()) {
-        if let Some((_, _, mut transform, mut position, mut velocity)) =
-            player_q.iter_mut().next()
+        if let Some((_, _, mut transform, mut position, mut velocity)) = player_q.iter_mut().next()
         {
             let spawn = dimension.arrival();
             **velocity = Vec3::ZERO;
@@ -270,7 +282,13 @@ fn start_requested_suite(
     // Land on the first plot, but leave the cycle cursor unset so the first F9
     // press can jump straight to a failure if the run produced one.
     if let Some(plot) = suite.entries.first().and_then(|entry| entry.plot.as_ref()) {
-        fly_player_to_plot(&mut commands, &dimension, &mut player_q, &mut camera_q, plot);
+        fly_player_to_plot(
+            &mut commands,
+            &dimension,
+            &mut player_q,
+            &mut camera_q,
+            plot,
+        );
     }
 }
 
@@ -288,10 +306,12 @@ fn player_is_in_test_field(
     dimension_id: crate::world::DimensionId,
 ) -> bool {
     let field_center = field_center();
-    player_q.iter().any(|(_, player_dimension, transform, _, _)| {
-        player_dimension.id() == dimension_id
-            && transform.translation.distance(field_center) <= FIELD_CLEAR_RADIUS
-    })
+    player_q
+        .iter()
+        .any(|(_, player_dimension, transform, _, _)| {
+            player_dimension.id() == dimension_id
+                && transform.translation.distance(field_center) <= FIELD_CLEAR_RADIUS
+        })
 }
 
 /// Centre of the packed plot field, used to decide whether the player is close
@@ -519,7 +539,10 @@ fn describe_plot(plot: &TestPlot, chunk_q: &Query<(&ChunkPosition, &Chunk)>) -> 
     let mut rows = Vec::new();
     'layers: for y in 0..size.y as usize {
         for z in 0..size.z as usize {
-            rows.push(format!("y={y} z={z}: {}", actual_row(plot, &chunks, size.x, y, z)));
+            rows.push(format!(
+                "y={y} z={z}: {}",
+                actual_row(plot, &chunks, size.x, y, z)
+            ));
             if rows.len() >= MAX_REPORTED_ROWS {
                 break 'layers;
             }
@@ -553,8 +576,7 @@ fn actual_row(
 ) -> String {
     (0..width as usize)
         .map(|x| {
-            let world =
-                plot.scene_origin + IVec3::new(x as i32, y as i32, z as i32);
+            let world = plot.scene_origin + IVec3::new(x as i32, y as i32, z as i32);
             let address = WorldBlockPos::from_ivec3(world).split();
             let cell = chunks
                 .get(&address.chunk())
@@ -708,7 +730,9 @@ fn strip_plot_save_markers(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::world::dimension::fluid::{FluidStepBudget, FluidTickCounter, step_chunk_fluids, tick_counter};
+    use crate::world::dimension::fluid::{
+        FluidStepBudget, FluidTickCounter, step_chunk_fluids, tick_counter,
+    };
 
     fn test_app() -> App {
         let mut app = App::new();
@@ -831,7 +855,9 @@ mod tests {
     #[test]
     fn teleport_with_nothing_built_requests_a_run() {
         let mut app = test_app();
-        app.world_mut().resource_mut::<WaterTestSuite>().request_teleport = true;
+        app.world_mut()
+            .resource_mut::<WaterTestSuite>()
+            .request_teleport = true;
 
         // The teleport handler runs after the start system in the chain, so the
         // run it requests is picked up on the following update.
@@ -891,4 +917,3 @@ mod tests {
         );
     }
 }
-

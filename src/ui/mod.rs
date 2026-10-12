@@ -4,6 +4,7 @@ mod game_test;
 mod hotbar;
 mod inventory;
 mod pause_menu;
+mod tick_control;
 
 use bevy::prelude::*;
 #[cfg(debug_assertions)]
@@ -14,6 +15,7 @@ use game_test::GameTestOverlayPlugin;
 use hotbar::HotbarPlugin;
 use inventory::InventoryUiPlugin;
 use pause_menu::PauseMenuPlugin;
+use tick_control::TickControlOverlayPlugin;
 
 pub use hotbar::Hotbar;
 pub(crate) use inventory::InventoryUi;
@@ -28,6 +30,7 @@ impl Plugin for UIPlugin {
         app.add_plugins(HotbarPlugin);
         app.add_plugins(InventoryUiPlugin);
         app.add_plugins(PauseMenuPlugin);
+        app.add_plugins(TickControlOverlayPlugin);
         #[cfg(debug_assertions)]
         app.add_plugins(DiagnosticsOverlayPlugin)
             .add_systems(Startup, spawn_diagnostics_overlay);

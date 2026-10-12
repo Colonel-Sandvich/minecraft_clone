@@ -137,14 +137,18 @@ Water sources are permanent, so the quickest way to clear an area is to place a
 block into the water cell (blocks replace water). Breaking the block *under* a
 source lets the column drain away.
 
-### Future work: freeze and step
+### Freezing and stepping the simulation
 
-Watching one fluid update by hand currently means waiting for the next 5-tick
-boundary. A Minecraft-style freeze/step control (pause `Time<Virtual>`, release
-exactly one fixed tick per press) would make in-game scenarios much easier to
-inspect. Note that one fixed tick is not one fluid update: the counter only
-steps fluids every fifth tick, so a useful control should also step directly to
-the next fluid update and show the current phase.
+`P` freezes the simulation, `O` runs one fixed tick, `I` runs the ticks up to
+the next fluid update, and `U` includes player movement in the freeze and its
+steps. A banner lists the controls while frozen. This is the in-game equivalent
+of Minecraft's `/tick freeze` and `/tick step`; see
+[`tick_control.md`](tick_control.md) for the design and for what stays live.
+`F8` resumes the simulation, because a frozen field would never settle.
+
+The hand-stepping loop is the fastest way to read a pour: freeze, place a
+source (edits still land while frozen), then press `I` to advance exactly one
+fluid update and watch the front move one block at a time.
 
 ## Non-obvious implementation notes
 
@@ -160,12 +164,15 @@ the next fluid update and show the current phase.
   currently desirable view chunk; `build_plot` fails the scenario rather than
   panicking if a plot chunk is already loaded.
 - **Settle detection needs a grace period.** Fluid steps happen only every
-  fifth fixed tick, so a quiet plot is only trusted after
-  `TICKS_PER_FLUID_STEP` (5) ticks, guaranteeing at least one fluid step
-  happened after the scene was built.
+  `FLUID_STEP_PERIOD_TICKS` (5) fixed ticks, so a quiet plot is only trusted
+  after 5 ticks, guaranteeing at least one fluid step happened after the scene
+  was built.
 - **Timeout is in fixed ticks**, `max_steps * 5 + 20` slack, not wall time.
-- **F7/F8/F9** are unbound keys elsewhere; there is no chat/command system to
-  attach `/test`-style commands to yet.
+  The suite clock shares the simulation gate, so freezing the simulation also
+  freezes a run's timeout budget.
+- **F7/F8/F9** (runner) and **P/O/I/U** (tick control) are unbound keys
+  elsewhere; there is no chat/command system to attach `/test`-style commands
+  to yet.
 - The headless driver passes **all chunks with fluids** as source chunks on
   every step, which is more generous than the running game (budgeted, active
   markers only). The in-game runner is the authority on pipeline behaviour.

@@ -1,12 +1,15 @@
 use bevy::prelude::*;
 use std::collections::{HashMap, HashSet};
 
-use crate::world::{
-    ChunkSimulationSet,
-    chunk::{
-        CHUNK_VOLUME, Chunk, ChunkCell, ChunkContentCounts, ChunkEditor, ChunkInvalidationPlan,
-        ChunkNeedsFluidStep, FluidProfile, FluidSnapshot, WorldBlockPos, chunk_neighbor_offsets,
-        simulate_fluid_step,
+use crate::{
+    tick_control::{TickControlSet, simulation_ticks_allowed},
+    world::{
+        ChunkSimulationSet,
+        chunk::{
+            CHUNK_VOLUME, Chunk, ChunkCell, ChunkContentCounts, ChunkEditor, ChunkInvalidationPlan,
+            ChunkNeedsFluidStep, FluidProfile, FluidSnapshot, WorldBlockPos,
+            chunk_neighbor_offsets, simulate_fluid_step,
+        },
     },
 };
 
@@ -47,7 +50,9 @@ impl Plugin for DimensionFluidPlugin {
                 FixedUpdate,
                 (tick_counter, step_chunk_fluids)
                     .chain()
-                    .in_set(ChunkSimulationSet::FluidStep),
+                    .in_set(ChunkSimulationSet::FluidStep)
+                    .in_set(TickControlSet::Simulation)
+                    .run_if(simulation_ticks_allowed),
             );
     }
 }
