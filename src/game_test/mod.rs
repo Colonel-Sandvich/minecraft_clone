@@ -21,7 +21,7 @@ use bevy::prelude::*;
 use crate::{
     mob::controller::{Flying, Velocity},
     player::{Player, PlayerDimension, cam::MouseCam},
-    tick_control::{TickControl, TickControlSet, simulation_ticks_allowed},
+    tick_control::{TickControlSet, simulation_ticks_allowed},
     world::{
         chunk::{
             CHUNK_SIZE, Chunk, ChunkCell, ChunkHeightmap, ChunkInvalidationPlan, ChunkLight,
@@ -215,16 +215,9 @@ fn start_requested_suite(
         With<Player>,
     >,
     mut camera_q: Query<&mut Transform, (With<MouseCam>, Without<Player>)>,
-    mut tick_control: Option<ResMut<TickControl>>,
 ) {
     if !suite.request_run {
         return;
-    }
-
-    // A frozen simulation would never settle the fresh plots, so a run always
-    // resumes normal ticking. Freeze again after starting to step by hand.
-    if let Some(control) = tick_control.as_deref_mut() {
-        control.resume();
     }
 
     // Keep the request pending while no dimension is active (main menu).

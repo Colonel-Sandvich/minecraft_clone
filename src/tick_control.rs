@@ -57,8 +57,8 @@ impl TickControl {
         self.player_included
     }
 
-    /// Resumes normal ticking, e.g. when the water suite is about to run.
-    pub(crate) fn resume(&mut self) {
+    /// Resumes normal ticking, e.g. from the freeze toggle.
+    fn resume(&mut self) {
         self.frozen = false;
         self.steps = 0;
         self.step_to_fluid = false;

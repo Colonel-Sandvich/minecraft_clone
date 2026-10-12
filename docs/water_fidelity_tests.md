@@ -144,7 +144,9 @@ the next fluid update, and `U` includes player movement in the freeze and its
 steps. A banner lists the controls while frozen. This is the in-game equivalent
 of Minecraft's `/tick freeze` and `/tick step`; see
 [`tick_control.md`](tick_control.md) for the design and for what stays live.
-`F8` resumes the simulation, because a frozen field would never settle.
+`F8` does not resume the simulation: a run started while frozen waits for
+steps, and the suite overlay says so. The suite clock shares the freeze, so
+the run cannot time out while it waits.
 
 The hand-stepping loop is the fastest way to read a pour: freeze, place a
 source (edits still land while frozen), then press `I` to advance exactly one

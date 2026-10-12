@@ -36,9 +36,11 @@ flies around it. `U` moves the player into the freeze, making each step advance
 movement one tick: that is how to watch `collide_and_slide` resolve tick by
 tick.
 
-The water suite's `F8` resumes the simulation deliberately: a frozen field
-would never settle, so runs always start from normal ticking and the developer
-freezes again afterwards to step by hand.
+`F8` does not touch the freeze: starting a run while frozen builds the plots
+and holds them until they are stepped (`O`/`I`) or the simulation is resumed
+(`P`). The suite clock shares the freeze, so a held run never times out. That
+makes "freeze, start a run, step one fluid update at a time" the intended way
+to read an in-game scenario.
 
 ## What deliberately stays live
 

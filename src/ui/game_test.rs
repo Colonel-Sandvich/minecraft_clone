@@ -8,6 +8,7 @@ use bevy::prelude::*;
 
 use crate::{
     game_test::{TestStatus, WaterTestSuite},
+    tick_control::TickControl,
     world::chunk::WATER_SCENARIOS,
 };
 
@@ -93,6 +94,7 @@ fn spawn_game_test_overlay(mut commands: Commands) {
 
 fn update_game_test_overlay(
     suite: Res<WaterTestSuite>,
+    tick_control: Option<Res<TickControl>>,
     mut root_q: Query<&mut Node, With<GameTestOverlayRoot>>,
     mut header_q: Query<&mut Text, (With<GameTestOverlayHeader>, Without<GameTestOverlayRow>)>,
     mut rows_q: Query<
@@ -122,6 +124,14 @@ fn update_game_test_overlay(
             suite.passed(),
             suite.failed(),
         );
+        if tick_control
+            .as_ref()
+            .is_some_and(|control| control.frozen())
+        {
+            header
+                .0
+                .push_str("\nsimulation frozen: P resume | O step | I step fluid");
+        }
     }
 
     for (row, mut text, mut color) in &mut rows_q {
