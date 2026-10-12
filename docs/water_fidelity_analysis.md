@@ -44,7 +44,14 @@ recomputed state:
   wide-pool lip rule).
 - Otherwise, a source always spreads sideways; flowing water spreads sideways
   unless the cell below is a water hole (not a solid block), which keeps a
-  stream above a hole one block wide.
+  stream above a hole one block wide. A cell whose below is **water** also
+  counts as a hole: vanilla `FlowingFluid.spread` fails the downward
+  `canSpreadTo` (water below is not replaceable by water) and `isWaterHole`
+  short-circuits true for same-type fluid below, so a non-source cell never
+  spreads sideways over water — only sources keep spreading. Re-verified
+  against a fresh 1.20.1 client decompile (`spread`, `isWaterHole`) and a
+  live-server two-deep trench (top layer stays one cell wide over the lower
+  layer).
 
 Sideways directions come from a nearest-drop search: a direction whose cell
 below is a hole (empty or water) wins outright; otherwise the nearest hole
