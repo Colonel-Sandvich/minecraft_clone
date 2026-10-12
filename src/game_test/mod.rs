@@ -28,7 +28,7 @@ use crate::{
             WATER_SCENARIOS, WaterScenario, WorldBlockPos, char_from_cell, layout_scene,
             scene_size,
         },
-        dimension::{Active, Dimension, apply_chunk_invalidations},
+        dimension::{Active, Dimension, apply_chunk_invalidations, fluid::FLUID_STEP_PERIOD_TICKS},
     },
 };
 
@@ -41,11 +41,9 @@ const PLOTS_PER_ROW: usize = 4;
 /// Plot origins sit one block past a chunk boundary so a scene's shell (one
 /// cell outside the scene) starts exactly on that boundary.
 const PLOT_ORIGIN_OFFSET: i32 = 1;
-/// Fluid steps happen every fifth fixed tick in the running game.
-const TICKS_PER_FLUID_STEP: u64 = 5;
 /// Grace period before a quiet plot is trusted to have settled, guaranteeing
 /// at least one fluid step happened since the scene was built.
-const SETTLE_GRACE_TICKS: u64 = TICKS_PER_FLUID_STEP;
+const SETTLE_GRACE_TICKS: u64 = FLUID_STEP_PERIOD_TICKS as u64;
 /// Extra ticks over the scenario budget before a run counts as timed out.
 const TIMEOUT_SLACK_TICKS: u64 = 20;
 /// Player must be at least this far from the test field before plots are
@@ -474,7 +472,7 @@ enum TestDecision {
 }
 
 fn timeout_ticks(scenario: &WaterScenario) -> u64 {
-    u64::from(scenario.max_steps) * TICKS_PER_FLUID_STEP + TIMEOUT_SLACK_TICKS
+    u64::from(scenario.max_steps) * u64::from(FLUID_STEP_PERIOD_TICKS) + TIMEOUT_SLACK_TICKS
 }
 
 fn compare_plot(

@@ -23,9 +23,12 @@ impl Default for FluidStepBudget {
     }
 }
 
-/// Counter that increments every FixedUpdate.  Fluids are only stepped
-/// when counter % 5 == 0, giving 4 updates/second — matching Minecraft’s
-/// 4 blocks/second water spread rate.
+/// Fixed ticks between fluid updates in the running game: 20 Hz / 5 = 4
+/// updates per second, matching Minecraft's 4 blocks/second water spread.
+pub(crate) const FLUID_STEP_PERIOD_TICKS: u32 = 5;
+
+/// Counter that increments every FixedUpdate. Fluids are only stepped when
+/// `counter % FLUID_STEP_PERIOD_TICKS == 0`, giving 4 updates/second.
 #[derive(Resource, Debug, Default)]
 pub(crate) struct FluidTickCounter(pub(crate) u32);
 
@@ -61,7 +64,7 @@ pub(crate) fn step_chunk_fluids(
     mut param_set: ParamSet<(Query<FluidChunkRead>, Query<FluidChunkWrite>)>,
 ) {
     // Water in Minecraft spreads at 1 block per 5 ticks (4/sec).
-    if !counter.0.is_multiple_of(5) {
+    if !counter.0.is_multiple_of(FLUID_STEP_PERIOD_TICKS) {
         return;
     }
 
