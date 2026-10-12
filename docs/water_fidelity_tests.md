@@ -113,6 +113,30 @@ has no command system, no structure files, and far fewer tests:
 - Rotation sweeps, retries, environments/undo-logs, mock players, and barrier
   shells are intentionally not implemented.
 
+## Manual testing
+
+The default inventory stocks two items for poking at water by hand:
+
+- **Water** in hotbar slot 9 (the ninth slot). Water is a non-block item;
+  placing it seeds a water source at the targeted cell. It behaves like any
+  other placeable: unlimited in creative, one per placement in survival, and it
+  can be dropped.
+- **Ice** in the last main-inventory slot, directly above the water slot. Handy
+  for walling off or filling a channel quickly, since it is an ordinary block.
+
+Water sources are permanent, so the quickest way to clear an area is to place a
+block into the water cell (blocks replace water). Breaking the block *under* a
+source lets the column drain away.
+
+### Future work: freeze and step
+
+Watching one fluid update by hand currently means waiting for the next 5-tick
+boundary. A Minecraft-style freeze/step control (pause `Time<Virtual>`, release
+exactly one fixed tick per press) would make in-game scenarios much easier to
+inspect. Note that one fixed tick is not one fluid update: the counter only
+steps fluids every fifth tick, so a useful control should also step directly to
+the next fluid update and show the current phase.
+
 ## Non-obvious implementation notes
 
 - **Test chunks must never be saved.** The fluid solver routes every cell write
