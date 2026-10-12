@@ -137,23 +137,19 @@ has no command system, no structure files, and far fewer tests:
   every step, which is more generous than the running game (budgeted, active
   markers only). The in-game runner is the authority on pipeline behaviour.
 
-## Current fidelity gaps
+## Fidelity status
 
-These are known places where the solver's *model* differs from vanilla Java
-Edition; the final-state scenarios above mostly cannot see them yet, because
-they test where the state converges rather than how it gets there. They are
-tracked here until scenario coverage and/or solver work lands:
+The scenarios above cover the final states; per-tick behaviour is pinned where
+it matters by targeted unit tests (falling cadence, drain completeness). The
+solver was rewritten to vanilla's two-phase model (recompute from neighbours,
+then spread) after oracle research against decompiled 1.20.1 plus live server
+measurements. Verified rules, the fixes made, and the remaining structural
+differences (tick scheduling, slope-search shape, no scheduled-tick
+persistence, simplified replaceability) are documented in
+`docs/water_fidelity_analysis.md`.
 
-- The solver is a batch "clear and re-derive from upstream" pass over active
-  chunks, not per-block scheduled fluid ticks. When a source is removed, the
-  whole stream disappears in one fluid update, where vanilla drains gradually.
-- Falling water descends one block per fluid update (5 game ticks), so long
-  waterfalls grow visibly slower than vanilla if vanilla falls at one block per
-  tick.
-- Water can spread sideways only when it cannot fall; vanilla also spreads
-  sideways while falling when the cell has three or more adjacent source
-  blocks.
-- Source conversion checks "solid block **or water source** below", while
-  vanilla's condition is that the block below blocks motion (a solid block);
-  the one-source-plus-source-above rule also needs verification against Java
-  Edition specifically.
+When adding a scenario for a behaviour you are unsure about, check that doc
+first: the four deviations found so far (one-source-plus-source-above
+conversion, sideways spread while pouring with 3+ sources, sources above a
+hole, and cells losing their level when upstream spread is suppressed) are all
+fixed and covered.

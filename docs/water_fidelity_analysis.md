@@ -1,147 +1,133 @@
 # Water Fidelity Analysis
 
-Analysis of `src/world/chunk/fluid_sim.rs` (`simulate_fluid_step`) against
-vanilla Java Edition water behaviour, using the ASCII scenario tests and
-targeted probes. Scenario coverage lives in `docs/water_fidelity_tests.md`.
+How `src/world/chunk/fluid_sim.rs` compares to vanilla Java Edition water, and
+what this branch changed. Scenario coverage is described in
+`docs/water_fidelity_tests.md`; run `cargo test water_scenarios` or press `F8`
+in game.
 
-Status legend: **matches** = covered by a passing scenario; **suspected** =
-probe shows behaviour believed non-vanilla, verification pending; **pending** =
-oracle research not finished.
+## Method
 
-## Model summary
+The comparison used vanilla Java Edition 1.20.1 as the oracle:
 
-The solver is a batch pass over every fluid cell in the active chunks:
+- Decompiled `FlowingFluid`/`WaterFluid` from the official server jar with
+  Mojang mappings, and diffed the fluid classes against 1.14.4, 1.16.5 and
+  1.21.1 (the algorithm is unchanged across those versions).
+- Cross-checked against live measurements on a vanilla 1.20.1 dedicated server
+  (tick-accurate datapack): falling cadence, drain order, direction choice,
+  source conversion matrix.
+- Cross-checked with the [Water](https://minecraft.wiki/w/Water),
+  [Fluid](https://minecraft.wiki/w/Fluid) and [Tick](https://minecraft.wiki/w/Tick)
+  wiki pages.
 
-1. Clear every fluid cell in the processed chunks.
-2. For each fluid cell in the snapshot:
-   - a source stays a source;
-   - if the cell below can accept fluid, write falling water (level 8) below and
-     skip horizontal spread entirely;
-   - otherwise write `level - 1` into every valid horizontal direction, where
-     "valid" is filtered to the nearest reachable drop within 4 blocks when one
-     exists.
-3. Promote freshly written flowing cells to sources when supported and adjacent
-   to 2+ sources, or to 1 source with a source above.
-4. Any cleared cell that is not rewritten becomes air.
+## The solver today
 
-One pass runs every 5 game ticks (4 updates/second), the vanilla horizontal
-cadence.
+One fluid step runs every fifth game tick (4 steps/second), matching vanilla's
+5-tick spread delay. A step has two phases that mirror vanilla's
+`FlowingFluid.tick`:
 
-## Confirmed against scenarios (matches)
+**Phase 1 — recompute (`getNewLiquid`).** Every existing fluid cell computes
+its own next state, in this order:
 
-These final states are pinned by passing scenarios in both runners:
+1. A source stays a source.
+2. If the same fluid sits directly above, the cell is falling (flowing level 8)
+   — regardless of how it was fed.
+3. Else, if two or more horizontal neighbours are sources **and** the block
+   below is a solid block or a water source, the cell becomes a source.
+4. Else its level is one below the fullest horizontal same-fluid neighbour
+   (sources counting as level 8). With no such neighbour the cell dries up.
 
-| Scenario | What it pins |
+**Phase 2 — spread (`FlowingFluid.spread`).** Each cell then spreads using its
+recomputed state:
+
+- If the cell below is empty, place falling water there. Additionally spread
+  sideways when the cell has three or more horizontal source neighbours (the
+  wide-pool lip rule).
+- Otherwise, a source always spreads sideways; flowing water spreads sideways
+  unless the cell below is a water hole (not a solid block), which keeps a
+  stream above a hole one block wide.
+
+Sideways directions come from a nearest-drop search: a direction whose cell
+below is a hole (empty or water) wins outright; otherwise the nearest hole
+within four horizontal steps is chosen, with ties spreading in all tied
+directions. Spreads only ever fill empty cells — vanilla never overwrites
+water with water, so existing cells change only through their own recompute.
+
+## Verified behaviours and the tests that pin them
+
+| Vanilla rule | Scenario / test |
 | --- | --- |
-| `flat_floor_diamond` | levels are `8 - manhattan_distance`, stop at 1 |
-| `channel_seven_block_range` | flat range is 7 blocks; one level per block |
-| `infinite_source_gap_over_stone` | two sources with a gap over stone create a source |
-| `nearest_drop_preference` | water ignores open flat ground for a nearby drop |
-| `falling_water_landing_spread` | landing cell is level 8 and spreads level 7 |
-| `cross_chunk_channel_flow` | levels continue across chunk borders |
+| Levels are `8 - manhattan distance`, stopping at 1 | `flat_floor_diamond` |
+| Flat range is 7 blocks from a source, one level per block | `channel_seven_block_range` |
+| Two sources with a gap over stone create a source | `infinite_source_gap_over_stone` |
+| Conversion support also accepts a **water source** below | `gap_over_source_becomes_source` |
+| Java has **no** one-source-plus-source-above rule; that cell is falling | `source_above_is_falling_not_source` |
+| Three or more source neighbours spread sideways while pouring | `three_sources_spread_while_falling` |
+| A source pours first; once the pour fails it spreads sideways | `source_over_hole_spreads_sideways` |
+| Flowing water above a hole never spreads sideways | `flow_into_hole_stays_narrow` |
+| Falling water lands at level 8 and spreads 7 | `falling_water_landing_spread` |
+| Falling descends exactly one block per step (5 ticks) | `falling_column_descends_one_cell_per_step` |
+| Water ignores flat ground to reach a nearby drop | `nearest_drop_preference` |
+| Flow continues across chunk borders | `cross_chunk_channel_flow` |
 
-## Probe results (current behaviour)
+Already correct before this branch (now locked in by the tests above): the
+5-tick horizontal cadence, downward-first priority, nearest-drop direction
+choice, level decay, infinite-water conversion over stone, landing spread, and
+falling cadence.
 
-Temporary instrumented probes (not committed) produced the following.
+## Fixes in this branch
 
-### A. Three source neighbours with a hole below
+The probes in the previous revision of this document found four deviations
+from Java; all four are fixed by the two-phase rewrite:
 
-```
-y=1: #S7...      S at west/north/south, test cell centre, open east
-y=0: ##.###      hole under the test cell
-```
+1. **One-source-plus-source-above conversion** existed in the solver but is a
+   Bedrock-only rule (verified live on 1.20.1: the cell becomes falling water,
+   not a source). Removed; the recompute phase turns that cell falling.
+2. **Sideways spread while pouring with 3+ source neighbours** was missing
+   entirely. Added to the spread phase.
+3. **A source above a hole never spread sideways**, because the old
+   clear-and-rewrite model kept "pouring" into water below forever. The spread
+   phase now stops pouring into non-empty cells, so sources spread sideways
+   from the next step, and flowing water correctly stays narrow above a hole.
+4. **Existing water was only updated by upstream writes**, so a cell whose
+   upstream spread was suppressed (the fix in 3) would vanish. The recompute
+   phase now gives every existing cell its own vanilla `getNewLiquid` update.
 
-Current result: the test cell (7) only writes falling water into the hole;
-the open cells to the east stay dry. `y=1` stays `#S7...` and `y=0` becomes
-`##8###`.
+One timing change fell out of this: a gap between two sources now converts on
+its *second* step instead of its first, because the placed cell gets its own
+update one step after it is created — exactly what vanilla's placed-block
+scheduling (`onPlace` → `scheduleTick(..., 5)`) produces.
 
-**Suspected deviation:** vanilla `FlowingFluid.spread()` also spreads sideways
-while falling when the cell has 3+ horizontally adjacent sources
-(`sourceNeighborCount(level, pos) >= 3`). Here the test cell has 3 source
-neighbours, so vanilla would wet the east cell too. Verification pending.
+## Remaining known differences
 
-### B. Gap supported by a water source below
+These are structural or untested corners, not observed mismatches:
 
-```
-y=1: #S.S#  →  #SSS#   (gap promoted to source)
-y=0: ##S##
-```
+- **Scheduling model.** Vanilla schedules per-block fluid ticks with
+  coalescing; this solver batch-processes active chunks in a fixed order every
+  fifth tick. Final states match the scenarios; transient shapes during
+  rearrangements (e.g. the exact drain order of a channel) can differ, and a
+  `setBlock`-heavy tick may behave differently from vanilla's priority queue.
+- **Slope search shape.** Vanilla's hole search is a depth-limited DFS that
+  excludes stepping back through the direction it came from; this solver uses a
+  BFS with a visited set, which can path back through the origin and cannot
+  revisit cells. It agrees on all covered scenes, but tight spirals and
+  dead-end geometry may choose different directions.
+- **No scheduled-tick persistence.** Vanilla saves pending fluid ticks per
+  chunk; the batch model instead re-derives state from cells each step, so
+  saving mid-propagation resumes from the cell grid rather than exact tick
+  timing. Steady states are unaffected.
+- **Can-place checks are simplified.** Vanilla's `canPassThroughWall`,
+  `canHoldFluid`, replaceable plants and waterlogging are reduced to "full
+  solid blocks block everything else". The clone has no slabs, plants or
+  waterloggable blocks yet.
+- **World edges.** Cells outside the snapshot count as non-holders; there is no
+  void-pour behaviour for an unloaded world bottom.
 
-Current result: promoted, because support accepts "solid block **or** water
-source below".
+## Files
 
-**Suspected deviation:** vanilla's conversion test uses
-`blockState.below().blocksMotion()`; water does not block motion, so vanilla
-would keep the middle cell flowing. Verification pending.
-
-### C. One source neighbour plus a source above
-
-```
-y=1: #S..#  →  #SS7#
-y=2: ##S##
-```
-
-Current result: promoted to a source.
-
-**Suspected deviation:** the one-source-plus-source-above rule may be
-Bedrock-only; if Java lacks it the middle cell should stay flowing.
-Verification pending.
-
-### D. Draining after source removal
-
-Channel `S7654321` settled, then the source removed:
-
-| Step | Row |
-| --- | --- |
-| 0 | `#65654321..` |
-| 1 | `#45454321..` |
-| 2 | `#43434321..` |
-| 3 | `#23232321..` |
-| 4 | `#21212121..` |
-| 5 | `#.1.1.1.1..` |
-| 6 | `#..........` |
-
-So the model *does* drain gradually (each pass, cells only receive
-`neighbour_level - 1`, so a cell with no upstream support loses its level),
-but the shape alternates in a way that looks model-specific. Vanilla
-recomputes each cell's level from its neighbours each tick; the transient
-pattern and drain timing need comparison. Verification pending.
-
-### E. Falling column speed
-
-Shaft with a source at the top; the column grows one block per fluid pass
-(i.e. one block per 5 game ticks). Vanilla's falling cadence needs
-confirmation; if falling is 1 block/tick, the clone is 5x slow for waterfalls.
-
-## Architectural notes
-
-- **Batch clear/recompute vs scheduled ticks.** Vanilla ticks individual fluid
-  positions with per-block scheduling and recomputes a cell's level from its
-  neighbours. The clone recomputes all active cells from the previous snapshot
-  in world order. Final states agree on the scenarios above; timing/transient
-  states can differ (probe D shape, falling cadence).
-- **Source chunk processing.** `simulate_fluid_step` receives source chunks; the
-  dimension system expands them to neighbours containing fluids and snapshots
-  the source chunks plus all 26 neighbour chunks, so cross-chunk flow works.
-  Single-chunk `Chunk::step_fluids` drops boundary writes and reports
-  `boundary_changed` instead.
-- **Budget.** The fluid system processes at most `FluidStepBudget` (default 64)
-  source chunks per pass, sorted by position; overflow is deferred.
-- **`spread_dirs` drop search** uses a BFS capped at 4 horizontal steps from
-  each candidate and only spreads into directions tied for the nearest drop.
-  It does not exclude the direction it came from, unlike a path search; this
-  can matter in tight spirals (untested).
-- **Level 8 ambiguity.** `water_flow(8)` (falling) and `water_source()` are
-  distinct states but render as the same char only via `S`; flow level 8 and
-  source level 8 are separated by form.
-
-## Open questions for the vanilla oracle
-
-1. Exact `sourceNeighborCount >= 3` sideways spread while falling (probe A),
-   and what level the sideways flow gets.
-2. Source conversion support rule: `blocksMotion()` only, or water below
-   accepted (probe B).
-3. Whether Java has the one-source + source-above rule (probe C).
-4. Falling water cadence and how the landing cell's level is derived (probe E).
-5. Level recomputation from neighbours when flows meet or when a source is
-   removed; drain transient shape and timing (probe D).
+- Solver: `src/world/chunk/fluid_sim.rs` (two phases: `recompute_fluid`,
+  `spread_fluid`; direction search: `spread_dirs`, `nearest_drop_distance`).
+- Scheduling: `src/world/dimension/fluid.rs` (5-tick counter, chunk budget,
+  invalidation-driven activity).
+- Scenarios: `src/world/chunk/water_scenarios.rs`.
+- Runners: headless (`FluidSceneWorld` in the scenario module) and in-game
+  (`src/game_test/`, overlay in `src/ui/game_test.rs`).
