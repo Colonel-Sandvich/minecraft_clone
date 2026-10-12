@@ -6,7 +6,7 @@ use avian3d::prelude::*;
 use bevy::{mesh::MeshTag, prelude::*};
 
 use crate::{
-    block::{BlockTextureMap, render_id_for_block},
+    block::{BlockTextureMap, WATER_RENDER_ID, render_id_for_block},
     game_state::GameState,
     input::GameActionSystems,
     item::Inventory,
@@ -15,7 +15,7 @@ use crate::{
     world::{ITEM_COLLISION_LAYERS, PICKUP_SENSOR_COLLISION_LAYERS},
 };
 
-use super::ItemStack;
+use super::{Item, ItemStack};
 use render::{DroppedItemRenderAssets, prepare_dropped_item_render_assets};
 
 const ITEM_DROP_FORWARD_OFFSET: f32 = 0.75;
@@ -117,8 +117,21 @@ fn on_drop_item(
             LinearVelocity(look_direction * ITEM_DROP_SPEED),
             Mesh3d(item_render_assets.cube_mesh.clone()),
             MeshMaterial3d(item_render_assets.material_for(stack)),
-            MeshTag(u32::from(render_id_for_block(stack.item))),
+            MeshTag(u32::from(dropped_item_render_id(stack.item))),
         ));
+    }
+}
+
+/// Terrain render id used by a dropped item's cube.
+///
+/// Water is the one placeable that is not a block item, but it still has a
+/// reserved terrain render id, so a dropped water stack renders with the water
+/// textures and tint instead of panicking.
+fn dropped_item_render_id(item: Item) -> u16 {
+    if item == Item::Water {
+        WATER_RENDER_ID
+    } else {
+        render_id_for_block(item)
     }
 }
 

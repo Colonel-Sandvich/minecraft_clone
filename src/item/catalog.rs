@@ -30,6 +30,9 @@ pub enum Item {
     OakLeaves,
     Glowstone,
     Ice,
+    /// Not a block: placing it seeds a water source. Deliberately kept out of
+    /// [`Item::BLOCKS`] so chunk storage IDs and render IDs are unaffected.
+    Water,
 }
 
 impl Item {
@@ -76,6 +79,7 @@ impl Item {
             Self::OakLeaves => Some(6),
             Self::Glowstone => Some(7),
             Self::Ice => Some(8),
+            Self::Water => None,
         }
     }
 
@@ -204,6 +208,7 @@ impl Item {
             Self::OakLeaves => "textures/block/oak_leaves.png",
             Self::Glowstone => "textures/block/glowstone.png",
             Self::Ice => "textures/block/ice.png",
+            Self::Water => "textures/block/water_still.png",
         }
     }
 

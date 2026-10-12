@@ -72,6 +72,19 @@ fn water_placement_does_not_require_actor_clearance() {
     assert!(placement_requires_actor_clearance(Item::Ice.into()));
 }
 
+#[test]
+fn water_item_places_a_source_and_blocks_place_themselves() {
+    assert_eq!(
+        placement_cell_for_item(Item::Water),
+        Some(ChunkCell::water_source())
+    );
+    assert_eq!(
+        placement_cell_for_item(Item::Stone),
+        Some(ChunkCell::block(Item::Stone))
+    );
+    assert_eq!(placement_cell_for_item(Item::OakLeaves), Some(Item::OakLeaves.into()));
+}
+
 fn app_with_request_emitter() -> App {
     let mut app = App::new();
     app.add_plugins(MinimalPlugins)
