@@ -71,6 +71,7 @@ water with water, so existing cells change only through their own recompute.
 | Damming a settled channel drains everything downstream | `channel_dam_after_settle` |
 | Breaking a wall beside a source fills the pocket at level 7 | `channel_wall_break_after_settle` |
 | Removing a source drains its settled range completely | `channel_source_removed_after_settle` |
+| A hanging waterfall drains completely, taking its time | `hanging_waterfall_dissipates_after_source_removed` |
 
 The last two rows are multi-phase scenarios: they settle first, then apply a
 block edit through the production edit path and settle again, so the

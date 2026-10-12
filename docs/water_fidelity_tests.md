@@ -34,8 +34,6 @@ Example, a source at one end of a walled channel:
 ```rust
 WaterScenario {
     name: "channel_seven_block_range",
-    origin: IVec3::ZERO,
-    max_steps: 64,
     input: &[
         &["##########"; 3],
         &["##########", "#S........", "##########"],
@@ -45,6 +43,7 @@ WaterScenario {
         &["##########", "#S7654321.", "##########"],
     ],
     description: "...",
+    ..Default::default() // origin at zero, 64-step budget, no phases
 }
 ```
 
@@ -86,6 +85,15 @@ applies the edit, settles for that phase's `max_steps`, and compares its
 invalidation planning as a player's block edit, so the fluid pipeline is
 woken and the settle detection re-armed exactly like in normal play. The
 overlay shows which phase a scenario is on, e.g. `[2/3]`.
+
+A phase (or the opening scene) can also pin how long it takes with
+`expect_steps: Some(n)`: the headless driver then requires the scene to reach
+its fixpoint in exactly `n` fluid steps. This is for behaviours where the
+*duration* is the point, not just the end state — the hanging waterfall
+drain is pinned this way. The in-game runner cannot count fluid steps that
+precisely (it waits for quiet plus a grace period, and later plots share the
+fluid budget), so in-game the `max_steps` timeout is the timing guard; the
+exact number lives in the headless test and is watched by eye in-game.
 
 ### Relationship to Minecraft's GameTest
 
@@ -237,8 +245,9 @@ fluid update and watch the front move one block at a time.
 ## Fidelity status
 
 The scenarios above cover the settled states, including edit-triggered
-re-settling (phases that break or place a block after the scene has settled);
-per-tick behaviour is pinned where it matters by targeted unit tests (falling
+re-settling (phases that break or place a block after the scene has settled)
+and one pinned duration — the hanging waterfall drain, at 17 fluid steps.
+Per-tick behaviour is otherwise pinned by targeted unit tests (falling
 cadence, drain completeness). The solver was rewritten to vanilla's two-phase
 model (recompute from neighbours, then spread) after oracle research against
 decompiled 1.20.1 plus live server measurements. Verified rules, the fixes

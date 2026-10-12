@@ -50,7 +50,27 @@ pub(crate) struct ScenePhase {
     pub(crate) expected: &'static SceneLayers,
     /// Maximum fluid steps this phase may take to settle.
     pub(crate) max_steps: u32,
+    /// When set, the headless driver asserts the phase settles in exactly
+    /// this many fluid steps, so the *duration* is part of the behaviour
+    /// under test and not just the end state.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) expect_steps: Option<u32>,
 }
+
+const impl Default for ScenePhase {
+    fn default() -> Self {
+        Self {
+            edit: &[],
+            expected: &[],
+            max_steps: DEFAULT_MAX_STEPS,
+            expect_steps: None,
+        }
+    }
+}
+
+/// Default fluid-step budget for a phase: enough for the current scenes to
+/// settle with slack.
+const DEFAULT_MAX_STEPS: u32 = 64;
 
 /// A named water scenario shared by the headless tests and the in-game runner.
 pub(crate) struct WaterScenario {
@@ -63,6 +83,10 @@ pub(crate) struct WaterScenario {
     pub(crate) expected: &'static SceneLayers,
     /// Maximum fluid steps the scene may take before it must have settled.
     pub(crate) max_steps: u32,
+    /// When set, the headless driver asserts the opening scene settles in
+    /// exactly this many fluid steps.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) expect_steps: Option<u32>,
     /// Follow-up phases applied to the settled scene, in order. Empty for
     /// scenarios that only test the initial flow.
     pub(crate) phases: &'static [ScenePhase],
@@ -70,13 +94,29 @@ pub(crate) struct WaterScenario {
     pub(crate) description: &'static str,
 }
 
+const impl Default for WaterScenario {
+    /// Defaults for the fields most scenarios share: origin at zero, the
+    /// standard step budget, no phases. Written by hand rather than derived
+    /// because a derived default would set `max_steps` to 0, making every
+    /// scenario time out instantly.
+    fn default() -> Self {
+        Self {
+            name: "",
+            origin: IVec3::ZERO,
+            input: &[],
+            expected: &[],
+            max_steps: DEFAULT_MAX_STEPS,
+            expect_steps: None,
+            phases: &[],
+            description: "",
+        }
+    }
+}
+
 /// The registered fidelity scenarios, in run order.
 pub(crate) const WATER_SCENARIOS: &[WaterScenario] = &[
     WaterScenario {
         name: "flat_floor_diamond",
-        origin: IVec3::ZERO,
-        max_steps: 64,
-        phases: &[],
         input: &[
             &["#########"; 9],
             &[
@@ -107,12 +147,10 @@ pub(crate) const WATER_SCENARIOS: &[WaterScenario] = &[
         ],
         description: "One source on a flat 9x9 floor spreads into a diamond whose \
                       level is 8 - manhattan distance, stopping at level 1.",
+        ..Default::default()
     },
     WaterScenario {
         name: "channel_seven_block_range",
-        origin: IVec3::ZERO,
-        max_steps: 64,
-        phases: &[],
         input: &[
             &["##########"; 3],
             &["##########", "#S........", "##########"],
@@ -124,12 +162,10 @@ pub(crate) const WATER_SCENARIOS: &[WaterScenario] = &[
         description: "A 1-wide channel with a source at one end: levels step down by \
                       one per block and the last level-1 block sits seven blocks from \
                       the source.",
+        ..Default::default()
     },
     WaterScenario {
         name: "infinite_source_gap_over_stone",
-        origin: IVec3::ZERO,
-        max_steps: 64,
-        phases: &[],
         input: &[
             &["########"; 3],
             &["########", "#S.S....", "########"],
@@ -140,12 +176,10 @@ pub(crate) const WATER_SCENARIOS: &[WaterScenario] = &[
         ],
         description: "Two sources with one air gap over solid ground: the gap becomes \
                       a source (infinite water) and the pool keeps spreading outward.",
+        ..Default::default()
     },
     WaterScenario {
         name: "nearest_drop_preference",
-        origin: IVec3::ZERO,
-        max_steps: 64,
-        phases: &[],
         input: &[
             &["#############"; 3],
             &["#############", "######.######", "#############"],
@@ -159,12 +193,10 @@ pub(crate) const WATER_SCENARIOS: &[WaterScenario] = &[
         description: "Water prefers routes that reach a drop. With flat floor to the \
                       left and a hole to the right, the water must ignore the left side \
                       entirely.",
+        ..Default::default()
     },
     WaterScenario {
         name: "falling_water_landing_spread",
-        origin: IVec3::ZERO,
-        max_steps: 64,
-        phases: &[],
         input: &[
             &["#########"; 3],
             &["#########", "####.....", "#########"],
@@ -177,12 +209,10 @@ pub(crate) const WATER_SCENARIOS: &[WaterScenario] = &[
         ],
         description: "Water falling over a ledge lands at level 8 and spreads sideways \
                       from the landing cell with the usual decay.",
+        ..Default::default()
     },
     WaterScenario {
         name: "source_above_is_falling_not_source",
-        origin: IVec3::ZERO,
-        max_steps: 64,
-        phases: &[],
         input: &[
             &["#####"; 3],
             &["#####", "#S..#", "#####"],
@@ -196,12 +226,10 @@ pub(crate) const WATER_SCENARIOS: &[WaterScenario] = &[
         description: "Java Edition has no one-source-plus-source-above conversion rule; \
                       the cell under a source becomes falling water and feeds the open \
                       neighbour at level 7.",
+        ..Default::default()
     },
     WaterScenario {
         name: "three_sources_spread_while_falling",
-        origin: IVec3::ZERO,
-        max_steps: 64,
-        phases: &[],
         input: &[
             &["######", "##.###", "######"],
             &["##S###", "#S....", "##S###"],
@@ -213,12 +241,10 @@ pub(crate) const WATER_SCENARIOS: &[WaterScenario] = &[
         description: "A water cell with three horizontal source neighbours spreads \
                       sideways even while it pours into a hole; the sideways flow is \
                       one level weaker.",
+        ..Default::default()
     },
     WaterScenario {
         name: "source_over_hole_spreads_sideways",
-        origin: IVec3::ZERO,
-        max_steps: 64,
-        phases: &[],
         input: &[
             &["#######", "###.###", "#######"],
             &["#######", "#..S...", "#######"],
@@ -229,12 +255,10 @@ pub(crate) const WATER_SCENARIOS: &[WaterScenario] = &[
         ],
         description: "A source pours into a hole on its first tick, then pours fail \
                       and, being a source, it spreads sideways on the next tick.",
+        ..Default::default()
     },
     WaterScenario {
         name: "gap_over_source_becomes_source",
-        origin: IVec3::ZERO,
-        max_steps: 64,
-        phases: &[],
         input: &[
             &["#####", "##S##", "#####"],
             &["#####", "#S.S#", "#####"],
@@ -245,12 +269,10 @@ pub(crate) const WATER_SCENARIOS: &[WaterScenario] = &[
         ],
         description: "Vanilla's conversion support also accepts a water source below, \
                       not just a solid block, so a gap above a source converts too.",
+        ..Default::default()
     },
     WaterScenario {
         name: "flow_into_hole_stays_narrow",
-        origin: IVec3::ZERO,
-        max_steps: 64,
-        phases: &[],
         input: &[
             &["#######", "###.###", "#######"],
             &["#######", "#S.....", "#######"],
@@ -261,12 +283,10 @@ pub(crate) const WATER_SCENARIOS: &[WaterScenario] = &[
         ],
         description: "A flowing cell above a hole pours into it and never spreads \
                       sideways there, so the stream stays one block wide.",
+        ..Default::default()
     },
     WaterScenario {
         name: "cross_chunk_channel_flow",
-        origin: IVec3::ZERO,
-        max_steps: 64,
-        phases: &[],
         input: &[
             &["########################"; 3],
             &[
@@ -285,10 +305,10 @@ pub(crate) const WATER_SCENARIOS: &[WaterScenario] = &[
         ],
         description: "The same channel as above but with the source near a chunk \
                       border: the flow must continue into the neighbouring chunk.",
+        ..Default::default()
     },
     WaterScenario {
         name: "channel_dam_after_settle",
-        origin: IVec3::ZERO,
         input: &[
             &["##########"; 3],
             &["##########", "#S........", "##########"],
@@ -297,9 +317,7 @@ pub(crate) const WATER_SCENARIOS: &[WaterScenario] = &[
             &["##########"; 3],
             &["##########", "#S7654321.", "##########"],
         ],
-        max_steps: 64,
         phases: &[ScenePhase {
-            max_steps: 64,
             edit: &[
                 &["~~~~~~~~~~"; 3],
                 &["~~~~~~~~~~", "~~~~#~~~~~", "~~~~~~~~~~"],
@@ -308,13 +326,14 @@ pub(crate) const WATER_SCENARIOS: &[WaterScenario] = &[
                 &["##########"; 3],
                 &["##########", "#S76#.....", "##########"],
             ],
+            ..Default::default()
         }],
         description: "Block placed into a settled channel: the flow upstream of the \
                       dam stays put and everything downstream drains away.",
+        ..Default::default()
     },
     WaterScenario {
         name: "channel_wall_break_after_settle",
-        origin: IVec3::ZERO,
         input: &[
             &["##########"; 3],
             &["##########", "#S........", "##########"],
@@ -323,9 +342,7 @@ pub(crate) const WATER_SCENARIOS: &[WaterScenario] = &[
             &["##########"; 3],
             &["##########", "#S7654321.", "##########"],
         ],
-        max_steps: 64,
         phases: &[ScenePhase {
-            max_steps: 64,
             edit: &[
                 &["~~~~~~~~~~"; 3],
                 &["~.~~~~~~~~", "~~~~~~~~~~", "~~~~~~~~~~"],
@@ -334,13 +351,14 @@ pub(crate) const WATER_SCENARIOS: &[WaterScenario] = &[
                 &["##########"; 3],
                 &["#7########", "#S7654321.", "##########"],
             ],
+            ..Default::default()
         }],
         description: "Wall block broken beside the source: water fills the one-cell \
                       pocket at level 7, and the channel does not change.",
+        ..Default::default()
     },
     WaterScenario {
         name: "channel_source_removed_after_settle",
-        origin: IVec3::ZERO,
         input: &[
             &["##########"; 3],
             &["##########", "#S........", "##########"],
@@ -349,9 +367,7 @@ pub(crate) const WATER_SCENARIOS: &[WaterScenario] = &[
             &["##########"; 3],
             &["##########", "#S7654321.", "##########"],
         ],
-        max_steps: 64,
         phases: &[ScenePhase {
-            max_steps: 64,
             edit: &[
                 &["~~~~~~~~~~"; 3],
                 &["~~~~~~~~~~", "~.~~~~~~~~", "~~~~~~~~~~"],
@@ -360,9 +376,50 @@ pub(crate) const WATER_SCENARIOS: &[WaterScenario] = &[
                 &["##########"; 3],
                 &["##########", "#.........", "##########"],
             ],
+            ..Default::default()
         }],
         description: "Source removed from a settled channel: no flowing water is \
                       left, so the whole channel drains away.",
+        ..Default::default()
+    },
+    WaterScenario {
+        name: "hanging_waterfall_dissipates_after_source_removed",
+        input: &[
+            &["#########"; 3],
+            &["#########", ".........", "#########"],
+            &["#########", ".........", "#########"],
+            &["#########", "####.....", "#########"],
+            &["#########", "#S.......", "#########"],
+        ],
+        expected: &[
+            &["#########"; 3],
+            &["#########", "456787654", "#########"],
+            &["#########", "....8....", "#########"],
+            &["#########", "####8....", "#########"],
+            &["#########", "#S765....", "#########"],
+        ],
+        phases: &[ScenePhase {
+            edit: &[
+                &["~~~~~~~~~"; 3],
+                &["~~~~~~~~~"; 3],
+                &["~~~~~~~~~"; 3],
+                &["~~~~~~~~~"; 3],
+                &["~~~~~~~~~", "~.~~~~~~~", "~~~~~~~~~"],
+            ],
+            expected: &[
+                &["#########"; 3],
+                &["#########", ".........", "#########"],
+                &["#########", ".........", "#########"],
+                &["#########", "####.....", "#########"],
+                &["#########", "#........", "#########"],
+            ],
+            expect_steps: Some(17),
+            ..Default::default()
+        }],
+        description: "Source removed from a settled hanging waterfall: the falling \
+                      column and the landing pool drain away completely. The total \
+                      dissipation time is pinned so it cannot become instant.",
+        ..Default::default()
     },
 ];
 
@@ -703,7 +760,23 @@ mod tests {
         }
     }
 
+    /// The pinned settle duration for `phase`, when the scenario declares one.
+    fn phase_expect_steps(scenario: &WaterScenario, phase: usize) -> Option<u32> {
+        match phase {
+            0 => scenario.expect_steps,
+            later => scenario.phases[later - 1].expect_steps,
+        }
+    }
+
     fn check_phase(scenario: &WaterScenario, phase: usize, world: &FluidSceneWorld, steps: usize) {
+        if let Some(expected) = phase_expect_steps(scenario, phase) {
+            assert_eq!(
+                steps as u32, expected,
+                "scenario `{}` phase {phase} settled in {steps} fluid steps, expected \
+                 {expected}; the duration is part of the behaviour under test",
+                scenario.name
+            );
+        }
         if let Err(problem) = world.diff(phase_expected(scenario, phase)) {
             panic!(
                 "scenario `{}` phase {phase} did not match the expected state after {steps} \
@@ -766,6 +839,23 @@ mod tests {
                     scene_size(phase.expected),
                     size,
                     "`{}` phase {index} expected shape",
+                    scenario.name
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn pinned_settle_times_fit_their_budgets() {
+        for scenario in WATER_SCENARIOS {
+            for phase in 0..=scenario.phases.len() {
+                let Some(expected) = phase_expect_steps(scenario, phase) else {
+                    continue;
+                };
+                let budget = phase_max_steps(scenario, phase);
+                assert!(
+                    expected <= budget,
+                    "`{}` phase {phase} pins {expected} steps but only budgets {budget}",
                     scenario.name
                 );
             }
