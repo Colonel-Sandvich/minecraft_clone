@@ -35,6 +35,23 @@ use super::{ChunkCell, FluidProfile};
 
 pub(crate) type SceneLayers = [&'static [&'static str]];
 
+/// One settle-and-compare step after the opening scene.
+///
+/// Phases cover the steady state -> block edit -> recompute -> steady state
+/// path that a single build-and-settle scene cannot reach: the runner settles
+/// the previous phase, applies [`Self::edit`] like a player edit, then settles
+/// and compares again.
+pub(crate) struct ScenePhase {
+    /// Cells to overwrite, map-shaped like the scene. `~` leaves a cell alone,
+    /// `.` clears it (breaking a block), and anything else is
+    /// [`cell_from_char`].
+    pub(crate) edit: &'static SceneLayers,
+    /// Expected state once the edit has settled.
+    pub(crate) expected: &'static SceneLayers,
+    /// Maximum fluid steps this phase may take to settle.
+    pub(crate) max_steps: u32,
+}
+
 /// A named water scenario shared by the headless tests and the in-game runner.
 pub(crate) struct WaterScenario {
     pub(crate) name: &'static str,
@@ -46,6 +63,9 @@ pub(crate) struct WaterScenario {
     pub(crate) expected: &'static SceneLayers,
     /// Maximum fluid steps the scene may take before it must have settled.
     pub(crate) max_steps: u32,
+    /// Follow-up phases applied to the settled scene, in order. Empty for
+    /// scenarios that only test the initial flow.
+    pub(crate) phases: &'static [ScenePhase],
     /// Why this scenario exists and what vanilla behaviour it pins down.
     pub(crate) description: &'static str,
 }
@@ -56,6 +76,7 @@ pub(crate) const WATER_SCENARIOS: &[WaterScenario] = &[
         name: "flat_floor_diamond",
         origin: IVec3::ZERO,
         max_steps: 64,
+        phases: &[],
         input: &[
             &["#########"; 9],
             &[
@@ -91,6 +112,7 @@ pub(crate) const WATER_SCENARIOS: &[WaterScenario] = &[
         name: "channel_seven_block_range",
         origin: IVec3::ZERO,
         max_steps: 64,
+        phases: &[],
         input: &[
             &["##########"; 3],
             &["##########", "#S........", "##########"],
@@ -107,6 +129,7 @@ pub(crate) const WATER_SCENARIOS: &[WaterScenario] = &[
         name: "infinite_source_gap_over_stone",
         origin: IVec3::ZERO,
         max_steps: 64,
+        phases: &[],
         input: &[
             &["########"; 3],
             &["########", "#S.S....", "########"],
@@ -122,6 +145,7 @@ pub(crate) const WATER_SCENARIOS: &[WaterScenario] = &[
         name: "nearest_drop_preference",
         origin: IVec3::ZERO,
         max_steps: 64,
+        phases: &[],
         input: &[
             &["#############"; 3],
             &["#############", "######.######", "#############"],
@@ -140,6 +164,7 @@ pub(crate) const WATER_SCENARIOS: &[WaterScenario] = &[
         name: "falling_water_landing_spread",
         origin: IVec3::ZERO,
         max_steps: 64,
+        phases: &[],
         input: &[
             &["#########"; 3],
             &["#########", "####.....", "#########"],
@@ -157,6 +182,7 @@ pub(crate) const WATER_SCENARIOS: &[WaterScenario] = &[
         name: "source_above_is_falling_not_source",
         origin: IVec3::ZERO,
         max_steps: 64,
+        phases: &[],
         input: &[
             &["#####"; 3],
             &["#####", "#S..#", "#####"],
@@ -175,6 +201,7 @@ pub(crate) const WATER_SCENARIOS: &[WaterScenario] = &[
         name: "three_sources_spread_while_falling",
         origin: IVec3::ZERO,
         max_steps: 64,
+        phases: &[],
         input: &[
             &["######", "##.###", "######"],
             &["##S###", "#S....", "##S###"],
@@ -191,6 +218,7 @@ pub(crate) const WATER_SCENARIOS: &[WaterScenario] = &[
         name: "source_over_hole_spreads_sideways",
         origin: IVec3::ZERO,
         max_steps: 64,
+        phases: &[],
         input: &[
             &["#######", "###.###", "#######"],
             &["#######", "#..S...", "#######"],
@@ -206,6 +234,7 @@ pub(crate) const WATER_SCENARIOS: &[WaterScenario] = &[
         name: "gap_over_source_becomes_source",
         origin: IVec3::ZERO,
         max_steps: 64,
+        phases: &[],
         input: &[
             &["#####", "##S##", "#####"],
             &["#####", "#S.S#", "#####"],
@@ -221,6 +250,7 @@ pub(crate) const WATER_SCENARIOS: &[WaterScenario] = &[
         name: "flow_into_hole_stays_narrow",
         origin: IVec3::ZERO,
         max_steps: 64,
+        phases: &[],
         input: &[
             &["#######", "###.###", "#######"],
             &["#######", "#S.....", "#######"],
@@ -236,6 +266,7 @@ pub(crate) const WATER_SCENARIOS: &[WaterScenario] = &[
         name: "cross_chunk_channel_flow",
         origin: IVec3::ZERO,
         max_steps: 64,
+        phases: &[],
         input: &[
             &["########################"; 3],
             &[
@@ -255,7 +286,126 @@ pub(crate) const WATER_SCENARIOS: &[WaterScenario] = &[
         description: "The same channel as above but with the source near a chunk \
                       border: the flow must continue into the neighbouring chunk.",
     },
+    WaterScenario {
+        name: "channel_dam_after_settle",
+        origin: IVec3::ZERO,
+        input: &[
+            &["##########"; 3],
+            &["##########", "#S........", "##########"],
+        ],
+        expected: &[
+            &["##########"; 3],
+            &["##########", "#S7654321.", "##########"],
+        ],
+        max_steps: 64,
+        phases: &[ScenePhase {
+            max_steps: 64,
+            edit: &[
+                &["~~~~~~~~~~"; 3],
+                &["~~~~~~~~~~", "~~~~#~~~~~", "~~~~~~~~~~"],
+            ],
+            expected: &[
+                &["##########"; 3],
+                &["##########", "#S76#.....", "##########"],
+            ],
+        }],
+        description: "Block placed into a settled channel: the flow upstream of the \
+                      dam stays put and everything downstream drains away.",
+    },
+    WaterScenario {
+        name: "channel_wall_break_after_settle",
+        origin: IVec3::ZERO,
+        input: &[
+            &["##########"; 3],
+            &["##########", "#S........", "##########"],
+        ],
+        expected: &[
+            &["##########"; 3],
+            &["##########", "#S7654321.", "##########"],
+        ],
+        max_steps: 64,
+        phases: &[ScenePhase {
+            max_steps: 64,
+            edit: &[
+                &["~~~~~~~~~~"; 3],
+                &["~.~~~~~~~~", "~~~~~~~~~~", "~~~~~~~~~~"],
+            ],
+            expected: &[
+                &["##########"; 3],
+                &["#7########", "#S7654321.", "##########"],
+            ],
+        }],
+        description: "Wall block broken beside the source: water fills the one-cell \
+                      pocket at level 7, and the channel does not change.",
+    },
+    WaterScenario {
+        name: "channel_source_removed_after_settle",
+        origin: IVec3::ZERO,
+        input: &[
+            &["##########"; 3],
+            &["##########", "#S........", "##########"],
+        ],
+        expected: &[
+            &["##########"; 3],
+            &["##########", "#S7654321.", "##########"],
+        ],
+        max_steps: 64,
+        phases: &[ScenePhase {
+            max_steps: 64,
+            edit: &[
+                &["~~~~~~~~~~"; 3],
+                &["~~~~~~~~~~", "~.~~~~~~~~", "~~~~~~~~~~"],
+            ],
+            expected: &[
+                &["##########"; 3],
+                &["##########", "#.........", "##########"],
+            ],
+        }],
+        description: "Source removed from a settled channel: no flowing water is \
+                      left, so the whole channel drains away.",
+    },
 ];
+
+/// The expected map for `phase`, where phase 0 is [`WaterScenario::expected`]
+/// and later phases are the entries of [`WaterScenario::phases`].
+pub(crate) fn phase_expected(scenario: &WaterScenario, phase: usize) -> &'static SceneLayers {
+    match phase {
+        0 => scenario.expected,
+        later => scenario.phases[later - 1].expected,
+    }
+}
+
+/// The fluid-step budget for `phase`.
+pub(crate) fn phase_max_steps(scenario: &WaterScenario, phase: usize) -> u32 {
+    match phase {
+        0 => scenario.max_steps,
+        later => scenario.phases[later - 1].max_steps,
+    }
+}
+
+/// Calls `set` for every cell an edit map changes: `~` skips a cell, `.`
+/// clears it, and any other character is parsed with [`cell_from_char`].
+pub(crate) fn for_each_edit_cell(
+    origin: IVec3,
+    size: IVec3,
+    edit: &SceneLayers,
+    mut set: impl FnMut(IVec3, ChunkCell),
+) {
+    assert_eq!(scene_size(edit), size, "edit map must match the scene size");
+    for (y, layer) in edit.iter().enumerate() {
+        for (z, row) in layer.iter().enumerate() {
+            for (x, c) in row.chars().enumerate() {
+                if c == '~' {
+                    continue;
+                }
+                set(
+                    origin + IVec3::new(x as i32, y as i32, z as i32),
+                    cell_from_char(c),
+                );
+            }
+        }
+    }
+}
 
 /// A scene expanded into world-space cells, ready for either driver.
 ///
@@ -391,6 +541,13 @@ mod tests {
             let address = WorldBlockPos::from_ivec3(world).split();
             let chunk = self.chunks.entry(address.chunk().as_ivec3()).or_default();
             chunk.set_cell(address.local().as_uvec3(), cell);
+        }
+
+        /// Applies an edit map like a player changing blocks in the scene.
+        fn apply_edit(&mut self, edit: &SceneLayers) {
+            for_each_edit_cell(self.origin, self.size, edit, |position, cell| {
+                self.set_cell(position, cell);
+            });
         }
 
         fn cell_at(&self, world: IVec3) -> ChunkCell {
@@ -537,10 +694,20 @@ mod tests {
         let layout = layout_scene(scenario.origin, scenario.input);
         let mut world = FluidSceneWorld::from_layout(&layout);
         let steps = world.settle(scenario.max_steps as usize);
-        if let Err(problem) = world.diff(scenario.expected) {
+        check_phase(scenario, 0, &world, steps);
+
+        for (index, phase) in scenario.phases.iter().enumerate() {
+            world.apply_edit(phase.edit);
+            let steps = world.settle(phase.max_steps as usize);
+            check_phase(scenario, index + 1, &world, steps);
+        }
+    }
+
+    fn check_phase(scenario: &WaterScenario, phase: usize, world: &FluidSceneWorld, steps: usize) {
+        if let Err(problem) = world.diff(phase_expected(scenario, phase)) {
             panic!(
-                "scenario `{}` did not match the expected final state after {steps} settling \
-                 steps.\nScenario: {}\n{problem}",
+                "scenario `{}` phase {phase} did not match the expected state after {steps} \
+                 settling steps.\nScenario: {}\n{problem}",
                 scenario.name, scenario.description
             );
         }
@@ -575,6 +742,33 @@ mod tests {
                  water can be watched through the shell",
                 scenario.name
             );
+        }
+    }
+
+    #[test]
+    fn scenario_phases_match_their_scene_shape() {
+        for scenario in WATER_SCENARIOS {
+            let size = scene_size(scenario.input);
+            assert_eq!(
+                scene_size(scenario.expected),
+                size,
+                "`{}` expected map shape",
+                scenario.name
+            );
+            for (index, phase) in scenario.phases.iter().enumerate() {
+                assert_eq!(
+                    scene_size(phase.edit),
+                    size,
+                    "`{}` phase {index} edit shape",
+                    scenario.name
+                );
+                assert_eq!(
+                    scene_size(phase.expected),
+                    size,
+                    "`{}` phase {index} expected shape",
+                    scenario.name
+                );
+            }
         }
     }
 

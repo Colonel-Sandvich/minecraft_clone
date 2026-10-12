@@ -24,10 +24,11 @@ use crate::{
     tick_control::{TickControlSet, simulation_ticks_allowed},
     world::{
         chunk::{
-            CHUNK_SIZE, Chunk, ChunkCell, ChunkHeightmap, ChunkInvalidationPlan, ChunkLight,
-            ChunkNeedsFluidStep, ChunkNeedsLightRebuild, ChunkNeedsSave, ChunkPos, ChunkPosition,
-            WATER_SCENARIOS, WaterScenario, WorldBlockPos, char_from_cell, layout_scene,
-            scene_size,
+            CHUNK_SIZE, Chunk, ChunkCell, ChunkContentCounts, ChunkEditor, ChunkHeightmap,
+            ChunkInvalidationPlan, ChunkLight, ChunkNeedsFluidStep, ChunkNeedsLightRebuild,
+            ChunkNeedsSave, ChunkPos, ChunkPosition, SceneLayers, WATER_SCENARIOS, WaterScenario,
+            WorldBlockPos, char_from_cell, for_each_edit_cell, layout_scene, phase_expected,
+            phase_max_steps, scene_size,
         },
         dimension::{Active, Dimension, apply_chunk_invalidations, fluid::FLUID_STEP_PERIOD_TICKS},
     },
@@ -67,6 +68,8 @@ pub(crate) struct WaterTestEntry {
     pub(crate) scenario: &'static WaterScenario,
     pub(crate) status: TestStatus,
     pub(crate) detail: String,
+    /// Settle-and-compare phases already completed; 0 is the opening scene.
+    pub(crate) phase: usize,
     start_tick: u64,
     plot: Option<TestPlot>,
 }
@@ -119,6 +122,7 @@ impl WaterTestSuite {
                     scenario,
                     status: TestStatus::Pending,
                     detail: String::new(),
+                    phase: 0,
                     start_tick: 0,
                     plot: None,
                 })
@@ -254,6 +258,7 @@ fn start_requested_suite(
             teardown_plot(&mut commands, &mut dimension, plot);
         }
         entry.status = TestStatus::Pending;
+        entry.phase = 0;
         entry.detail.clear();
     }
 
@@ -424,11 +429,24 @@ fn build_plot(
     Ok(plot)
 }
 
-/// Compares each running plot against its expected state once every plot chunk
-/// has gone quiet.
+/// Read-only view of a plot chunk for comparisons.
+type ChunkRead = (&'static ChunkPosition, &'static Chunk);
+/// Mutable view of a plot chunk for applying phase edits.
+type ChunkEdit = (
+    &'static ChunkPosition,
+    &'static mut Chunk,
+    &'static mut ChunkContentCounts,
+);
+
+/// Compares each running plot against the expected state for its current
+/// phase once every plot chunk has gone quiet. A phase that passes with a
+/// follow-up edit applies the edit and keeps running, so scenarios can cover
+/// "steady state -> block edit -> settle again".
 fn advance_running_tests(
+    mut commands: Commands,
     mut suite: ResMut<WaterTestSuite>,
-    chunk_q: Query<(&ChunkPosition, &Chunk)>,
+    mut dimension: Option<Single<&mut Dimension, With<Active>>>,
+    mut chunks: ParamSet<(Query<ChunkRead>, Query<ChunkEdit>)>,
     pending_fluid: Query<(), With<ChunkNeedsFluidStep>>,
 ) {
     let fixed_clock = suite.fixed_clock;
@@ -437,6 +455,8 @@ fn advance_running_tests(
             continue;
         }
         let elapsed = fixed_clock.saturating_sub(entry.start_tick);
+        let phase = entry.phase;
+        let expected = phase_expected(entry.scenario, phase);
 
         let decision = {
             let Some(plot) = &entry.plot else {
@@ -448,12 +468,12 @@ fn advance_running_tests(
                 .any(|&(_, entity)| pending_fluid.get(entity).is_ok());
 
             if !busy && elapsed >= SETTLE_GRACE_TICKS {
-                match compare_plot(plot, entry.scenario, &chunk_q) {
-                    Ok(()) => TestDecision::Passed,
+                match compare_plot(plot, expected, entry.scenario.description, &chunks.p0()) {
+                    Ok(()) => TestDecision::PhaseSettled,
                     Err(problem) => TestDecision::Failed(problem),
                 }
-            } else if elapsed > timeout_ticks(entry.scenario) {
-                TestDecision::TimedOut(describe_plot(plot, &chunk_q))
+            } else if elapsed > timeout_ticks(phase_max_steps(entry.scenario, phase)) {
+                TestDecision::TimedOut(describe_plot(plot, &chunks.p0()))
             } else {
                 TestDecision::Waiting
             }
@@ -461,9 +481,22 @@ fn advance_running_tests(
 
         match decision {
             TestDecision::Waiting => {}
-            TestDecision::Passed => {
-                entry.status = TestStatus::Passed;
+            TestDecision::PhaseSettled => {
                 entry.detail.clear();
+                let next_edit = entry.scenario.phases.get(phase).map(|phase| phase.edit);
+                let Some(edit) = next_edit else {
+                    entry.status = TestStatus::Passed;
+                    continue;
+                };
+                // Without an active dimension (dimension switch) the edit is
+                // retried next frame; the plot stays quiet until it lands.
+                if let (Some(plot), Some(dimension)) =
+                    (entry.plot.as_ref(), dimension.as_deref_mut())
+                {
+                    apply_plot_edit(&mut commands, dimension, plot, edit, &mut chunks.p1());
+                    entry.phase = phase + 1;
+                    entry.start_tick = fixed_clock;
+                }
             }
             TestDecision::Failed(problem) => {
                 entry.status = TestStatus::Failed;
@@ -477,32 +510,59 @@ fn advance_running_tests(
     }
 }
 
+/// Applies a phase edit to a live plot through the same chunk editor and
+/// invalidation planning a player's block edit uses, so the fluid pipeline is
+/// woken (and the settle detection re-armed) exactly like in normal play.
+fn apply_plot_edit(
+    commands: &mut Commands,
+    dimension: &mut Dimension,
+    plot: &TestPlot,
+    edit: &SceneLayers,
+    chunks: &mut Query<ChunkEdit>,
+) {
+    let mut invalidations = ChunkInvalidationPlan::new();
+    for_each_edit_cell(plot.scene_origin, plot.size, edit, |position, cell| {
+        let address = WorldBlockPos::from_ivec3(position).split();
+        let chunk_pos = address.chunk();
+        let Some(&(_, entity)) = plot.chunks.iter().find(|(pos, _)| *pos == chunk_pos) else {
+            return;
+        };
+        let Ok((_, mut chunk, mut counts)) = chunks.get_mut(entity) else {
+            return;
+        };
+        let mut editor = ChunkEditor::new(chunk_pos, &mut chunk, &mut counts, &mut invalidations);
+        editor.set_cell(address.local(), cell);
+    });
+    apply_chunk_invalidations(commands, dimension, &invalidations);
+}
+
 enum TestDecision {
     Waiting,
-    Passed,
+    PhaseSettled,
     Failed(String),
     TimedOut(String),
 }
 
-fn timeout_ticks(scenario: &WaterScenario) -> u64 {
-    u64::from(scenario.max_steps) * u64::from(FLUID_STEP_PERIOD_TICKS) + TIMEOUT_SLACK_TICKS
+fn timeout_ticks(max_steps: u32) -> u64 {
+    u64::from(max_steps) * u64::from(FLUID_STEP_PERIOD_TICKS) + TIMEOUT_SLACK_TICKS
 }
 
 fn compare_plot(
     plot: &TestPlot,
-    scenario: &WaterScenario,
+    expected: &SceneLayers,
+    description: &str,
     chunk_q: &Query<(&ChunkPosition, &Chunk)>,
 ) -> Result<(), String> {
     let size = plot.size;
     debug_assert_eq!(
         size,
-        scene_size(scenario.expected),
+        scene_size(expected),
         "plot and expected scene shapes must match"
     );
     let chunks = plot_chunks(plot, chunk_q);
 
     let mut problems = Vec::new();
-    for (y, layer) in scenario.expected.iter().enumerate() {
+    for (y, layer) in expected.iter().enumerate() {
         for (z, row) in layer.iter().enumerate() {
             let actual = actual_row(plot, &chunks, size.x, y, z);
             if actual != *row {
@@ -520,7 +580,7 @@ fn compare_plot(
     if problems.is_empty() {
         Ok(())
     } else {
-        Err(format!("{}\n{}", scenario.description, problems.join("\n")))
+        Err(format!("{description}\n{}", problems.join("\n")))
     }
 }
 
@@ -794,6 +854,7 @@ mod tests {
             scenario: &WATER_SCENARIOS[scenario_index],
             status,
             detail: String::new(),
+            phase: 0,
             start_tick: 0,
             plot: plotted.then(|| TestPlot {
                 scene_origin: IVec3::ZERO,

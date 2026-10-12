@@ -7,7 +7,7 @@
 use bevy::prelude::*;
 
 use crate::{
-    game_test::{TestStatus, WaterTestSuite},
+    game_test::{TestStatus, WaterTestEntry, WaterTestSuite},
     tick_control::TickControl,
     world::chunk::WATER_SCENARIOS,
 };
@@ -144,9 +144,10 @@ fn update_game_test_overlay(
             ' '
         };
         text.0 = format!(
-            "{marker} {:>7}  {}",
+            "{marker} {:>7}  {}{}",
             entry.status.label(),
-            entry.scenario.name
+            entry.scenario.name,
+            phase_progress(entry)
         );
         color.0 = status_color(entry.status);
     }
@@ -189,6 +190,16 @@ fn status_color(status: TestStatus) -> Color {
     }
 }
 
+/// Phase progress for scenarios with follow-up edits, e.g. `[2/3]`; empty for
+/// single-phase scenarios and for entries that have not started yet.
+fn phase_progress(entry: &WaterTestEntry) -> String {
+    let phases = entry.scenario.phases;
+    if phases.is_empty() || entry.status == TestStatus::Pending {
+        return String::new();
+    }
+    format!("  [{}/{}]", entry.phase + 1, phases.len() + 1)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -210,5 +221,25 @@ mod tests {
         assert!(report.starts_with(suite.entries[0].scenario.name));
         assert_eq!(lines, MAX_OVERLAY_DETAIL_LINES + 2, "name + cap + ellipsis");
         assert!(report.ends_with("  ..."));
+    }
+
+    #[test]
+    fn phase_progress_marks_multi_phase_scenarios() {
+        let mut suite = WaterTestSuite::new();
+        let index = suite
+            .entries
+            .iter()
+            .position(|entry| !entry.scenario.phases.is_empty())
+            .expect("at least one scenario must have follow-up phases");
+        let total = suite.entries[index].scenario.phases.len() + 1;
+        let entry = &mut suite.entries[index];
+
+        entry.status = TestStatus::Pending;
+        assert_eq!(phase_progress(entry), "", "not started yet");
+        entry.status = TestStatus::Running;
+        assert_eq!(phase_progress(entry), format!("  [1/{total}]"));
+        entry.phase = total - 1;
+        entry.status = TestStatus::Passed;
+        assert_eq!(phase_progress(entry), format!("  [{total}/{total}]"));
     }
 }

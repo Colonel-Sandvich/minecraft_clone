@@ -68,6 +68,13 @@ water with water, so existing cells change only through their own recompute.
 | Falling descends exactly one block per step (5 ticks) | `falling_column_descends_one_cell_per_step` |
 | Water ignores flat ground to reach a nearby drop | `nearest_drop_preference` |
 | Flow continues across chunk borders | `cross_chunk_channel_flow` |
+| Damming a settled channel drains everything downstream | `channel_dam_after_settle` |
+| Breaking a wall beside a source fills the pocket at level 7 | `channel_wall_break_after_settle` |
+| Removing a source drains its settled range completely | `channel_source_removed_after_settle` |
+
+The last two rows are multi-phase scenarios: they settle first, then apply a
+block edit through the production edit path and settle again, so the
+edit-triggered invalidation and recomputation path is pinned too.
 
 Already correct before this branch (now locked in by the tests above): the
 5-tick horizontal cadence, downward-first priority, nearest-drop direction

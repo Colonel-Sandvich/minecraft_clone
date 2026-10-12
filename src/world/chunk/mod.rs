@@ -40,7 +40,8 @@ pub use state::{
 
 pub(crate) use neighborhood::chunk_neighbor_offsets;
 pub(crate) use water_scenarios::{
-    WATER_SCENARIOS, WaterScenario, char_from_cell, layout_scene, scene_size,
+    SceneLayers, WATER_SCENARIOS, WaterScenario, char_from_cell, for_each_edit_cell, layout_scene,
+    phase_expected, phase_max_steps, scene_size,
 };
 
 pub struct ChunkPlugin;

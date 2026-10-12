@@ -8,9 +8,11 @@ Two runners exercise the same set of water scenarios:
   `FixedUpdate` fluid pipeline settle them, and reports pass/fail in an overlay.
   Used by developers to watch a scene and inspect failures in place.
 
-Both compare the *final settled state* cell by cell against a hand-written
-expectation. All scenario data lives in
-`src/world/chunk/water_scenarios.rs`; the in-game runner is in
+Both compare the settled state cell by cell against a hand-written
+expectation. A scenario can also declare follow-up **phases**: once the
+opening scene settles and matches, the runner applies an edit (like a player
+breaking or placing a block), settles again, and compares again. All scenario
+data lives in `src/world/chunk/water_scenarios.rs`; the in-game runner is in
 `src/game_test/`.
 
 ## Writing a scenario
@@ -49,6 +51,53 @@ WaterScenario {
 Every layer must have the same number of rows and every row the same width.
 `max_steps` is the fluid-step budget: the scene must stop changing within it,
 in both runners.
+
+### Follow-up phases (steady -> edit -> settle)
+
+A single build-and-settle scene cannot reach the steady state -> block break
+-> recompute -> steady state path, because that path only wakes up when a
+block changes after the water has stopped moving. Scenarios cover it with
+`phases`:
+
+```rust
+WaterScenario {
+    name: "channel_dam_after_settle",
+    // ...the usual input / expected / max_steps...
+    phases: &[ScenePhase {
+        max_steps: 64,
+        // `~` leaves a cell alone; `.` clears it (breaking a block); every
+        // other character is the usual cell character (placing one).
+        edit: &[
+            &["~~~~~~~~~~"; 3],
+            &["~~~~~~~~~~", "~~~~#~~~~~", "~~~~~~~~~~"],
+        ],
+        expected: &[
+            &["##########"; 3],
+            &["##########", "#S76#.....", "##########"],
+        ],
+    }],
+    description: "...",
+}
+```
+
+The runner settles `input`, compares `expected`, then for each phase in order:
+applies the edit, settles for that phase's `max_steps`, and compares its
+`expected`. In-game the edit goes through the same `ChunkEditor` and
+invalidation planning as a player's block edit, so the fluid pipeline is
+woken and the settle detection re-armed exactly like in normal play. The
+overlay shows which phase a scenario is on, e.g. `[2/3]`.
+
+### Relationship to Minecraft's GameTest
+
+Minecraft ships the GameTest *framework* (the `/test` command, checkpoint
+sequences such as `thenExecute`/`thenIdle`), but no water or fluid tests: no
+released version from 1.16 through 1.21 ships `data/minecraft/gametest`
+structures, and the test content Mojang runs internally is not published. So
+there are no vanilla fluid fixtures to copy; these scenarios are hand-authored
+from the verified rules. The phase mechanism above is our equivalent of a
+`GameTestSequence` checkpoint (`settle -> assert`, `edit -> settle -> assert`),
+which is exactly how the Java API expresses the steady -> break -> steady
+pattern.
 
 ### The glass shell is implicit
 
@@ -169,10 +218,15 @@ fluid update and watch the front move one block at a time.
 - **Settle detection needs a grace period.** Fluid steps happen only every
   `FLUID_STEP_PERIOD_TICKS` (5) fixed ticks, so a quiet plot is only trusted
   after 5 ticks, guaranteeing at least one fluid step happened after the scene
-  was built.
-- **Timeout is in fixed ticks**, `max_steps * 5 + 20` slack, not wall time.
-  The suite clock shares the simulation gate, so freezing the simulation also
-  freezes a run's timeout budget.
+  was built or edited.
+- **Timeout is in fixed ticks per phase**, `max_steps * 5 + 20` slack, not wall
+  time; each phase gets its own budget. The suite clock shares the simulation
+  gate, so freezing the simulation also freezes a run's timeout budget.
+- **Phase edits use the production edit path.** In-game the runner writes
+  through `ChunkEditor` and `apply_chunk_invalidations`, exactly like the
+  player's block interactions, so halo fanout and `ChunkNeedsFluidStep`
+  re-marking are exercised; the headless driver applies the same edit cells
+  directly and re-solves with every fluid chunk as a source.
 - **F7/F8/F9** (runner) and **P/O/I/U** (tick control) are unbound keys
   elsewhere; there is no chat/command system to attach `/test`-style commands
   to yet.
@@ -182,14 +236,15 @@ fluid update and watch the front move one block at a time.
 
 ## Fidelity status
 
-The scenarios above cover the final states; per-tick behaviour is pinned where
-it matters by targeted unit tests (falling cadence, drain completeness). The
-solver was rewritten to vanilla's two-phase model (recompute from neighbours,
-then spread) after oracle research against decompiled 1.20.1 plus live server
-measurements. Verified rules, the fixes made, and the remaining structural
-differences (tick scheduling, slope-search shape, no scheduled-tick
-persistence, simplified replaceability) are documented in
-`docs/water_fidelity_analysis.md`.
+The scenarios above cover the settled states, including edit-triggered
+re-settling (phases that break or place a block after the scene has settled);
+per-tick behaviour is pinned where it matters by targeted unit tests (falling
+cadence, drain completeness). The solver was rewritten to vanilla's two-phase
+model (recompute from neighbours, then spread) after oracle research against
+decompiled 1.20.1 plus live server measurements. Verified rules, the fixes
+made, and the remaining structural differences (tick scheduling, slope-search
+shape, no scheduled-tick persistence, simplified replaceability) are
+documented in `docs/water_fidelity_analysis.md`.
 
 When adding a scenario for a behaviour you are unsure about, check that doc
 first: the four deviations found so far (one-source-plus-source-above
