@@ -12,6 +12,10 @@ pub(crate) fn apply_chunk_invalidations(
     dimension: &mut Dimension,
     plan: &ChunkInvalidationPlan,
 ) {
+    for position in plan.fluid_wakes() {
+        dimension.wake_fluids_around(position);
+    }
+
     for column in plan.light_columns() {
         dimension.mark_column_light_pending(column);
     }
@@ -158,5 +162,20 @@ mod tests {
                 .unwrap()
                 .has_pending_collider_rebuild(origin)
         );
+
+        // The fluid wake reaches only the dimension that owns the chunk.
+        let wake = origin.block(LocalBlockPos::new(1, 2, 3)).world().as_ivec3();
+        let active_scheduled = world
+            .get::<Dimension>(active_dimension)
+            .unwrap()
+            .scheduled_fluids();
+        assert!(active_scheduled.contains(wake));
+        assert!(active_scheduled.contains(wake + IVec3::Y));
+
+        let foreign_scheduled = world
+            .get::<Dimension>(other_dimension)
+            .unwrap()
+            .scheduled_fluids();
+        assert!(!foreign_scheduled.contains(wake));
     }
 }

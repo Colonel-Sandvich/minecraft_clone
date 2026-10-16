@@ -79,10 +79,12 @@ water with water, so existing cells change only through their own recompute.
 | Breaking a wall beside a source fills the pocket at level 7 | `channel_wall_break_after_settle` |
 | Removing a source drains its settled range completely | `channel_source_removed_after_settle` |
 | A hanging waterfall drains completely, taking its time | `hanging_waterfall_dissipates_after_source_removed` |
+| Placing a block into a settled pool wakes only the cells beside it: the pool wraps the block instead of re-flooding | `reported_block_in_basin` |
 
-The last two rows are multi-phase scenarios: they settle first, then apply a
-block edit through the production edit path and settle again, so the
-edit-triggered invalidation and recomputation path is pinned too.
+The `*_after_settle` rows and `reported_block_in_basin` are multi-phase
+scenarios: they settle first, then apply a block edit through the production
+edit path and settle again, so the edit-triggered invalidation and
+recomputation path is pinned too.
 
 Already correct before this branch (now locked in by the tests above): the
 5-tick horizontal cadence, downward-first priority, nearest-drop direction
@@ -116,20 +118,23 @@ scheduling (`onPlace` → `scheduleTick(..., 5)`) produces.
 
 These are structural or untested corners, not observed mismatches:
 
-- **Scheduling model.** Vanilla schedules per-block fluid ticks with
-  coalescing; this solver batch-processes active chunks in a fixed order every
-  fifth tick. Final states match the scenarios; transient shapes during
-  rearrangements (e.g. the exact drain order of a channel) can differ, and a
-  `setBlock`-heavy tick may behave differently from vanilla's priority queue.
+- **Scheduling model.** Ticks are gated on a scheduled-cell set, mirroring
+  vanilla: block changes wake the edited cell and its neighbours, fluid writes
+  wake the cell they land in, and a changed cell reschedules itself. The
+  scheduled cells of the active chunks are batch-processed in a fixed order
+  every fifth tick, so the exact tick-by-tick order during rearrangements (e.g.
+  the drain order of a channel) can still differ from vanilla's priority queue;
+  settled water is never re-ticked.
 - **Slope search shape.** Vanilla's hole search is a depth-limited DFS that
   excludes stepping back through the direction it came from; this solver uses a
   BFS with a visited set, which can path back through the origin and cannot
   revisit cells. It agrees on all covered scenes, but tight spirals and
   dead-end geometry may choose different directions.
-- **No scheduled-tick persistence.** Vanilla saves pending fluid ticks per
-  chunk; the batch model instead re-derives state from cells each step, so
-  saving mid-propagation resumes from the cell grid rather than exact tick
-  timing. Steady states are unaffected.
+- **No scheduled-tick persistence.** Pending ticks live in memory
+  (`ScheduledFluids` on the active dimension) and are not written to the chunk
+  save, so a reloaded chunk starts with no pending ticks and water that was
+  mid-flow when saved resumes from the cell grid instead of the exact tick
+  timing. Settled water is unaffected.
 - **Can-place checks are simplified.** Vanilla's `canPassThroughWall`,
   `canHoldFluid`, replaceable plants and waterlogging are reduced to "full
   solid blocks block everything else". The clone has no slabs, plants or
@@ -140,9 +145,11 @@ These are structural or untested corners, not observed mismatches:
 ## Files
 
 - Solver: `src/world/chunk/fluid_sim.rs` (two phases: `recompute_fluid`,
-  `spread_fluid`; direction search: `spread_dirs`, `nearest_drop_distance`).
-- Scheduling: `src/world/dimension/fluid.rs` (5-tick counter, chunk budget,
-  invalidation-driven activity).
+  `spread_fluid`; direction search: `spread_dirs`, `nearest_drop_distance`;
+  pending ticks: `ScheduledFluids`).
+- Scheduling: `src/world/dimension/fluid.rs` (5-tick counter, chunk budget) and
+  `src/world/dimension/invalidation.rs` (fluid-relevant cell deltas wake the
+  changed cell and its neighbours).
 - Scenarios: `src/world/chunk/water_scenarios.rs`.
 - Runners: headless (`FluidSceneWorld` in the scenario module) and in-game
   (`src/game_test/`, overlay in `src/ui/game_test.rs`).

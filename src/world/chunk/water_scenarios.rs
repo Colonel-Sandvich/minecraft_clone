@@ -432,7 +432,7 @@ pub(crate) const WATER_SCENARIOS: &[WaterScenario] = &[
                 "#############",
                 "#############",
                 "#############",
-                "#####65######",
+                "#####87######",
                 "#####76######",
                 "#####87######",
                 "#############",
@@ -444,12 +444,12 @@ pub(crate) const WATER_SCENARIOS: &[WaterScenario] = &[
                 "###########..",
                 "##########...",
                 "######.......",
-                "#234321......",
-                "#345432......",
-                "#4565#1......",
-                "#567#........",
-                "#67S#........",
-                "#56765.......",
+                "#............",
+                "#............",
+                "#..654.......",
+                "#..7#3.......",
+                "#..S#........",
+                "#..765.......",
                 "#............",
                 "#............",
                 "##...........",
@@ -465,7 +465,7 @@ pub(crate) const WATER_SCENARIOS: &[WaterScenario] = &[
                 "#############",
                 "#############",
                 "#############",
-                "#####65######",
+                "#####87######",
                 "#####76######",
                 "#####87######",
                 "#############",
@@ -477,30 +477,83 @@ pub(crate) const WATER_SCENARIOS: &[WaterScenario] = &[
                 "###########..",
                 "##########...",
                 "######.......",
-                "#234321......",
-                "#345432......",
-                "#4565#1......",
-                "#567#........",
-                "#67S#........",
-                "#56765.......",
+                "#............",
+                "#............",
+                "#..654.......",
+                "#..7#3.......",
+                "#..S#........",
+                "#..765.......",
                 "#............",
                 "#............",
                 "##...........",
                 "###..........",
             ],
         ],
-        description: "Hand-reported case in the developer's save, chunk (258,1,258): \
-                      crop world x4128..=4140, z4128..=4140, layers y=27..29 (layer 0 \
-                      is world y=27). `input` is the exact saved field; the reported \
-                      block is the `#` at world (4133,29,4133), placed into the pool. \
-                      `expected` repeats the input only because the saved field is \
-                      already a fixpoint of the current solver: replace it with the \
-                      field Minecraft is expected to show and every wrong cell becomes \
-                      a failing diff. The wide pool itself is leftover history: from a \
-                      fresh build with the pocket open, the nearest-drop rule sends the \
-                      source straight down the stream to (4133,29,4136) and this pool \
-                      never forms (vanilla `FlowingFluid.getSpread` keeps only the \
-                      nearest-drop directions, so it pools the same way).",
+        phases: &[ScenePhase {
+            edit: &[
+                &["~~~~~~~~~~~~~"; 13],
+                &["~~~~~~~~~~~~~"; 13],
+                &[
+                    "~~~~~~~~~~~~~",
+                    "~~~~~~~~~~~~~",
+                    "~~~~~~~~~~~~~",
+                    "~~~~~~~~~~~~~",
+                    "~~~~~~~~~~~~~",
+                    "~~~~~#~~~~~~~",
+                    "~~~~~~~~~~~~~",
+                    "~~~~~~~~~~~~~",
+                    "~~~~~~~~~~~~~",
+                    "~~~~~~~~~~~~~",
+                    "~~~~~~~~~~~~~",
+                    "~~~~~~~~~~~~~",
+                    "~~~~~~~~~~~~~",
+                ],
+            ],
+            expected: &[
+                &["#############"; 13],
+                &[
+                    "#############",
+                    "#############",
+                    "#############",
+                    "#############",
+                    "#############",
+                    "#############",
+                    "#####65######",
+                    "#####76######",
+                    "#####87######",
+                    "#############",
+                    "#############",
+                    "#############",
+                    "#############",
+                ],
+                &[
+                    "###########..",
+                    "##########...",
+                    "######.......",
+                    "#............",
+                    "#...432......",
+                    "#..65#1......",
+                    "#..7#........",
+                    "#..S#........",
+                    "#..765.......",
+                    "#............",
+                    "#............",
+                    "##...........",
+                    "###..........",
+                ],
+            ],
+            ..Default::default()
+        }],
+        description: "Hand-drawn by the developer in the F8 plot field (plot \
+                      `reported_block_in_basin`, origin (4145,64,4145); raw dumps in \
+                      `saves/dev/test_plots*.txt`). `input` is the pool just before the \
+                      glass block goes in at world (4133,29,4133); the phase places the \
+                      block and `expected` is the flow the developer says should result. \
+                      Vanilla only ticks fluids it has scheduled, and placing a block \
+                      wakes just the cells next to it: the notch drains, a 4-3-2 channel \
+                      forms north of the block with a level 1 east of it, and the \
+                      pocket's falling column drops from 8/7 to 6/5. Re-spreading every \
+                      fluid cell instead floods the basin to the full diamond.",
         ..Default::default()
     },
 ];
@@ -652,7 +705,7 @@ pub(crate) fn char_from_cell(cell: ChunkCell) -> char {
 mod tests {
     use super::*;
     use crate::world::chunk::{
-        Chunk, ChunkPos, FluidSnapshot, WorldBlockPos, simulate_fluid_step,
+        Chunk, ChunkPos, FluidSnapshot, ScheduledFluids, WorldBlockPos, simulate_fluid_step,
     };
     use std::collections::HashMap;
 
@@ -661,6 +714,7 @@ mod tests {
         chunks: HashMap<IVec3, Chunk>,
         origin: IVec3,
         size: IVec3,
+        scheduled: ScheduledFluids,
     }
 
     impl FluidSceneWorld {
@@ -669,6 +723,7 @@ mod tests {
                 chunks: HashMap::new(),
                 origin: layout.origin,
                 size: layout.size,
+                scheduled: ScheduledFluids::default(),
             };
             for &(pos, cell) in &layout.cells {
                 world.set_cell(pos, cell);
@@ -680,6 +735,9 @@ mod tests {
             let address = WorldBlockPos::from_ivec3(world).split();
             let chunk = self.chunks.entry(address.chunk().as_ivec3()).or_default();
             chunk.set_cell(address.local().as_uvec3(), cell);
+            // Scene builds and edits are block changes: they schedule the cell
+            // and its neighbours, exactly like the invalidation path does.
+            self.scheduled.wake_with_neighbours(world);
         }
 
         /// Applies an edit map like a player changing blocks in the scene.
@@ -719,7 +777,13 @@ mod tests {
                 .collect::<Vec<_>>();
             source_chunks.sort_by_key(|pos| (pos.x, pos.y, pos.z));
 
-            let step = simulate_fluid_step(&snapshot, &source_chunks, FluidProfile::WATER);
+            let step = simulate_fluid_step(
+                &snapshot,
+                &source_chunks,
+                &self.scheduled,
+                FluidProfile::WATER,
+            );
+            self.scheduled = step.scheduled.clone();
             if step.is_empty() {
                 return false;
             }

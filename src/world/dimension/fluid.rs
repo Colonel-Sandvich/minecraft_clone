@@ -7,7 +7,7 @@ use crate::{
         ChunkSimulationSet,
         chunk::{
             CHUNK_VOLUME, Chunk, ChunkCell, ChunkContentCounts, ChunkEditor, ChunkInvalidationPlan,
-            ChunkNeedsFluidStep, FluidProfile, FluidSnapshot, WorldBlockPos,
+            ChunkNeedsFluidStep, FluidProfile, FluidSnapshot, FluidStep, WorldBlockPos,
             chunk_neighbor_offsets, simulate_fluid_step,
         },
     },
@@ -119,8 +119,14 @@ pub(crate) fn step_chunk_fluids(
         snapshot_chunks_for_sources(&source_chunks, &chunks_by_pos, &param_set.p0());
 
     let snapshot = FluidSnapshot::new(snapshot_chunks);
-    let step = simulate_fluid_step(&snapshot, &source_chunks, FluidProfile::WATER);
-    if step.is_empty() {
+    let scheduled = dimension.take_scheduled_fluids();
+    let FluidStep {
+        updates,
+        scheduled: next_scheduled,
+    } = simulate_fluid_step(&snapshot, &source_chunks, &scheduled, FluidProfile::WATER);
+    dimension.set_scheduled_fluids(next_scheduled);
+
+    if updates.is_empty() {
         for entity in processed_entities {
             commands.entity(entity).remove::<ChunkNeedsFluidStep>();
         }
@@ -128,7 +134,7 @@ pub(crate) fn step_chunk_fluids(
     }
 
     let mut invalidations = ChunkInvalidationPlan::new();
-    for update in step.updates {
+    for update in updates {
         let address = WorldBlockPos::from_ivec3(update.pos).split();
         let Some(entity) = chunks_by_pos.get(&address.chunk().as_ivec3()).copied() else {
             continue;
@@ -202,7 +208,9 @@ fn snapshot_chunks_for_sources(
 mod tests {
     use super::*;
     use crate::item::Item;
-    use crate::world::chunk::{CHUNK_SIZE, ChunkCell, ChunkNeedsSave, ChunkPos, ChunkPosition};
+    use crate::world::chunk::{
+        CHUNK_SIZE, Chunk, ChunkCell, ChunkNeedsSave, ChunkPos, ChunkPosition,
+    };
 
     #[derive(Resource)]
     struct TestDimension(Entity);
@@ -245,6 +253,7 @@ mod tests {
             ))
             .id();
         register_chunk(&mut app, IVec3::ZERO, entity);
+        wake_all_fluids(&mut app);
 
         app.update();
 
@@ -378,6 +387,9 @@ mod tests {
         assert!(active_fluid_chunk_positions(app.world_mut()).is_empty());
 
         spawn_flat_chunk(&mut app, IVec3::X, None);
+        // Loading a chunk does not re-tick settled water, because vanilla keeps
+        // no pending tick there; the helper seeds the wake a nearby change
+        // would produce, and then the source reaches the new chunk.
         mark_chunks_with_fluids_active(&mut app);
         app.update();
 
@@ -398,6 +410,10 @@ mod tests {
             last_active_positions = active_fluid_chunk_positions(world);
 
             if last_dirty_positions.is_empty() && last_active_positions.is_empty() {
+                assert!(
+                    scheduled_fluid_positions(world).is_empty(),
+                    "settled scene still holds fluid cells waiting for a tick"
+                );
                 return;
             }
 
@@ -409,6 +425,31 @@ mod tests {
              last dirty chunks: {last_dirty_positions:?}; \
              last active chunks: {last_active_positions:?}"
         );
+    }
+
+    /// Scheduled positions that still hold fluid: settled water must have none.
+    fn scheduled_fluid_positions(world: &mut World) -> Vec<IVec3> {
+        let dimension = world.resource::<TestDimension>().0;
+        let scheduled = world
+            .get::<Dimension>(dimension)
+            .unwrap()
+            .scheduled_fluids()
+            .iter()
+            .collect::<Vec<_>>();
+        let mut query = world.query::<(&ChunkPosition, &Chunk)>();
+        scheduled
+            .into_iter()
+            .filter(|&pos| {
+                let address = WorldBlockPos::from_ivec3(pos).split();
+                query
+                    .iter(world)
+                    .find_map(|(position, chunk)| {
+                        (position.as_ivec3() == address.chunk().as_ivec3())
+                            .then(|| chunk.get_cell(address.local().as_uvec3()))
+                    })
+                    .is_some_and(|cell| cell.is_fluid())
+            })
+            .collect()
     }
 
     fn spawn_flat_chunk(app: &mut App, pos: IVec3, water: Option<(UVec3, ChunkCell)>) -> Entity {
@@ -433,6 +474,7 @@ mod tests {
                 .insert(ChunkNeedsFluidStep);
         }
         register_chunk(app, pos, entity);
+        wake_all_fluids(app);
         entity
     }
 
@@ -450,6 +492,7 @@ mod tests {
             entity
         };
         world.entity_mut(entity).insert(ChunkNeedsFluidStep);
+        wake_all_fluids(app);
     }
 
     fn get_cell(app: &mut App, chunk_pos: IVec3, cell_pos: UVec3) -> ChunkCell {
@@ -472,6 +515,30 @@ mod tests {
             .collect();
         for entity in entities {
             world.entity_mut(entity).insert(ChunkNeedsFluidStep);
+        }
+        wake_all_fluids(app);
+    }
+
+    /// Schedules every fluid cell, standing in for the block edits that would
+    /// wake them in the running game.
+    fn wake_all_fluids(app: &mut App) {
+        let world = app.world_mut();
+        let mut query = world.query::<(&ChunkPosition, &Chunk)>();
+        let positions = query
+            .iter(world)
+            .flat_map(|(position, chunk)| {
+                let chunk_pos = ChunkPos::from_ivec3(position.as_ivec3());
+                chunk
+                    .iter()
+                    .filter(|(cell, _)| cell.is_fluid())
+                    .map(|(_, local)| chunk_pos.block(local).world().as_ivec3())
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        let dimension = world.resource::<TestDimension>().0;
+        let mut dimension = world.get_mut::<Dimension>(dimension).unwrap();
+        for position in positions {
+            dimension.wake_fluids_around(position);
         }
     }
 

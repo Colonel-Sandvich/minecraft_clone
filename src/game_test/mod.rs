@@ -418,6 +418,9 @@ fn build_plot(
     let mut plan = ChunkInvalidationPlan::new();
     for (position, chunk) in ordered {
         let counts = chunk.compute_content_counts();
+        // Plots are written cell by cell without editor deltas, so their
+        // fluids are scheduled wholesale as just-placed water.
+        plan.record_placed_fluids(position, &chunk);
         let entity = commands
             .spawn((
                 ChunkPosition::from(position),

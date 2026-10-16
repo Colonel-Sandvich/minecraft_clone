@@ -29,7 +29,7 @@ pub use coords::{
 };
 pub use data::{CellStorage, Chunk, ChunkCellIter, ChunkPalette, ChunkRevision, PaletteEntry};
 pub use fluid_sim::FluidStepResult;
-pub(crate) use fluid_sim::{FluidSnapshot, simulate_fluid_step};
+pub(crate) use fluid_sim::{FluidSnapshot, FluidStep, ScheduledFluids, simulate_fluid_step};
 pub use invalidation::{ChunkInvalidationEffects, ChunkInvalidationPlan, classify_cell_delta};
 pub use light::{ChunkHeightmap, ChunkLight};
 pub use mutation::ChunkEditor;

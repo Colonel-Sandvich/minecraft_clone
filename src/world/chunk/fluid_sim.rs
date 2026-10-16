@@ -9,6 +9,18 @@ use super::{
 const HORIZONTAL_DIRS: [IVec3; 4] = [IVec3::NEG_X, IVec3::X, IVec3::NEG_Z, IVec3::Z];
 const MAX_DROP_SEARCH_DISTANCE: u8 = 4;
 
+/// The changed cell plus its six face neighbours: the positions a block update
+/// reaches, which is what makes vanilla schedule their fluid ticks.
+const CELL_NOTIFY_OFFSETS: [IVec3; 7] = [
+    IVec3::ZERO,
+    IVec3::NEG_X,
+    IVec3::X,
+    IVec3::NEG_Y,
+    IVec3::Y,
+    IVec3::NEG_Z,
+    IVec3::Z,
+];
+
 #[derive(Debug, Clone)]
 pub(crate) struct FluidSnapshot {
     chunks: HashMap<IVec3, Box<[ChunkCell; CHUNK_VOLUME]>>,
@@ -71,12 +83,69 @@ pub(crate) struct FluidUpdate {
     pub(crate) cell: ChunkCell,
 }
 
+/// The fluid cells with a pending update, mirroring vanilla's scheduled fluid
+/// ticks.
+///
+/// Vanilla only ticks fluids the world has scheduled: placing or breaking a
+/// block wakes the edited cell and its face neighbours, and every fluid write
+/// wakes the cell it landed in. A settled pool therefore has no pending ticks
+/// and stays put until something disturbs it. Ticking every existing cell each
+/// step instead let untouched water flood whenever the drop landscape changed
+/// somewhere within a four-block search radius of a pool edge.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(crate) struct ScheduledFluids {
+    cells: HashSet<IVec3>,
+}
+
+impl ScheduledFluids {
+    pub(crate) fn contains(&self, pos: IVec3) -> bool {
+        self.cells.contains(&pos)
+    }
+
+    #[cfg_attr(not(test), expect(dead_code, reason = "asserted by fluid tests"))]
+    pub(crate) fn is_empty(&self) -> bool {
+        self.cells.is_empty()
+    }
+
+    pub(crate) fn iter(&self) -> impl Iterator<Item = IVec3> + '_ {
+        self.cells.iter().copied()
+    }
+
+    /// Schedules one exact cell, for wakes that already name the position.
+    pub(crate) fn wake_cell(&mut self, pos: IVec3) {
+        self.cells.insert(pos);
+    }
+
+    /// Schedules a cell and its six face neighbours, the set a block update
+    /// reaches through `neighborChanged`.
+    pub(crate) fn wake_with_neighbours(&mut self, pos: IVec3) {
+        for offset in CELL_NOTIFY_OFFSETS {
+            self.cells.insert(pos + offset);
+        }
+    }
+
+    /// Schedules every fluid cell of one chunk, as if the chunk had just been
+    /// written cell by cell.
+    fn all_fluids_in(snapshot: &FluidSnapshot, chunk_pos: IVec3, profile: FluidProfile) -> Self {
+        let mut scheduled = Self::default();
+        for (pos, _) in snapshot.fluid_positions_in_chunk(chunk_pos, profile) {
+            scheduled.wake_cell(pos);
+        }
+        scheduled
+    }
+}
+
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub(crate) struct FluidStep {
     pub(crate) updates: Vec<FluidUpdate>,
+    pub(crate) scheduled: ScheduledFluids,
 }
 
 impl FluidStep {
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "used by the headless scene driver")
+    )]
     pub(crate) fn is_empty(&self) -> bool {
         self.updates.is_empty()
     }
@@ -91,7 +160,11 @@ pub struct FluidStepResult {
 impl Chunk {
     pub fn step_fluids(&mut self, profile: &FluidProfile) -> FluidStepResult {
         let snapshot = FluidSnapshot::from_chunk(IVec3::ZERO, self);
-        let step = simulate_fluid_step(&snapshot, &[IVec3::ZERO], *profile);
+        // Isolated single-chunk stepping wakes every fluid cell, as if the
+        // chunk had just been written. The running game tracks scheduled cells
+        // explicitly so settled water is not re-ticked.
+        let scheduled = ScheduledFluids::all_fluids_in(&snapshot, IVec3::ZERO, *profile);
+        let step = simulate_fluid_step(&snapshot, &[IVec3::ZERO], &scheduled, *profile);
         let mut result = FluidStepResult::default();
         for update in step.updates {
             let address = WorldBlockPos::from_ivec3(update.pos).split();
@@ -109,24 +182,53 @@ impl Chunk {
 pub(crate) fn simulate_fluid_step(
     snapshot: &FluidSnapshot,
     source_chunks: &[IVec3],
+    scheduled: &ScheduledFluids,
     profile: FluidProfile,
 ) -> FluidStep {
     let mut cleared = HashSet::new();
     let mut next_fluids = HashMap::new();
     let mut own_states = Vec::new();
+    let mut next_scheduled = ScheduledFluids::default();
 
-    // Phase 1 mirrors FlowingFluid.getNewLiquid: every existing fluid cell
-    // recomputes its own state from its surroundings. This is what keeps
-    // stationary water alive when nothing pours into it any more, and what
-    // raises and lowers levels without upstream writes.
+    // Phase 1 mirrors FlowingFluid.getNewLiquid: every scheduled fluid cell
+    // recomputes its own state from its surroundings. Unscheduled water is
+    // settled water; vanilla leaves it alone until a neighbouring change
+    // schedules it, so it must not self-heal from this batch either.
     for &chunk_pos in source_chunks {
         for (pos, fluid) in snapshot.fluid_positions_in_chunk(chunk_pos, profile) {
+            if !scheduled.contains(pos) {
+                continue;
+            }
             cleared.insert(pos);
             let Some(state) = recompute_fluid(snapshot, pos, fluid, profile) else {
+                // The cell dried up: its neighbours' surroundings changed.
+                next_scheduled.wake_with_neighbours(pos);
                 continue;
             };
             write_next_fluid(snapshot, &mut next_fluids, profile, pos, state);
+            if state != fluid {
+                // A changed cell reschedules itself and notifies its neighbours.
+                next_scheduled.wake_with_neighbours(pos);
+            }
             own_states.push((pos, state));
+        }
+    }
+
+    // Scheduled cells outside this batch keep their place, so wakes that cross
+    // a chunk the budget deferred are not lost. Wakes for cells that no longer
+    // hold this fluid are spent and dropped.
+    let processed_chunks = source_chunks.iter().copied().collect::<HashSet<_>>();
+    for pos in scheduled.iter() {
+        let chunk_pos = WorldBlockPos::from_ivec3(pos).split().chunk().as_ivec3();
+        if processed_chunks.contains(&chunk_pos) {
+            continue;
+        }
+        let holds_fluid = snapshot.cell(pos).is_none_or(|cell| {
+            cell.as_fluid()
+                .is_some_and(|fluid| fluid.ty() == profile.ty)
+        });
+        if holds_fluid {
+            next_scheduled.wake_cell(pos);
         }
     }
 
@@ -134,7 +236,14 @@ pub(crate) fn simulate_fluid_step(
     // additionally, when three or more sources surround the cell) spread
     // sideways.
     for (pos, state) in own_states {
-        spread_fluid(snapshot, &mut next_fluids, profile, pos, state);
+        spread_fluid(
+            snapshot,
+            &mut next_fluids,
+            &mut next_scheduled,
+            profile,
+            pos,
+            state,
+        );
     }
 
     let mut changed_positions = cleared;
@@ -159,7 +268,10 @@ pub(crate) fn simulate_fluid_step(
     }
 
     updates.sort_by_key(|update| (update.pos.x, update.pos.y, update.pos.z));
-    FluidStep { updates }
+    FluidStep {
+        updates,
+        scheduled: next_scheduled,
+    }
 }
 
 /// Recomputes one existing fluid cell, following `getNewLiquid` order.
@@ -201,6 +313,7 @@ fn recompute_fluid(
 fn spread_fluid(
     snapshot: &FluidSnapshot,
     next_fluids: &mut HashMap<IVec3, FluidState>,
+    next_scheduled: &mut ScheduledFluids,
     profile: FluidProfile,
     pos: IVec3,
     state: FluidState,
@@ -208,18 +321,27 @@ fn spread_fluid(
     let sideways = profile.decayed_flow(state);
 
     if can_pour_down(snapshot, pos) {
-        write_next_fluid(
+        if write_next_fluid(
             snapshot,
             next_fluids,
             profile,
             pos + IVec3::NEG_Y,
             profile.falling(),
-        );
+        ) {
+            next_scheduled.wake_with_neighbours(pos + IVec3::NEG_Y);
+        }
         // Java also spreads sideways from a cell that is pouring when it has
         // three or more horizontal source neighbours (wide pools spill over
         // their lip).
         if horizontal_source_neighbors(snapshot, pos, profile) >= 3 {
-            write_sideways(snapshot, next_fluids, profile, pos, sideways);
+            write_sideways(
+                snapshot,
+                next_fluids,
+                next_scheduled,
+                profile,
+                pos,
+                sideways,
+            );
         }
         return;
     }
@@ -227,7 +349,14 @@ fn spread_fluid(
     // With the pour blocked: a source always spreads sideways, while flowing
     // water over a water hole stays put.
     if state.is_source() || !is_water_hole(snapshot, pos) {
-        write_sideways(snapshot, next_fluids, profile, pos, sideways);
+        write_sideways(
+            snapshot,
+            next_fluids,
+            next_scheduled,
+            profile,
+            pos,
+            sideways,
+        );
     }
 }
 
@@ -328,6 +457,7 @@ fn horizontal_source_neighbors(
 fn write_sideways(
     snapshot: &FluidSnapshot,
     next_fluids: &mut HashMap<IVec3, FluidState>,
+    next_scheduled: &mut ScheduledFluids,
     profile: FluidProfile,
     pos: IVec3,
     fluid: Option<FluidState>,
@@ -340,8 +470,12 @@ fn write_sideways(
         // Vanilla never overwrites water with water: a horizontal spread only
         // fills replaceable cells, and existing water raises or lowers itself
         // in the recompute phase instead.
-        if snapshot.cell(target).is_some_and(ChunkCell::is_empty) {
-            write_next_fluid(snapshot, next_fluids, profile, target, fluid);
+        if snapshot.cell(target).is_some_and(ChunkCell::is_empty)
+            && write_next_fluid(snapshot, next_fluids, profile, target, fluid)
+        {
+            // The write lands as a block update: the new cell and its
+            // neighbours get scheduled.
+            next_scheduled.wake_with_neighbours(target);
         }
     }
 }
@@ -449,6 +583,7 @@ mod tests {
     #[derive(Default)]
     struct TestFluidWorld {
         chunks: HashMap<IVec3, Chunk>,
+        scheduled: ScheduledFluids,
     }
 
     impl TestFluidWorld {
@@ -465,6 +600,9 @@ mod tests {
             let address = WorldBlockPos::from_ivec3(pos).split();
             let chunk = self.chunks.entry(address.chunk().as_ivec3()).or_default();
             chunk.set_cell(address.local().as_uvec3(), cell);
+            // Test edits stand in for block changes: they notify the cell and
+            // its neighbours, exactly like the real invalidation path.
+            self.scheduled.wake_with_neighbours(pos);
         }
 
         fn cell(&self, pos: IVec3) -> Option<ChunkCell> {
@@ -491,7 +629,13 @@ mod tests {
                 .collect::<Vec<_>>();
             source_chunks.sort_by_key(|pos| (pos.x, pos.y, pos.z));
 
-            let step = simulate_fluid_step(&snapshot, &source_chunks, FluidProfile::WATER);
+            let step = simulate_fluid_step(
+                &snapshot,
+                &source_chunks,
+                &self.scheduled,
+                FluidProfile::WATER,
+            );
+            self.scheduled = step.scheduled.clone();
             self.apply(&step);
             step
         }
@@ -530,6 +674,58 @@ mod tests {
         world.step();
 
         assert_eq!(world.cell(ivec3(8, 1, 8)), Some(ChunkCell::water_source()));
+    }
+
+    #[test]
+    fn unscheduled_water_neither_self_heals_nor_spreads() {
+        let mut world = TestFluidWorld::default();
+        world.fill_floor(IVec3::ZERO);
+        world.set_cell(ivec3(8, 1, 8), ChunkCell::water_source());
+        // A stale level with no pending tick must stay exactly as stored.
+        world.set_cell(ivec3(7, 1, 8), ChunkCell::water_flow(3));
+
+        let snapshot = world.snapshot();
+        let idle = simulate_fluid_step(
+            &snapshot,
+            &[IVec3::ZERO],
+            &ScheduledFluids::default(),
+            FluidProfile::WATER,
+        );
+
+        assert!(
+            idle.is_empty(),
+            "water without a pending tick must neither self-heal nor spread"
+        );
+        assert!(idle.scheduled.is_empty());
+    }
+
+    #[test]
+    fn fluid_writes_reschedule_the_written_cell() {
+        let mut world = TestFluidWorld::default();
+        world.fill_floor(IVec3::ZERO);
+        world.set_cell(ivec3(8, 1, 8), ChunkCell::water_source());
+
+        let snapshot = world.snapshot();
+        let mut scheduled = ScheduledFluids::default();
+        scheduled.wake_cell(ivec3(8, 1, 8));
+        let step = simulate_fluid_step(&snapshot, &[IVec3::ZERO], &scheduled, FluidProfile::WATER);
+
+        assert_eq!(step.updates.len(), 4, "the source spreads into four sides");
+        for side in [
+            ivec3(7, 1, 8),
+            ivec3(9, 1, 8),
+            ivec3(8, 1, 7),
+            ivec3(8, 1, 9),
+        ] {
+            assert!(
+                step.scheduled.contains(side),
+                "written cell {side} must stay scheduled"
+            );
+        }
+        assert!(
+            !step.scheduled.contains(ivec3(8, 2, 8)),
+            "untouched cells beyond the write must not be scheduled"
+        );
     }
 
     #[test]
