@@ -140,7 +140,16 @@ world coordinates, and the full actual scene.
 | `F7` | Toggle the status overlay (shown automatically when a run starts) |
 | `F8` | Rebuild and run every registered scenario, then fly the player to the field |
 | `F9` | Fly to the next test plot: the first failure on a fresh cycle, then each plot in order, wrapping around. With nothing built yet, `F9` starts a run instead. |
+| `F11` | Write every built plot to `saves/dev/test_plots.txt` as ASCII maps (scenario layout, extended legend for hand-placed blocks). Use it after hand-editing a plot to hand the drawing back for transcription. |
 | `R` | The existing debug reset, which returns the player to the dimension arrival. |
+
+Because plot chunks are stripped of `ChunkNeedsSave` (they must never pollute
+the world save) and `F8` rebuilds every plot from the scenario code, hand edits
+inside a plot are ephemeral: draw first, then press `F11` before anything else
+rebuilds the field. The dump lists each plot with its name, status, phase,
+origin, and size, then the cell grid; the legend adds `g/d/t/a/L/v/G/i` for
+grass, dirt, stone, sand, log, leaves, glowstone, and ice so marker blocks
+placed while drawing survive the round trip.
 
 Plots are packed row by row, starting at world `(4096, 64, 4096)`. Each origin
 sits one block past a chunk boundary so a scene and its glass shell occupy whole
@@ -235,7 +244,7 @@ fluid update and watch the front move one block at a time.
   player's block interactions, so halo fanout and `ChunkNeedsFluidStep`
   re-marking are exercised; the headless driver applies the same edit cells
   directly and re-solves with every fluid chunk as a source.
-- **F7/F8/F9** (runner) and **P/O/I/U** (tick control) are unbound keys
+- **F7/F8/F9/F11** (runner) and **P/O/I/U** (tick control) are unbound keys
   elsewhere; there is no chat/command system to attach `/test`-style commands
   to yet.
 - The headless driver passes **all chunks with fluids** as source chunks on

@@ -120,7 +120,7 @@ fn update_game_test_overlay(
 
     if let Ok(mut header) = header_q.single_mut() {
         header.0 = format!(
-            "water tests: {} pass / {} fail\nF8 run + fly to field   F9 next test   F7 hide",
+            "water tests: {} pass / {} fail\nF8 run + fly to field   F9 next test   F11 dump plots   F7 hide",
             suite.passed(),
             suite.failed(),
         );

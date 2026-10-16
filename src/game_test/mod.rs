@@ -19,6 +19,7 @@ use avian3d::prelude::Position;
 use bevy::prelude::*;
 
 use crate::{
+    item::Item,
     mob::controller::{Flying, Velocity},
     player::{Player, PlayerDimension, cam::MouseCam},
     tick_control::{TickControlSet, simulation_ticks_allowed},
@@ -63,6 +64,9 @@ const INSPECTION_VIEW_DIR: Vec3 = Vec3::new(0.0, -FRAC_1_SQRT_2, -FRAC_1_SQRT_2)
 /// Distance from the scene centre along the view ray when teleporting to a
 /// plot; wider scenes get more room so they still fit the frame.
 const INSPECTION_BASE_DISTANCE: f32 = 10.0;
+/// Where `F11` writes the current plot field as ASCII maps, so a plot the
+/// developer hand-edited in the world can be handed back for transcription.
+const PLOT_DUMP_PATH: &str = "saves/dev/test_plots.txt";
 
 pub(crate) struct WaterTestEntry {
     pub(crate) scenario: &'static WaterScenario,
@@ -108,6 +112,7 @@ pub(crate) struct WaterTestSuite {
     fixed_clock: u64,
     request_run: bool,
     request_teleport: bool,
+    request_dump: bool,
     clear_field_defer: u32,
     /// The entry the player is currently parked above, shown in the overlay.
     viewing: Option<usize>,
@@ -131,6 +136,7 @@ impl WaterTestSuite {
             fixed_clock: 0,
             request_run: false,
             request_teleport: false,
+            request_dump: false,
             clear_field_defer: 0,
             viewing: None,
         }
@@ -180,6 +186,7 @@ impl Plugin for GameTestPlugin {
                     handle_teleport_request,
                     strip_plot_save_markers,
                     advance_running_tests,
+                    dump_test_plots,
                 )
                     .chain(),
             );
@@ -199,6 +206,9 @@ fn handle_suite_hotkeys(keys: Res<ButtonInput<KeyCode>>, mut suite: ResMut<Water
     }
     if keys.just_pressed(KeyCode::F9) {
         suite.request_teleport = true;
+    }
+    if keys.just_pressed(KeyCode::F11) {
+        suite.request_dump = true;
     }
 }
 
@@ -780,6 +790,108 @@ fn strip_plot_save_markers(
     }
 }
 
+/// `F11`: writes every built plot back out in the scenario map layout so a plot
+/// the developer hand-edited (for example stone left where water should reach)
+/// can be handed back for transcription. Unlike [`char_from_cell`] the dump has
+/// a character for every block, so marker blocks never panic.
+fn dump_test_plots(mut suite: ResMut<WaterTestSuite>, chunks: Query<&Chunk>) {
+    if !suite.request_dump {
+        return;
+    }
+    suite.request_dump = false;
+
+    let mut out = String::from(
+        "# water test plot dump\n\
+         # legend: . air  # glass  S source  1-8 water level  g grass  d dirt  t stone\n\
+         #         a sand  L oak log  v leaves  G glowstone  i ice  ? missing chunk\n\
+         # one section per plot; y=0 is the bottom layer, rows are z, characters are x\n",
+    );
+
+    let mut dumped = 0;
+    for entry in &suite.entries {
+        let Some(plot) = &entry.plot else {
+            continue;
+        };
+        let by_position = plot.chunks.iter().copied().collect::<HashMap<_, _>>();
+        render_plot_dump(&mut out, entry, plot, |world| {
+            let address = WorldBlockPos::from_ivec3(world).split();
+            let Some(&entity) = by_position.get(&address.chunk()) else {
+                return '?';
+            };
+            match chunks.get(entity) {
+                Ok(chunk) => dump_cell_char(chunk.get_cell(address.local().as_uvec3())),
+                Err(_) => '?',
+            }
+        });
+        dumped += 1;
+    }
+
+    if dumped == 0 {
+        info!("water test dump: no plots built yet; press F8 first");
+        return;
+    }
+
+    let result =
+        std::fs::create_dir_all("saves/dev").and_then(|()| std::fs::write(PLOT_DUMP_PATH, &out));
+    match result {
+        Ok(()) => info!("water test dump: wrote {dumped} plots to {PLOT_DUMP_PATH}"),
+        Err(error) => warn!(%error, "water test dump: could not write {PLOT_DUMP_PATH}"),
+    }
+}
+
+/// Renders one plot in the same layout as the scenario maps (`layers[y][z]`,
+/// characters along `x`), reading the live cells through `cell_at`.
+fn render_plot_dump(
+    out: &mut String,
+    entry: &WaterTestEntry,
+    plot: &TestPlot,
+    mut cell_at: impl FnMut(IVec3) -> char,
+) {
+    use std::fmt::Write as _;
+
+    let _ = writeln!(
+        out,
+        "## {} [{}] phase {}  origin {:?}  size {}x{}x{}",
+        entry.scenario.name,
+        entry.status.label(),
+        entry.phase,
+        plot.scene_origin,
+        plot.size.x,
+        plot.size.y,
+        plot.size.z,
+    );
+    for y in 0..plot.size.y {
+        let _ = writeln!(out, "y={y}:");
+        for z in 0..plot.size.z {
+            let mut row = String::with_capacity(plot.size.x as usize);
+            for x in 0..plot.size.x {
+                row.push(cell_at(plot.scene_origin + IVec3::new(x, y, z)));
+            }
+            let _ = writeln!(out, "  z={z}: {row}");
+        }
+    }
+}
+
+/// Character for one dumped cell. Extends the scenario legend with the
+/// remaining blocks so a developer can mark expectations with any block.
+fn dump_cell_char(cell: ChunkCell) -> char {
+    match cell {
+        ChunkCell::Empty => '.',
+        ChunkCell::Fluid(fluid) if fluid.is_source() => 'S',
+        ChunkCell::Fluid(fluid) => char::from(b'0' + fluid.level().get()),
+        ChunkCell::Block(Item::Glass) => '#',
+        ChunkCell::Block(Item::OakLog) => 'L',
+        ChunkCell::Block(Item::Grass) => 'g',
+        ChunkCell::Block(Item::Dirt) => 'd',
+        ChunkCell::Block(Item::Stone) => 't',
+        ChunkCell::Block(Item::Sand) => 'a',
+        ChunkCell::Block(Item::OakLeaves) => 'v',
+        ChunkCell::Block(Item::Glowstone) => 'G',
+        ChunkCell::Block(Item::Ice) => 'i',
+        ChunkCell::Block(Item::Water) => '?',
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -969,5 +1081,76 @@ mod tests {
             destination.y > anchor.y,
             "the player looks down into the scene"
         );
+    }
+
+    #[test]
+    fn f11_requests_a_plot_dump() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .init_resource::<ButtonInput<KeyCode>>()
+            .insert_resource(WaterTestSuite::new())
+            .add_systems(Update, handle_suite_hotkeys);
+
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::F11);
+        app.update();
+
+        assert!(
+            app.world().resource::<WaterTestSuite>().request_dump,
+            "F11 must request a plot dump"
+        );
+    }
+
+    #[test]
+    fn plot_dump_renders_hand_edits_in_scenario_layout() {
+        let entry = WaterTestEntry {
+            scenario: &WATER_SCENARIOS[0],
+            status: TestStatus::Failed,
+            detail: String::new(),
+            phase: 1,
+            start_tick: 0,
+            plot: None,
+        };
+        let origin = IVec3::new(4097, 64, 4097);
+        let plot = TestPlot {
+            scene_origin: origin,
+            size: IVec3::new(3, 2, 1),
+            chunks: Vec::new(),
+        };
+
+        let mut out = String::new();
+        render_plot_dump(&mut out, &entry, &plot, |world| {
+            let local = world - origin;
+            match (local.x, local.y) {
+                (0, 0) => 't',
+                (1, 0) => '3',
+                (0, 1) => '#',
+                _ => '.',
+            }
+        });
+
+        assert!(out.contains(WATER_SCENARIOS[0].name));
+        assert!(out.contains("[FAIL]"), "status must be reported: {out}");
+        assert!(out.contains("phase 1"), "phase must be reported: {out}");
+        assert!(out.contains("y=0:"));
+        assert!(
+            out.contains("z=0: t3."),
+            "hand-placed markers must survive the dump: {out}"
+        );
+        assert!(
+            out.contains("z=0: #.."),
+            "upper layers must be dumped too: {out}"
+        );
+    }
+
+    #[test]
+    fn dump_legend_covers_every_storable_cell() {
+        assert_eq!(dump_cell_char(ChunkCell::EMPTY), '.');
+        assert_eq!(dump_cell_char(ChunkCell::water_source()), 'S');
+        assert_eq!(dump_cell_char(ChunkCell::water_flow(5)), '5');
+        assert_eq!(dump_cell_char(Item::Stone.into()), 't');
+        assert_eq!(dump_cell_char(Item::Glass.into()), '#');
+        assert_eq!(dump_cell_char(Item::Grass.into()), 'g');
     }
 }
