@@ -2,8 +2,8 @@ use bevy::prelude::*;
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use super::{
-    CHUNK_SIZE, CHUNK_VOLUME, Chunk, ChunkCell, ChunkPos, FluidProfile, FluidState, LocalBlockPos,
-    WorldBlockPos, chunk_linear_index,
+    CHUNK_SIZE, CHUNK_VOLUME, Chunk, ChunkCell, ChunkIndex, ChunkPos, FluidProfile, FluidState,
+    LocalBlockPos, WorldBlockPos, chunk_linear_index,
 };
 
 const HORIZONTAL_DIRS: [IVec3; 4] = [IVec3::NEG_X, IVec3::X, IVec3::NEG_Z, IVec3::Z];
@@ -122,6 +122,23 @@ impl ScheduledFluids {
         for offset in CELL_NOTIFY_OFFSETS {
             self.cells.insert(pos + offset);
         }
+    }
+
+    /// Groups the pending ticks by chunk as sorted chunk-local indices, the
+    /// shape the chunk save persists.
+    pub(crate) fn indices_by_chunk(&self) -> HashMap<ChunkPos, Vec<ChunkIndex>> {
+        let mut by_chunk: HashMap<ChunkPos, Vec<ChunkIndex>> = HashMap::new();
+        for &position in &self.cells {
+            let address = WorldBlockPos::from_ivec3(position).split();
+            by_chunk
+                .entry(address.chunk())
+                .or_default()
+                .push(address.local().index());
+        }
+        for indices in by_chunk.values_mut() {
+            indices.sort_unstable();
+        }
+        by_chunk
     }
 
     /// Schedules every fluid cell of one chunk, as if the chunk had just been

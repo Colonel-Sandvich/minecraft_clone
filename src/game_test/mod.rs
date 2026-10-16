@@ -27,9 +27,9 @@ use crate::{
         chunk::{
             CHUNK_SIZE, Chunk, ChunkCell, ChunkContentCounts, ChunkEditor, ChunkHeightmap,
             ChunkInvalidationPlan, ChunkLight, ChunkNeedsFluidStep, ChunkNeedsLightRebuild,
-            ChunkNeedsSave, ChunkPos, ChunkPosition, SceneLayers, WATER_SCENARIOS, WaterScenario,
-            WorldBlockPos, char_from_cell, for_each_edit_cell, layout_scene, phase_expected,
-            phase_max_steps, scene_size,
+            ChunkNeedsSave, ChunkPos, ChunkPosition, ChunkSaveExempt, SceneLayers, WATER_SCENARIOS,
+            WaterScenario, WorldBlockPos, char_from_cell, for_each_edit_cell, layout_scene,
+            phase_expected, phase_max_steps, scene_size,
         },
         dimension::{Active, Dimension, apply_chunk_invalidations, fluid::FLUID_STEP_PERIOD_TICKS},
     },
@@ -428,6 +428,7 @@ fn build_plot(
                 counts,
                 ChunkLight::default(),
                 ChunkHeightmap::default(),
+                ChunkSaveExempt,
                 Transform::from_translation(position.origin_translation()),
                 Visibility::Inherited,
             ))
@@ -774,8 +775,9 @@ fn fly_player_to_plot(
 }
 
 /// Test chunks must never be captured by the save system; the fluid solver
-/// marks every change as save-worthy, so scrub the marker every frame before
-/// the save capture runs in `PostUpdate`.
+/// marks every change as save-worthy, so scrub the dirty marker every frame
+/// before the save capture runs in `PostUpdate`. The capture itself also skips
+/// [`ChunkSaveExempt`] chunks, which also keeps pending ticks out of saves.
 fn strip_plot_save_markers(
     mut commands: Commands,
     suite: Res<WaterTestSuite>,

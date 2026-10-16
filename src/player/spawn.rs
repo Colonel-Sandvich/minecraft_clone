@@ -144,7 +144,7 @@ mod tests {
     use crate::player::PlayerId;
     use crate::world::{
         ChunkAddress, DimensionCatalog, DimensionId, WorldMetadata,
-        chunk::{Chunk, ChunkHeightmap},
+        chunk::{Chunk, ChunkHeightmap, ChunkIndex},
         storage::{
             ChunkRepository, ChunkStore, ChunkStoreError, ChunkStoreResult, InMemoryChunkStore,
             StoredPlayer, StoredPlayerPosition,
@@ -163,15 +163,16 @@ mod tests {
         fn load_chunk(
             &self,
             _address: ChunkAddress,
-        ) -> ChunkStoreResult<Option<(Chunk, ChunkHeightmap)>> {
+        ) -> ChunkStoreResult<Option<(Chunk, ChunkHeightmap, Vec<ChunkIndex>)>> {
             Ok(None)
         }
 
-        fn save_chunk(
+        fn save_chunk_with_scheduled(
             &self,
             _address: ChunkAddress,
             _chunk: &Chunk,
             _heightmap: &ChunkHeightmap,
+            _scheduled: &[ChunkIndex],
         ) -> ChunkStoreResult<()> {
             Ok(())
         }

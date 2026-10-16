@@ -5,7 +5,7 @@ use bevy::prelude::*;
 use crate::block::{BLOCK_FLAG_FULL_CUBE, BLOCK_FLAG_RENDERED, BLOCK_FLAG_TRANSLUCENT};
 
 use super::{
-    coords::ChunkPos,
+    coords::{ChunkIndex, ChunkPos},
     state::{CellDelta, ChunkCell},
 };
 
@@ -170,6 +170,19 @@ impl From<ChunkPosition> for ChunkPos {
 
 #[derive(Component, Debug, Clone, Copy)]
 pub struct ChunkNeedsSave;
+
+/// Marks a chunk that must never be captured by the chunk save system, such as
+/// the fluid test plots.
+#[derive(Component, Debug, Clone, Copy)]
+pub struct ChunkSaveExempt;
+
+/// Pending fluid ticks of the last successful chunk save, as chunk-local
+/// indices.
+///
+/// Save capture compares the live pending set against this checkpoint so an
+/// unchanged tick set is not rewritten to storage again.
+#[derive(Component, Debug, Clone, PartialEq, Eq)]
+pub struct ChunkSavedFluidTicks(pub Vec<ChunkIndex>);
 
 #[derive(Component, Debug, Clone, Copy)]
 pub struct ChunkNeedsLightRebuild;

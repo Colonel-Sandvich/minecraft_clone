@@ -15,7 +15,9 @@ use rusqlite::ErrorCode;
 
 use crate::player::PlayerId;
 use crate::world::{
-    chunk::{CHUNK_SIZE, Chunk, ChunkColumn, ChunkDecodeError, ChunkHeightmap, ChunkPos},
+    chunk::{
+        CHUNK_SIZE, Chunk, ChunkColumn, ChunkDecodeError, ChunkHeightmap, ChunkIndex, ChunkPos,
+    },
     definition::{ChunkAddress, ColumnAddress, DimensionCatalog, DimensionId},
     generation::{WorldHeight, WorldMetadata},
 };
@@ -168,11 +170,27 @@ impl StoredPlayer {
 pub struct StoredChunk {
     pub address: ChunkAddress,
     pub chunk: Chunk,
+    scheduled: Vec<ChunkIndex>,
 }
 
 impl StoredChunk {
     pub fn new(address: ChunkAddress, chunk: Chunk) -> Self {
-        Self { address, chunk }
+        Self {
+            address,
+            chunk,
+            scheduled: Vec::new(),
+        }
+    }
+
+    /// Attaches the chunk-local positions that had pending fluid ticks in the
+    /// stored blob.
+    pub fn with_scheduled(mut self, scheduled: Vec<ChunkIndex>) -> Self {
+        self.scheduled = scheduled;
+        self
+    }
+
+    pub fn scheduled(&self) -> &[ChunkIndex] {
+        &self.scheduled
     }
 
     pub const fn position(&self) -> ChunkPos {
@@ -342,7 +360,7 @@ pub trait ChunkStore: Send + Sync + 'static {
     fn load_chunk(
         &self,
         address: ChunkAddress,
-    ) -> ChunkStoreResult<Option<(Chunk, ChunkHeightmap)>>;
+    ) -> ChunkStoreResult<Option<(Chunk, ChunkHeightmap, Vec<ChunkIndex>)>>;
 
     fn load_stored_column(
         &self,
@@ -353,21 +371,33 @@ pub trait ChunkStore: Send + Sync + 'static {
         let mut heightmap = ChunkHeightmap::default();
         for y in 0..height.chunks_i32() {
             let chunk_address = address.chunk(y);
-            if let Some((chunk, loaded_heightmap)) = self.load_chunk(chunk_address)? {
+            if let Some((chunk, loaded_heightmap, scheduled)) = self.load_chunk(chunk_address)? {
                 heightmap = loaded_heightmap;
-                chunks.push(StoredChunk::new(chunk_address, chunk));
+                chunks.push(StoredChunk::new(chunk_address, chunk).with_scheduled(scheduled));
             }
         }
 
         StoredColumn::try_new(address, height, heightmap, chunks).map_err(Into::into)
     }
 
+    /// Saves one chunk plus its pending fluid ticks.
+    fn save_chunk_with_scheduled(
+        &self,
+        address: ChunkAddress,
+        chunk: &Chunk,
+        heightmap: &ChunkHeightmap,
+        scheduled: &[ChunkIndex],
+    ) -> ChunkStoreResult<()>;
+
+    /// Saves one chunk with no pending fluid ticks.
     fn save_chunk(
         &self,
         address: ChunkAddress,
         chunk: &Chunk,
         heightmap: &ChunkHeightmap,
-    ) -> ChunkStoreResult<()>;
+    ) -> ChunkStoreResult<()> {
+        self.save_chunk_with_scheduled(address, chunk, heightmap, &[])
+    }
 
     /// Loads one player record. The default preserves lightweight test stores
     /// and backends that intentionally discard all persistence.
@@ -410,7 +440,7 @@ impl ChunkRepository {
     pub fn load_chunk(
         &self,
         address: ChunkAddress,
-    ) -> ChunkStoreResult<Option<(Chunk, ChunkHeightmap)>> {
+    ) -> ChunkStoreResult<Option<(Chunk, ChunkHeightmap, Vec<ChunkIndex>)>> {
         self.validate_address(address)?;
         self.store.load_chunk(address)
     }
@@ -428,8 +458,19 @@ impl ChunkRepository {
         chunk: &Chunk,
         heightmap: &ChunkHeightmap,
     ) -> ChunkStoreResult<()> {
+        self.save_chunk_with_scheduled(address, chunk, heightmap, &[])
+    }
+
+    pub fn save_chunk_with_scheduled(
+        &self,
+        address: ChunkAddress,
+        chunk: &Chunk,
+        heightmap: &ChunkHeightmap,
+        scheduled: &[ChunkIndex],
+    ) -> ChunkStoreResult<()> {
         self.validate_address(address)?;
-        self.store.save_chunk(address, chunk, heightmap)
+        self.store
+            .save_chunk_with_scheduled(address, chunk, heightmap, scheduled)
     }
 
     pub fn load_player(&self, id: PlayerId) -> ChunkStoreResult<Option<StoredPlayer>> {

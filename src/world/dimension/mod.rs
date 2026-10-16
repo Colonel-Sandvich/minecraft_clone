@@ -41,7 +41,7 @@ use self::{
     },
 };
 use super::{
-    chunk::{ChunkColumn, ChunkPos, ScheduledFluids, WorldBlockPos},
+    chunk::{ChunkColumn, ChunkIndex, ChunkPos, ScheduledFluids, WorldBlockPos},
     definition::{DimensionCatalog, DimensionDefinition, DimensionId},
     generation::WorldHeight,
 };
@@ -429,6 +429,21 @@ impl Dimension {
             return;
         }
         self.scheduled_fluids.wake_with_neighbours(position);
+    }
+
+    /// Re-schedules fluid ticks restored from a chunk save. Ticks for cells
+    /// that no longer hold fluid were filtered out at the load boundary.
+    pub(crate) fn restore_scheduled_fluids(&mut self, positions: &[IVec3]) {
+        for &position in positions {
+            self.scheduled_fluids.wake_cell(position);
+        }
+    }
+
+    /// Groups the pending fluid ticks by chunk for chunk-save capture.
+    pub(crate) fn scheduled_fluid_indices_by_chunk(
+        &self,
+    ) -> std::collections::HashMap<ChunkPos, Vec<ChunkIndex>> {
+        self.scheduled_fluids.indices_by_chunk()
     }
 
     pub(crate) fn take_scheduled_fluids(&mut self) -> ScheduledFluids {

@@ -5,7 +5,7 @@ use std::{
 
 use crate::player::PlayerId;
 use crate::world::{
-    chunk::{Chunk, ChunkHeightmap, ChunkPos},
+    chunk::{Chunk, ChunkHeightmap, ChunkIndex, ChunkPos},
     definition::{ChunkAddress, ColumnAddress, DimensionId},
     generation::{WorldHeight, WorldMetadata},
 };
@@ -177,7 +177,7 @@ impl ChunkStore for TursoChunkStore {
     fn load_chunk(
         &self,
         address: ChunkAddress,
-    ) -> ChunkStoreResult<Option<(Chunk, ChunkHeightmap)>> {
+    ) -> ChunkStoreResult<Option<(Chunk, ChunkHeightmap, Vec<ChunkIndex>)>> {
         self.runtime.block_on(async {
             let connection = self.database.connect()?;
             let position = address.position();
@@ -198,10 +198,10 @@ impl ChunkStore for TursoChunkStore {
                 };
                 row.get::<Vec<u8>>(0)?
             };
-            let chunk = Chunk::try_from_storage_bytes(&bytes)?;
+            let (chunk, scheduled) = Chunk::try_from_storage_bytes_with_scheduled(&bytes)?;
             let heightmap = load_column_heightmap(&connection, address.column()).await?;
 
-            Ok(Some((chunk, heightmap)))
+            Ok(Some((chunk, heightmap, scheduled)))
         })
     }
 
@@ -228,8 +228,8 @@ impl ChunkStore for TursoChunkStore {
             while let Some(row) = rows.next().await? {
                 let y = row.get::<i32>(0)?;
                 let bytes = row.get::<Vec<u8>>(1)?;
-                let chunk = Chunk::try_from_storage_bytes(&bytes)?;
-                chunks.push(StoredChunk::new(address.chunk(y), chunk));
+                let (chunk, scheduled) = Chunk::try_from_storage_bytes_with_scheduled(&bytes)?;
+                chunks.push(StoredChunk::new(address.chunk(y), chunk).with_scheduled(scheduled));
             }
             let heightmap = load_column_heightmap(&connection, address).await?;
 
@@ -237,13 +237,14 @@ impl ChunkStore for TursoChunkStore {
         })
     }
 
-    fn save_chunk(
+    fn save_chunk_with_scheduled(
         &self,
         address: ChunkAddress,
         chunk: &Chunk,
         heightmap: &ChunkHeightmap,
+        scheduled: &[ChunkIndex],
     ) -> ChunkStoreResult<()> {
-        let blocks = chunk.to_storage_bytes();
+        let blocks = chunk.to_storage_bytes_with_scheduled(scheduled);
         let heightmap_bytes = heightmap.to_bytes();
 
         self.runtime.block_on(async {

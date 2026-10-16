@@ -11,7 +11,8 @@ use crate::{
     },
     world::chunk::{
         Chunk, ChunkColliderRuntime, ChunkColumn, ChunkContentCounts, ChunkHeightmap,
-        ChunkNeedsSave, ChunkPos, ChunkPosition, collider::column_colliders_ready,
+        ChunkNeedsSave, ChunkPos, ChunkPosition, ChunkSaveExempt, ChunkSavedFluidTicks,
+        collider::column_colliders_ready,
     },
 };
 
@@ -63,6 +64,8 @@ fn begin_dimension_switch(
         &Chunk,
         &ChunkHeightmap,
         Option<&ChunkNeedsSave>,
+        Option<&ChunkSaveExempt>,
+        Option<&ChunkSavedFluidTicks>,
     )>,
     player: Option<
         Single<

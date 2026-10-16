@@ -7,7 +7,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::player::PlayerId;
 use crate::world::{
-    chunk::{Chunk, ChunkHeightmap, ChunkPos},
+    chunk::{Chunk, ChunkHeightmap, ChunkIndex, ChunkPos},
     definition::{ChunkAddress, ColumnAddress, DimensionId},
     generation::{WorldHeight, WorldMetadata},
 };
@@ -134,7 +134,7 @@ impl ChunkStore for SqliteChunkStore {
     fn load_chunk(
         &self,
         address: ChunkAddress,
-    ) -> ChunkStoreResult<Option<(Chunk, ChunkHeightmap)>> {
+    ) -> ChunkStoreResult<Option<(Chunk, ChunkHeightmap, Vec<ChunkIndex>)>> {
         let connection = self.open_connection()?;
         let position = address.position();
         let bytes = connection
@@ -154,10 +154,10 @@ impl ChunkStore for SqliteChunkStore {
             return Ok(None);
         };
 
-        let chunk = Chunk::try_from_storage_bytes(&bytes)?;
+        let (chunk, scheduled) = Chunk::try_from_storage_bytes_with_scheduled(&bytes)?;
         let heightmap = load_column_heightmap(&connection, address.column())?;
 
-        Ok(Some((chunk, heightmap)))
+        Ok(Some((chunk, heightmap, scheduled)))
     }
 
     fn load_stored_column(
@@ -181,23 +181,24 @@ impl ChunkStore for SqliteChunkStore {
         let mut chunks = Vec::new();
         for row in rows {
             let (y, bytes) = row?;
-            let chunk = Chunk::try_from_storage_bytes(&bytes)?;
-            chunks.push(StoredChunk::new(address.chunk(y), chunk));
+            let (chunk, scheduled) = Chunk::try_from_storage_bytes_with_scheduled(&bytes)?;
+            chunks.push(StoredChunk::new(address.chunk(y), chunk).with_scheduled(scheduled));
         }
         let heightmap = load_column_heightmap(&connection, address)?;
 
         StoredColumn::try_new(address, height, heightmap, chunks).map_err(Into::into)
     }
 
-    fn save_chunk(
+    fn save_chunk_with_scheduled(
         &self,
         address: ChunkAddress,
         chunk: &Chunk,
         heightmap: &ChunkHeightmap,
+        scheduled: &[ChunkIndex],
     ) -> ChunkStoreResult<()> {
         let mut connection = self.open_connection()?;
         let position = address.position();
-        let blocks = chunk.to_storage_bytes();
+        let blocks = chunk.to_storage_bytes_with_scheduled(scheduled);
         let tx = connection.transaction()?;
         tx.execute(
             SQL_UPSERT_CHUNK,

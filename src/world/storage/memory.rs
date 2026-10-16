@@ -2,7 +2,7 @@ use std::{collections::HashMap, sync::Mutex};
 
 use crate::player::PlayerId;
 use crate::world::{
-    chunk::{Chunk, ChunkHeightmap},
+    chunk::{Chunk, ChunkHeightmap, ChunkIndex},
     definition::{ChunkAddress, ColumnAddress},
     generation::{WorldHeight, WorldMetadata},
 };
@@ -51,7 +51,7 @@ impl ChunkStore for InMemoryChunkStore {
     fn load_chunk(
         &self,
         address: ChunkAddress,
-    ) -> ChunkStoreResult<Option<(Chunk, ChunkHeightmap)>> {
+    ) -> ChunkStoreResult<Option<(Chunk, ChunkHeightmap, Vec<ChunkIndex>)>> {
         let inner = self
             .inner
             .lock()
@@ -66,14 +66,14 @@ impl ChunkStore for InMemoryChunkStore {
             return Ok(None);
         };
 
-        let chunk = Chunk::try_from_storage_bytes(bytes)?;
+        let (chunk, scheduled) = Chunk::try_from_storage_bytes_with_scheduled(bytes)?;
         let heightmap = if column.heightmap.is_empty() {
             ChunkHeightmap::default()
         } else {
             ChunkHeightmap::from_bytes(&column.heightmap)
         };
 
-        Ok(Some((chunk, heightmap)))
+        Ok(Some((chunk, heightmap, scheduled)))
     }
 
     fn load_stored_column(
@@ -96,8 +96,8 @@ impl ChunkStore for InMemoryChunkStore {
             .iter()
             .filter(|(y, _)| (0..height.chunks_i32()).contains(y))
             .map(|(&y, bytes)| {
-                let chunk = Chunk::try_from_storage_bytes(bytes)?;
-                Ok(StoredChunk::new(address.chunk(y), chunk))
+                let (chunk, scheduled) = Chunk::try_from_storage_bytes_with_scheduled(bytes)?;
+                Ok(StoredChunk::new(address.chunk(y), chunk).with_scheduled(scheduled))
             })
             .collect::<ChunkStoreResult<Vec<_>>>()?;
         let heightmap = if column.heightmap.is_empty() {
@@ -109,11 +109,12 @@ impl ChunkStore for InMemoryChunkStore {
         StoredColumn::try_new(address, height, heightmap, chunks).map_err(Into::into)
     }
 
-    fn save_chunk(
+    fn save_chunk_with_scheduled(
         &self,
         address: ChunkAddress,
         chunk: &Chunk,
         heightmap: &ChunkHeightmap,
+        scheduled: &[ChunkIndex],
     ) -> ChunkStoreResult<()> {
         let mut inner = self
             .inner
@@ -123,9 +124,10 @@ impl ChunkStore for InMemoryChunkStore {
             })?;
 
         let column = inner.columns.entry(address.column()).or_default();
-        column
-            .chunks
-            .insert(address.position().y(), chunk.to_storage_bytes());
+        column.chunks.insert(
+            address.position().y(),
+            chunk.to_storage_bytes_with_scheduled(scheduled),
+        );
         column.heightmap = heightmap.to_bytes();
         Ok(())
     }
@@ -176,7 +178,7 @@ impl ChunkStore for NoopChunkStore {
     fn load_chunk(
         &self,
         _address: ChunkAddress,
-    ) -> ChunkStoreResult<Option<(Chunk, ChunkHeightmap)>> {
+    ) -> ChunkStoreResult<Option<(Chunk, ChunkHeightmap, Vec<ChunkIndex>)>> {
         Ok(None)
     }
 
@@ -188,11 +190,12 @@ impl ChunkStore for NoopChunkStore {
         StoredColumn::empty(address, height).map_err(Into::into)
     }
 
-    fn save_chunk(
+    fn save_chunk_with_scheduled(
         &self,
         _address: ChunkAddress,
         _chunk: &Chunk,
         _heightmap: &ChunkHeightmap,
+        _scheduled: &[ChunkIndex],
     ) -> ChunkStoreResult<()> {
         Ok(())
     }

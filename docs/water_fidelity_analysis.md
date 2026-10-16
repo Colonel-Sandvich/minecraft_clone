@@ -130,11 +130,13 @@ These are structural or untested corners, not observed mismatches:
   BFS with a visited set, which can path back through the origin and cannot
   revisit cells. It agrees on all covered scenes, but tight spirals and
   dead-end geometry may choose different directions.
-- **No scheduled-tick persistence.** Pending ticks live in memory
-  (`ScheduledFluids` on the active dimension) and are not written to the chunk
-  save, so a reloaded chunk starts with no pending ticks and water that was
-  mid-flow when saved resumes from the cell grid instead of the exact tick
-  timing. Settled water is unaffected.
+- **Scheduled-tick persistence and timing.** Pending ticks are stored with the
+  chunk blob (a trailing `[u16 count][u16 chunk-local index; count]` section)
+  and re-scheduled when the chunk loads, so mid-flow water resumes after a save
+  and reload instead of freezing. Vanilla's exact tick bookkeeping is still not
+  modelled: every delay collapses to the next 5-tick step and there is no
+  priority queue, so restored ticks fire at the next step instead of after
+  their original delay. Settled chunks are unaffected.
 - **Can-place checks are simplified.** Vanilla's `canPassThroughWall`,
   `canHoldFluid`, replaceable plants and waterlogging are reduced to "full
   solid blocks block everything else". The clone has no slabs, plants or

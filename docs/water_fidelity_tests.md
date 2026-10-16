@@ -222,10 +222,11 @@ fluid update and watch the front move one block at a time.
 ## Non-obvious implementation notes
 
 - **Test chunks must never be saved.** The fluid solver routes every cell write
-  through `ChunkEditor`, which marks chunks `ChunkNeedsSave`. The runner
-  removes that marker from plot chunks every `Update`, before the save capture
-  runs in `PostUpdate`. Without this, running the tests would overwrite parts
-  of the player's save with test geometry.
+  through `ChunkEditor`, which marks chunks `ChunkNeedsSave`, and pending fluid
+  ticks are captured even without that marker. Plot chunks therefore carry
+  `ChunkSaveExempt`, which the save capture skips outright, and the runner also
+  removes `ChunkNeedsSave` from them every `Update`. Without this, running the
+  tests would overwrite parts of the player's save with test geometry.
 - **The streamer ignores plot columns.** `register_published_chunk` is for
   chunks outside the streaming system's ownership. `start_column_loads` skips
   columns that already contain a loaded chunk, so the plot columns are never
@@ -260,8 +261,8 @@ Per-tick behaviour is otherwise pinned by targeted unit tests (falling
 cadence, drain completeness). The solver was rewritten to vanilla's two-phase
 model (recompute from neighbours, then spread) after oracle research against
 decompiled 1.20.1 plus live server measurements. Verified rules, the fixes
-made, and the remaining structural differences (tick scheduling, slope-search
-shape, no scheduled-tick persistence, simplified replaceability) are
+made, and the remaining structural differences (tick scheduling and timing,
+slope-search shape, simplified replaceability) are
 documented in `docs/water_fidelity_analysis.md`.
 
 When adding a scenario for a behaviour you are unsure about, check that doc
