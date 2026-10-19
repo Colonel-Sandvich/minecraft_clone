@@ -113,7 +113,9 @@ fn update_debug_text(
     mut text: Single<&mut Text, With<DebugOverlay>>,
 ) {
     if !visible.0 {
-        text.0 = String::new();
+        if !text.0.is_empty() {
+            text.0.clear();
+        }
         return;
     }
 
@@ -305,13 +307,13 @@ fn manage_light_labels(
     mut commands: Commands,
     overlay: Res<LightOverlayVisible>,
     parent: Single<Entity, With<LightLabelParent>>,
-    labels: Query<(Entity, &LightLabelPos)>,
+    mut labels: Query<(Entity, &LightLabelPos, &mut Text)>,
     cam_q: Single<&GlobalTransform, With<MouseCam>>,
     active_dimension: Option<Single<&Dimension, With<Active>>>,
     chunk_lights: Query<&ChunkLight>,
 ) {
     if !overlay.0 {
-        for (entity, _) in &labels {
+        for (entity, _, _) in &labels {
             commands.entity(entity).despawn();
         }
         return;
@@ -321,7 +323,7 @@ fn manage_light_labels(
 
     let existing: Vec<(Entity, WorldBlockPos)> = labels
         .iter()
-        .map(|(entity, position)| (entity, position.0))
+        .map(|(entity, position, _)| (entity, position.0))
         .collect();
 
     let mut needed: HashMap<WorldBlockPos, String> = HashMap::new();
@@ -344,7 +346,11 @@ fn manage_light_labels(
     let mut to_despawn: Vec<Entity> = Vec::new();
     for (entity, pos) in &existing {
         if let Some(label) = needed.remove(pos) {
-            commands.entity(*entity).insert(Text::new(label));
+            if let Ok((_, _, mut text)) = labels.get_mut(*entity)
+                && text.0 != label
+            {
+                text.0 = label;
+            }
         } else {
             to_despawn.push(*entity);
         }
@@ -391,8 +397,14 @@ fn update_light_label_positions(
             Err(_) => Vec2::new(-9999.0, -9999.0),
         };
 
-        node.left = Val::Px(screen.x - 10.0);
-        node.top = Val::Px(screen.y - 10.0);
+        let left = Val::Px(screen.x - 10.0);
+        let top = Val::Px(screen.y - 10.0);
+        if node.left != left {
+            node.left = left;
+        }
+        if node.top != top {
+            node.top = top;
+        }
     }
 }
 

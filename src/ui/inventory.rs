@@ -840,12 +840,15 @@ type GameplayHudVisibility<'w, 's> =
     Query<'w, 's, &'static mut Visibility, Or<(With<HotbarHudRoot>, With<CrosshairRoot>)>>;
 
 fn update_gameplay_hud_visibility(ui: Res<InventoryUi>, mut gameplay_hud: GameplayHudVisibility) {
+    let target = if ui.open {
+        Visibility::Hidden
+    } else {
+        Visibility::Inherited
+    };
     for mut visibility in &mut gameplay_hud {
-        *visibility = if ui.open {
-            Visibility::Hidden
-        } else {
-            Visibility::Inherited
-        };
+        if *visibility != target {
+            *visibility = target;
+        }
     }
 }
 

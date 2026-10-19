@@ -73,8 +73,11 @@ fn update_tick_control_overlay(
     mut text_q: Query<&mut Text, With<TickControlOverlayText>>,
 ) {
     let frozen = control.as_ref().is_some_and(|control| control.frozen());
+    let display = if frozen { Display::Flex } else { Display::None };
     for mut node in &mut root_q {
-        node.display = if frozen { Display::Flex } else { Display::None };
+        if node.display != display {
+            node.display = display;
+        }
     }
     if !frozen {
         return;
@@ -84,8 +87,11 @@ fn update_tick_control_overlay(
         return;
     };
     let counter = counter.map_or(0, |counter| counter.0);
-    if let Ok(mut text) = text_q.single_mut() {
-        text.0 = frozen_status_line(&control, counter);
+    let target = frozen_status_line(&control, counter);
+    if let Ok(mut text) = text_q.single_mut()
+        && text.0 != target
+    {
+        text.0 = target;
     }
 }
 

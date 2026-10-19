@@ -12,6 +12,9 @@ use crate::{
     player::Player,
 };
 
+const HOTBAR_SLOT_WIDTH: f32 = 60.0;
+const HOTBAR_SELECTION_INSET: f32 = 3.0;
+
 pub struct HotbarPlugin;
 
 impl Plugin for HotbarPlugin {
@@ -163,7 +166,7 @@ fn spawn_hotbar_ui(commands: &mut Commands, bg_handle: &Handle<Image>, sel_handl
                             for i in 0..HOTBAR_SLOTS {
                                 row.spawn((
                                     Node {
-                                        width: Val::Px(60.0),
+                                        width: Val::Px(HOTBAR_SLOT_WIDTH),
                                         height: Val::Px(66.0),
                                         display: Display::Flex,
                                         position_type: PositionType::Relative,
@@ -214,8 +217,8 @@ fn spawn_hotbar_ui(commands: &mut Commands, bg_handle: &Handle<Image>, sel_handl
                         ImageNode::new(sel_handle.clone()),
                         Node {
                             position_type: PositionType::Absolute,
-                            left: Val::Px(-3.0),
-                            top: Val::Px(-3.0),
+                            left: Val::Px(-HOTBAR_SELECTION_INSET),
+                            top: Val::Px(-HOTBAR_SELECTION_INSET),
                             width: Val::Px(72.0),
                             height: Val::Px(69.0),
                             ..default()
@@ -440,19 +443,28 @@ fn update_hotbar_ui(
     mut counts: Query<(&HotbarCount, &mut Text)>,
 ) {
     if let Ok(mut node) = selection.single_mut() {
-        node.left = Val::Px(hotbar.selected as f32 * 60.0 - 3.0);
+        let left = Val::Px(hotbar.selected as f32 * HOTBAR_SLOT_WIDTH - HOTBAR_SELECTION_INSET);
+        if node.left != left {
+            node.left = left;
+        }
     }
 
     for (slot, mut image) in &mut icons {
-        image.image = inventory
+        let target = inventory
             .slot(slot.0)
             .and_then(|stack| item_icons.icons.get(&stack.item))
             .cloned()
             .unwrap_or_default();
+        if image.image != target {
+            image.image = target;
+        }
     }
 
     for (slot, mut text) in &mut counts {
-        text.0 = hotbar_count_label(inventory.slot(slot.0));
+        let target = hotbar_count_label(inventory.slot(slot.0));
+        if text.0 != target {
+            text.0 = target;
+        }
     }
 }
 

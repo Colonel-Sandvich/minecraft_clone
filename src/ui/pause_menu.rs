@@ -225,12 +225,12 @@ fn update_button_visuals(
 ) {
     for (hovered, pressed, visual, mut image) in &mut buttons {
         let target = if hovered.get() || pressed {
-            visual.highlighted.clone()
+            &visual.highlighted
         } else {
-            visual.normal.clone()
+            &visual.normal
         };
-        if image.image != target {
-            image.image = target;
+        if &image.image != target {
+            image.image = target.clone();
         }
     }
 }

@@ -117,16 +117,22 @@ fn update_game_test_overlay(
         ),
     >,
 ) {
+    let display = if suite.overlay_visible {
+        Display::Flex
+    } else {
+        Display::None
+    };
     for mut node in &mut root_q {
-        node.display = if suite.overlay_visible {
-            Display::Flex
-        } else {
-            Display::None
-        };
+        if node.display != display {
+            node.display = display;
+        }
+    }
+    if !suite.overlay_visible {
+        return;
     }
 
     if let Ok(mut header) = header_q.single_mut() {
-        header.0 = format!(
+        let mut target = format!(
             "water tests: {} pass / {} fail\nF8 run + fly to field   F9 next test   F11 dump plots   F7 hide",
             suite.passed(),
             suite.failed(),
@@ -135,9 +141,10 @@ fn update_game_test_overlay(
             .as_ref()
             .is_some_and(|control| control.frozen())
         {
-            header
-                .0
-                .push_str("\nsimulation frozen: P resume | O step | I step fluid");
+            target.push_str("\nsimulation frozen: P resume | O step | I step fluid");
+        }
+        if header.0 != target {
+            header.0 = target;
         }
     }
 
@@ -150,17 +157,26 @@ fn update_game_test_overlay(
         } else {
             ' '
         };
-        text.0 = format!(
+        let target = format!(
             "{marker} {:>7}  {}{}",
             entry.status.label(),
             entry.scenario.name,
             phase_progress(entry)
         );
-        color.0 = status_color(entry.status);
+        if text.0 != target {
+            text.0 = target;
+        }
+        let target_color = status_color(entry.status);
+        if color.0 != target_color {
+            color.0 = target_color;
+        }
     }
 
     if let Ok(mut detail) = detail_q.single_mut() {
-        detail.0 = first_failure_report(&suite);
+        let target = first_failure_report(&suite);
+        if detail.0 != target {
+            detail.0 = target;
+        }
     }
 }
 
