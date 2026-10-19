@@ -1,5 +1,6 @@
 use bevy::{
     image::{ImageLoaderSettings, ImageSampler},
+    input_focus::{AutoFocus, IsFocused, IsFocusedHelper},
     picking::hover::Hovered,
     prelude::*,
     ui::{Pressed, widget::NodeImageMode},
@@ -180,6 +181,9 @@ fn spawn_menu_button(
                 highlighted: textures.button_highlighted.clone(),
             },
         ));
+        if matches!(action, PauseMenuAction::Resume) {
+            button.insert(AutoFocus);
+        }
     }
 
     button.with_child((
@@ -221,10 +225,21 @@ fn handle_pause_menu_action(
 }
 
 fn update_button_visuals(
-    mut buttons: Query<(&Hovered, Has<Pressed>, &PauseButtonVisual, &mut ImageNode), With<Button>>,
+    focus: IsFocusedHelper,
+    mut buttons: Query<
+        (
+            Entity,
+            &Hovered,
+            Has<Pressed>,
+            &PauseButtonVisual,
+            &mut ImageNode,
+        ),
+        With<Button>,
+    >,
 ) {
-    for (hovered, pressed, visual, mut image) in &mut buttons {
-        let target = if hovered.get() || pressed {
+    for (entity, hovered, pressed, visual, mut image) in &mut buttons {
+        let highlighted = hovered.get() || pressed || focus.is_focus_visible(entity);
+        let target = if highlighted {
             &visual.highlighted
         } else {
             &visual.normal
