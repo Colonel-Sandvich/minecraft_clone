@@ -129,6 +129,13 @@ fn update_game_test_overlay(
     if !suite.overlay_visible {
         return;
     }
+    if !suite.is_changed()
+        && !tick_control
+            .as_ref()
+            .is_some_and(|control| control.is_changed())
+    {
+        return;
+    }
 
     if let Ok(mut header) = header_q.single_mut() {
         let mut target = format!(

@@ -855,11 +855,25 @@ fn update_gameplay_hud_visibility(ui: Res<InventoryUi>, mut gameplay_hud: Gamepl
 }
 
 fn update_inventory_slots(
-    inventory: Single<&Inventory, With<Player>>,
+    inventory: Single<Ref<Inventory>, With<Player>>,
     icons: Res<ItemIcons>,
+    overlay: Query<Entity, With<InventoryOverlay>>,
+    mut last_overlay: Local<Option<Entity>>,
     mut slot_icons: Query<(&InventorySlotIcon, &mut ImageNode)>,
     mut slot_counts: Query<(&InventorySlotCount, &mut Text)>,
 ) {
+    if slot_icons.is_empty() || slot_counts.is_empty() {
+        return;
+    }
+    let Some(overlay) = overlay.iter().next() else {
+        return;
+    };
+    let opened = last_overlay.as_ref() != Some(&overlay);
+    if !opened && !inventory.is_changed() && !icons.is_changed() {
+        return;
+    }
+    *last_overlay = Some(overlay);
+
     for (slot, mut image) in &mut slot_icons {
         let target = stack_icon(&icons, inventory.slot(slot.0));
         if image.image != target {
@@ -984,7 +998,7 @@ fn update_slot_highlights(
 
 fn update_drag_preview(
     ui: Res<InventoryUi>,
-    inventory: Single<&Inventory, With<Player>>,
+    inventory: Single<Ref<Inventory>, With<Player>>,
     icons: Res<ItemIcons>,
     mut preview: ResMut<DragPreview>,
     mut previews: Query<(&InventorySlotPreview, &mut Visibility), Without<InventorySlotCount>>,
@@ -997,6 +1011,14 @@ fn update_drag_preview(
     let active =
         ui.drag.as_ref().is_some_and(|drag| drag.slots.len() > 1) && ui.cursor_stack.is_some();
     if !active && preview.0.is_none() {
+        return;
+    }
+    if active
+        && preview.0.is_some()
+        && !ui.is_changed()
+        && !inventory.is_changed()
+        && !icons.is_changed()
+    {
         return;
     }
 

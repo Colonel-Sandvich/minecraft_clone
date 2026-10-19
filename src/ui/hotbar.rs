@@ -427,12 +427,21 @@ fn handle_hotbar_input(
 
 fn update_hotbar_ui(
     hotbar: Res<Hotbar>,
-    inventory: Single<&Inventory, With<Player>>,
+    inventory: Single<Ref<Inventory>, With<Player>>,
     item_icons: Res<ItemIcons>,
     mut selection: Query<&mut Node, With<HotbarSelection>>,
     mut icons: Query<(&HotbarIcon, &mut ImageNode)>,
     mut counts: Query<(&HotbarCount, &mut Text)>,
+    mut initialized: Local<bool>,
 ) {
+    if selection.is_empty() || icons.is_empty() || counts.is_empty() {
+        return;
+    }
+    if *initialized && !inventory.is_changed() && !hotbar.is_changed() && !item_icons.is_changed() {
+        return;
+    }
+    *initialized = true;
+
     if let Ok(mut node) = selection.single_mut() {
         let left = Val::Px(hotbar.selected as f32 * HOTBAR_SLOT_WIDTH - HOTBAR_SELECTION_INSET);
         if node.left != left {
