@@ -89,6 +89,12 @@ struct StackDrag {
     slots: Vec<usize>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct DragProjection {
+    slots: Vec<(usize, ItemStack)>,
+    cursor: Option<ItemStack>,
+}
+
 #[derive(Clone, Copy, Debug)]
 struct PendingInventoryDrop {
     stack: ItemStack,
@@ -631,28 +637,44 @@ fn distribute_drag(
     slots: &[usize],
     button: MouseButton,
 ) {
-    let rounds = if button == MouseButton::Right {
-        1
-    } else {
-        ItemStack::MAX_COUNT
+    let Some(held) = *cursor else {
+        return;
     };
+    let accepted: Vec<usize> = slots
+        .iter()
+        .copied()
+        .filter(|&index| slot_accepts(inventory.slot(index), held.item))
+        .collect();
+    if accepted.is_empty() {
+        return;
+    }
 
-    for _ in 0..rounds {
-        let mut moved_any = false;
-        for &index in slots {
-            let Some(held) = *cursor else {
-                return;
-            };
-            if !slot_accepts(inventory.slot(index), held.item) {
-                continue;
-            }
-            add_one_to_slot(inventory, index, held.item);
-            *cursor = ItemStack::try_new(held.item, held.count() - 1);
-            moved_any = true;
-        }
-        if !moved_any {
+    // Minecraft's left-drag divides the carried stack evenly over the
+    // dragged-over slots, capped by each slot's remaining capacity. Anything
+    // that does not fit (including the division remainder) stays on the
+    // cursor. Right-drag places one item per slot.
+    let per_slot = match button {
+        MouseButton::Left => held.count() / accepted.len() as u16,
+        MouseButton::Right => 1,
+        _ => return,
+    };
+    if per_slot == 0 {
+        return;
+    }
+
+    for index in accepted {
+        let Some(held) = *cursor else {
             break;
+        };
+        let existing = inventory.slot(index).map_or(0, ItemStack::count);
+        let target = (existing + per_slot).min(ItemStack::MAX_COUNT);
+        let moved = (target - existing).min(held.count());
+        if moved == 0 {
+            continue;
         }
+
+        inventory.set_slot(index, ItemStack::try_new(held.item, existing + moved));
+        *cursor = ItemStack::try_new(held.item, held.count() - moved);
     }
 }
 
@@ -665,27 +687,27 @@ fn drag_preview(
     cursor: ItemStack,
     slots: &[usize],
     button: MouseButton,
-) -> Vec<(usize, ItemStack)> {
+) -> DragProjection {
     let mut projected = inventory.clone();
     let mut projected_cursor = Some(cursor);
     distribute_drag(&mut projected, &mut projected_cursor, slots, button);
 
-    slots
+    let slots = slots
         .iter()
         .filter_map(|&index| {
             let after = projected.slot(index)?;
             (inventory.slot(index) != Some(after)).then_some((index, after))
         })
-        .collect()
+        .collect();
+
+    DragProjection {
+        slots,
+        cursor: projected_cursor,
+    }
 }
 
 fn slot_accepts(slot: Option<ItemStack>, item: crate::item::Item) -> bool {
     slot.is_none_or(|stack| stack.item == item && stack.count() < ItemStack::MAX_COUNT)
-}
-
-fn add_one_to_slot(inventory: &mut Inventory, index: usize, item: crate::item::Item) {
-    let count = inventory.slot(index).map_or(0, ItemStack::count) + 1;
-    inventory.set_slot(index, ItemStack::try_new(item, count));
 }
 
 fn take_from_stack(stack: &mut Option<ItemStack>, count: u16) -> Option<ItemStack> {
@@ -857,13 +879,15 @@ fn update_drag_preview(
 ) {
     // A one-slot drag releases as a plain click, which the ghost cannot
     // predict, so only multi-slot painting previews a distribution.
-    let planned = ui
+    let projection = ui
         .drag
         .as_ref()
         .filter(|drag| drag.slots.len() > 1)
         .zip(ui.cursor_stack)
         .map(|(drag, cursor)| drag_preview(&inventory, cursor, &drag.slots, drag.button));
-    let planned = planned.as_deref();
+    let planned = projection
+        .as_ref()
+        .map(|projection| projection.slots.as_slice());
 
     for (slot, mut visibility, mut background) in &mut previews {
         let previewed = planned_stack(planned, slot.0).is_some();
@@ -937,20 +961,37 @@ mod tests {
     }
 
     #[test]
-    fn drag_distribution_is_even_for_left_and_one_each_for_right() {
+    fn left_drag_splits_evenly_and_leaves_the_remainder_on_the_cursor() {
         let mut inventory = Inventory::empty();
         let mut cursor = ItemStack::try_new(Item::Dirt, 8);
         distribute_drag(&mut inventory, &mut cursor, &[0, 1, 2], MouseButton::Left);
-        assert_eq!(inventory.slot(0), ItemStack::try_new(Item::Dirt, 3));
-        assert_eq!(inventory.slot(1), ItemStack::try_new(Item::Dirt, 3));
+        assert_eq!(inventory.slot(0), ItemStack::try_new(Item::Dirt, 2));
+        assert_eq!(inventory.slot(1), ItemStack::try_new(Item::Dirt, 2));
         assert_eq!(inventory.slot(2), ItemStack::try_new(Item::Dirt, 2));
-        assert_eq!(cursor, None);
+        assert_eq!(cursor, ItemStack::try_new(Item::Dirt, 2));
+    }
 
-        cursor = ItemStack::try_new(Item::Stone, 5);
-        distribute_drag(&mut inventory, &mut cursor, &[3, 4, 5], MouseButton::Right);
-        assert_eq!(inventory.slot(3), Some(ItemStack::one(Item::Stone)));
-        assert_eq!(inventory.slot(4), Some(ItemStack::one(Item::Stone)));
-        assert_eq!(inventory.slot(5), Some(ItemStack::one(Item::Stone)));
+    #[test]
+    fn left_drag_fills_capacity_then_keeps_the_unplaced_remainder() {
+        let mut inventory = Inventory::empty();
+        inventory.set_slot(0, ItemStack::try_new(Item::Dirt, 62));
+        let mut cursor = ItemStack::try_new(Item::Dirt, 64);
+
+        distribute_drag(&mut inventory, &mut cursor, &[0, 1], MouseButton::Left);
+
+        assert_eq!(inventory.slot(0), Some(ItemStack::full(Item::Dirt)));
+        assert_eq!(inventory.slot(1), ItemStack::try_new(Item::Dirt, 32));
+        assert_eq!(cursor, ItemStack::try_new(Item::Dirt, 30));
+    }
+
+    #[test]
+    fn right_drag_places_one_item_per_accepted_slot() {
+        let mut inventory = Inventory::empty();
+        let mut cursor = ItemStack::try_new(Item::Stone, 5);
+        distribute_drag(&mut inventory, &mut cursor, &[0, 1, 2], MouseButton::Right);
+        assert_eq!(inventory.slot(0), Some(ItemStack::one(Item::Stone)));
+        assert_eq!(inventory.slot(1), Some(ItemStack::one(Item::Stone)));
+        assert_eq!(inventory.slot(2), Some(ItemStack::one(Item::Stone)));
         assert_eq!(cursor, ItemStack::try_new(Item::Stone, 2));
     }
 
@@ -970,10 +1011,13 @@ mod tests {
         // across the two remaining slots, exactly as release would distribute.
         assert_eq!(
             preview,
-            vec![
-                (0, ItemStack::try_new(Item::Dirt, 4).unwrap()),
-                (2, ItemStack::try_new(Item::Dirt, 4).unwrap()),
-            ]
+            DragProjection {
+                slots: vec![
+                    (0, ItemStack::try_new(Item::Dirt, 4).unwrap()),
+                    (2, ItemStack::try_new(Item::Dirt, 4).unwrap()),
+                ],
+                cursor: None,
+            }
         );
         assert_eq!(inventory.slot(0), None);
     }
@@ -991,7 +1035,10 @@ mod tests {
                 &[0, 1],
                 MouseButton::Left,
             ),
-            vec![(0, ItemStack::full(Item::Dirt))]
+            DragProjection {
+                slots: vec![(0, ItemStack::full(Item::Dirt))],
+                cursor: ItemStack::try_new(Item::Dirt, 3),
+            }
         );
         assert_eq!(
             drag_preview(
@@ -1000,10 +1047,13 @@ mod tests {
                 &[0, 1, 2],
                 MouseButton::Right,
             ),
-            vec![
-                (0, ItemStack::try_new(Item::Dirt, 63).unwrap()),
-                (2, ItemStack::one(Item::Dirt)),
-            ]
+            DragProjection {
+                slots: vec![
+                    (0, ItemStack::try_new(Item::Dirt, 63).unwrap()),
+                    (2, ItemStack::one(Item::Dirt)),
+                ],
+                cursor: ItemStack::try_new(Item::Dirt, 3),
+            }
         );
     }
 
@@ -1299,7 +1349,7 @@ mod tests {
             .map(|(slot, text)| (slot.0, text.0.clone()))
             .collect();
         labels.sort();
-        assert_eq!(labels, vec![(0, "3".to_string()), (1, "2".to_string())]);
+        assert_eq!(labels, vec![(0, "2".to_string()), (1, "2".to_string())]);
 
         app.world_mut().resource_mut::<InventoryUi>().drag = None;
         app.update();
