@@ -1,5 +1,7 @@
 use std::time::{Duration, Instant};
 
+#[cfg(feature = "schedule-shuffle")]
+use avian3d::prelude::{PhysicsSchedule, SubstepSchedule};
 use avian3d::{PhysicsPlugins, prelude::PhysicsDebugPlugin};
 #[cfg(debug_assertions)]
 use bevy::render::settings::InstanceFlags;
@@ -106,6 +108,10 @@ impl Plugin for AppPlugin {
         if let Some(seed) = schedule_shuffle_seed() {
             set_schedule_shuffle_seed(app, Update, seed);
             set_schedule_shuffle_seed(app, FixedUpdate, seed);
+            set_schedule_shuffle_seed(app, FixedPreUpdate, seed);
+            set_schedule_shuffle_seed(app, FixedPostUpdate, seed);
+            set_schedule_shuffle_seed(app, PhysicsSchedule, seed);
+            set_schedule_shuffle_seed(app, SubstepSchedule, seed);
         }
         if std::env::var_os("MINECRAFT_CLONE_STREAM_TIMINGS").is_some() {
             app.init_resource::<StreamingStartupTrace>()
