@@ -1,14 +1,10 @@
-use std::collections::HashSet;
-
-use super::{CHUNK_SIZE, Chunk, ChunkColumn, ChunkContentCounts, ChunkPos, ChunkPosition};
+use super::{Chunk, ChunkColumn, ChunkContentCounts, ChunkPosition};
 use crate::world::{
     WORLD_COLLISION_LAYERS,
     dimension::{Active, Dimension},
 };
 use avian3d::prelude::*;
 use bevy::prelude::*;
-
-const COLLIDER_REBUILD_WAKE_MARGIN: f32 = 0.5;
 
 pub struct ChunkColliderPlugin;
 
@@ -101,7 +97,6 @@ fn rebuild_chunk_colliders(
         Option<&Children>,
     )>,
     collider_q: Query<Entity, With<Collider>>,
-    sleeping_bodies: Query<(Entity, &ColliderAabb), (With<RigidBody>, With<Sleeping>)>,
     dimension: Option<Single<&mut Dimension, With<Active>>>,
 ) {
     let Some(mut dimension) = dimension else {
@@ -111,8 +106,6 @@ fn rebuild_chunk_colliders(
     if pending.is_empty() {
         return;
     }
-
-    let mut bodies_to_wake = HashSet::<Entity>::new();
 
     for work in pending {
         let position = work.position();
@@ -131,13 +124,6 @@ fn rebuild_chunk_colliders(
             continue;
         }
 
-        let affected_aabb = chunk_collider_rebuild_aabb(position);
-        for (body, body_aabb) in &sleeping_bodies {
-            if body_aabb.intersects(&affected_aabb) {
-                bodies_to_wake.insert(body);
-            }
-        }
-
         if let Some(children) = children {
             for collider_entity in collider_q.iter_many(children).matched() {
                 if let Ok(mut entity) = commands.get_entity(collider_entity) {
@@ -148,30 +134,19 @@ fn rebuild_chunk_colliders(
 
         insert_one(&mut commands, chunk, expected_entity, contents);
     }
-
-    // TODO: Check whether this manual wake can be removed after updating Avian.
-    // Avian 0.7 does not wake the other body when a static collider is removed
-    // from an existing contact. Removing Sleeping uses Avian's component hook
-    // to wake the body's complete physics island.
-    for body in bodies_to_wake {
-        commands.entity(body).remove::<Sleeping>();
-    }
-}
-
-fn chunk_collider_rebuild_aabb(position: ChunkPos) -> ColliderAabb {
-    let min = position.origin_translation();
-    let max = min + Vec3::splat(CHUNK_SIZE as f32);
-    ColliderAabb::from_min_max(min, max).grow(Vec3::splat(COLLIDER_REBUILD_WAKE_MARGIN))
 }
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
     use crate::item::Item;
     use crate::world::{
         WorldHeight,
         chunk::{ChunkCell, ChunkPos},
     };
+    use bevy::time::TimeUpdateStrategy;
 
     #[derive(Resource)]
     struct TestDimension(Entity);
@@ -202,6 +177,25 @@ mod tests {
             .add_systems(FixedPreUpdate, rebuild_chunk_colliders)
             .add_systems(Update, observe_center_collider_readiness);
         add_test_dimension(&mut app);
+        app
+    }
+
+    fn physics_collider_app() -> App {
+        let mut app = App::new();
+        app.add_plugins((
+            MinimalPlugins,
+            AssetPlugin::default(),
+            PhysicsPlugins::default(),
+        ))
+        .insert_resource(Time::<Fixed>::from_hz(20.0))
+        .insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_secs_f32(
+            1.0 / 20.0,
+        )))
+        .add_plugins(ChunkColliderPlugin);
+        add_test_dimension(&mut app);
+        app.init_asset::<Mesh>();
+        app.finish();
+        app.cleanup();
         app
     }
 
@@ -455,40 +449,87 @@ mod tests {
     }
 
     #[test]
-    fn collider_rebuild_wakes_sleeping_bodies_near_the_affected_chunk() {
-        let mut app = collider_app();
+    fn collider_rebuild_wakes_sleeping_bodies_through_avian() {
+        let mut app = physics_collider_app();
+
+        let mut chunk = Chunk::default();
+        chunk.set_cell_xyz(0, 0, 0, Item::Stone.into());
+        let contents = chunk.compute_content_counts();
         let chunk_entity = app
             .world_mut()
             .spawn((
                 ChunkPosition::from(ChunkPos::ZERO),
-                Chunk::default(),
-                ChunkContentCounts::default(),
+                chunk,
+                contents,
+                Transform::default(),
             ))
             .id();
         register_active_chunk(&mut app, ChunkPos::ZERO, chunk_entity);
         enqueue_active_rebuild(&mut app, ChunkPos::ZERO);
+        for _ in 0..2 {
+            app.update();
+        }
+        assert_eq!(collider_child_count(app.world(), chunk_entity), 1);
 
-        let nearby = app
+        // Slightly overlap the block so the first physics step creates a
+        // touching contact before the body is put to sleep.
+        let body = app
             .world_mut()
             .spawn((
                 RigidBody::Dynamic,
-                Sleeping,
-                ColliderAabb::new(vec3(8.0, 16.25, 8.0), Vec3::splat(0.125)),
+                Collider::cuboid(0.25, 0.25, 0.25),
+                Position::new(vec3(0.5, 1.2, 0.5)),
+                Transform::from_translation(vec3(0.5, 1.2, 0.5)),
+                crate::world::ACTOR_COLLISION_LAYERS,
             ))
             .id();
-        let far_away = app
+        // A sleeping body inside the rebuilt chunk's old AABB but without a
+        // contact must stay asleep; Avian should only wake affected islands.
+        let bystander = app
             .world_mut()
             .spawn((
                 RigidBody::Dynamic,
-                Sleeping,
-                ColliderAabb::new(vec3(32.0, 16.25, 32.0), Vec3::splat(0.125)),
+                Collider::cuboid(0.25, 0.25, 0.25),
+                Position::new(vec3(8.0, 2.0, 8.0)),
+                Transform::from_translation(vec3(8.0, 2.0, 8.0)),
+                GravityScale(0.0),
+                crate::world::ACTOR_COLLISION_LAYERS,
             ))
             .id();
+        for _ in 0..5 {
+            app.update();
+        }
+        assert!(
+            app.world()
+                .resource::<ContactGraph>()
+                .contact_pairs_with(body)
+                .any(|pair| pair.is_touching()),
+            "the test body should have a touching contact before sleeping"
+        );
 
+        app.world_mut().commands().queue(SleepBody(body));
+        app.world_mut().commands().queue(SleepBody(bystander));
+        app.update();
+        assert!(
+            app.world().entity(body).contains::<Sleeping>(),
+            "the test body should be sleeping before the collider rebuild"
+        );
+        assert!(
+            app.world().entity(bystander).contains::<Sleeping>(),
+            "the non-touching bystander should be sleeping before the rebuild"
+        );
+
+        enqueue_active_rebuild(&mut app, ChunkPos::ZERO);
         app.update();
 
-        assert!(!app.world().entity(nearby).contains::<Sleeping>());
-        assert!(app.world().entity(far_away).contains::<Sleeping>());
+        assert!(
+            !app.world().entity(body).contains::<Sleeping>(),
+            "Avian should wake the sleeping island when the chunk collider is removed"
+        );
+        assert!(
+            app.world().entity(bystander).contains::<Sleeping>(),
+            "a nearby body without a stopped contact must remain asleep"
+        );
     }
 
     #[test]
