@@ -90,7 +90,7 @@ pub(super) fn queue_chunk_meshes(
         ..opaque_batch_key.clone()
     };
     let bin_key = Opaque3dBinKey {
-        asset_id: AssetId::<Mesh>::invalid().untyped(),
+        asset_id: AssetId::<Mesh>::default().untyped(),
     };
 
     for (view, visible_entities) in &views {

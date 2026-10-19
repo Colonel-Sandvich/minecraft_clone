@@ -1,35 +1,31 @@
-#import bevy_pbr::{
+import bevy_pbr::render::{
     forward_io::VertexOutput,
     mesh_functions,
     mesh_view_bindings::view,
-    pbr_types::{
-        STANDARD_MATERIAL_FLAGS_DOUBLE_SIDED_BIT,
-        PbrInput,
-        pbr_input_new,
-    },
-    pbr_functions as pbr,
     pbr_bindings,
-}
-#import bevy_core_pipeline::tonemapping::tone_mapping
+    pbr_functions as pbr,
+    pbr_types,
+};
+import bevy_core_pipeline::tonemapping::tone_mapping;
 
-@group(#{MATERIAL_BIND_GROUP}) @binding(0)
+@group(constants::MATERIAL_BIND_GROUP) @binding(0)
 var terrain_texture: texture_2d_array<f32>;
 
-@group(#{MATERIAL_BIND_GROUP}) @binding(1)
+@group(constants::MATERIAL_BIND_GROUP) @binding(1)
 var terrain_sampler: sampler;
 
 // Indexed by terrain render ID * 6 + canonical local face direction.
-@group(#{MATERIAL_BIND_GROUP}) @binding(2)
+@group(constants::MATERIAL_BIND_GROUP) @binding(2)
 var<storage, read> texture_layers: array<u32>;
 
-@group(#{MATERIAL_BIND_GROUP}) @binding(3)
+@group(constants::MATERIAL_BIND_GROUP) @binding(3)
 var<storage, read> tint_colors: array<vec4<f32>>;
 
 // x = alpha cutoff (zero disables cutout)
-@group(#{MATERIAL_BIND_GROUP}) @binding(4)
+@group(constants::MATERIAL_BIND_GROUP) @binding(4)
 var<uniform> settings: vec4<f32>;
 
-@group(#{MATERIAL_BIND_GROUP}) @binding(5)
+@group(constants::MATERIAL_BIND_GROUP) @binding(5)
 var<storage, read> emission_factors: array<f32>;
 
 @fragment
@@ -39,13 +35,12 @@ fn fragment(
 ) -> @location(0) vec4<f32> {
     let render_id = mesh_functions::get_tag(mesh.instance_index);
     var face = 3u;
-#ifdef VERTEX_COLORS
+    @if(VERTEX_COLORS)
     face = u32(round(mesh.color.r));
-#endif
     let lookup = render_id * 6u + face;
     let texture_layer = i32(texture_layers[lookup] & 0x00ffffffu);
 
-    var pbr_input: PbrInput = pbr_input_new();
+    var pbr_input: pbr_types::PbrInput = pbr_types::pbr_input_new();
     pbr_input.material.base_color = textureSample(
         terrain_texture,
         terrain_sampler,
@@ -62,7 +57,7 @@ fn fragment(
     );
 
     let double_sided =
-        (pbr_input.material.flags & STANDARD_MATERIAL_FLAGS_DOUBLE_SIDED_BIT) != 0u;
+        (pbr_input.material.flags & pbr_types::STANDARD_MATERIAL_FLAGS_DOUBLE_SIDED_BIT) != 0u;
     pbr_input.frag_coord = mesh.position;
     pbr_input.world_position = mesh.world_position;
     pbr_input.world_normal = pbr::prepare_world_normal(
@@ -73,25 +68,25 @@ fn fragment(
     pbr_input.is_orthographic = view.clip_from_view[3].w == 1.0;
     pbr_input.N = normalize(pbr_input.world_normal);
 
-#ifdef VERTEX_TANGENTS
-    let normal_map = textureSampleBias(
-        pbr_bindings::normal_map_texture,
-        pbr_bindings::normal_map_sampler,
-        mesh.uv,
-        view.mip_bias,
-    ).rgb;
-    let tangent_basis = pbr::calculate_tbn_mikktspace(
-        mesh.world_normal,
-        mesh.world_tangent,
-    );
-    pbr_input.N = pbr::apply_normal_mapping(
-        pbr_input.material.flags,
-        tangent_basis,
-        double_sided,
-        is_front,
-        normal_map,
-    );
-#endif
+    @if(VERTEX_TANGENTS) {
+        let normal_map = textureSampleBias(
+            pbr_bindings::normal_map_texture,
+            pbr_bindings::normal_map_sampler,
+            mesh.uv,
+            view.mip_bias,
+        ).rgb;
+        let tangent_basis = pbr::calculate_tbn_mikktspace(
+            mesh.world_normal,
+            mesh.world_tangent,
+        );
+        pbr_input.N = pbr::apply_normal_mapping(
+            pbr_input.material.flags,
+            tangent_basis,
+            double_sided,
+            is_front,
+            normal_map,
+        );
+    }
 
     pbr_input.V = pbr::calculate_view(mesh.world_position, pbr_input.is_orthographic);
 

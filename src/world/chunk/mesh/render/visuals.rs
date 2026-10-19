@@ -1,6 +1,6 @@
 use bevy::{
     prelude::*,
-    render::{extract_resource::ExtractResource, render_resource::ShaderType},
+    render::{RenderApp, extract_resource::ExtractResource, render_resource::ShaderType},
 };
 
 use crate::{
@@ -41,7 +41,7 @@ impl Default for TerrainVisualSettings {
     }
 }
 
-impl ExtractResource for TerrainVisualSettings {
+impl ExtractResource<RenderApp> for TerrainVisualSettings {
     type Source = TerrainVisualSettings;
 
     fn extract_resource(source: &Self::Source) -> Self {
@@ -54,7 +54,7 @@ pub(super) struct TerrainAnimationClock {
     pub(super) seconds: f32,
 }
 
-impl ExtractResource for TerrainAnimationClock {
+impl ExtractResource<RenderApp> for TerrainAnimationClock {
     type Source = TerrainAnimationClock;
 
     fn extract_resource(source: &Self::Source) -> Self {

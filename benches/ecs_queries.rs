@@ -570,7 +570,7 @@ fn collider_rebuild_iter_system(
     for (chunk, meta, chunk_entity, children) in chunks_q.iter() {
         dirty_chunks += 1;
         if let Some(children) = children {
-            for collider_entity in collider_q.iter_many(children) {
+            for collider_entity in collider_q.iter_many(children).matched() {
                 commands.get_entity(collider_entity).unwrap().despawn();
             }
         }
@@ -601,7 +601,7 @@ fn collider_rebuild_contiguous_system(
         dirty_chunks += chunks.len();
         for ((chunk, meta), chunk_entity) in chunks.iter().zip(counts.iter()).zip(entities.iter()) {
             if let Ok(children) = children_q.get(*chunk_entity) {
-                for collider_entity in collider_q.iter_many(children) {
+                for collider_entity in collider_q.iter_many(children).matched() {
                     commands.get_entity(collider_entity).unwrap().despawn();
                 }
             }

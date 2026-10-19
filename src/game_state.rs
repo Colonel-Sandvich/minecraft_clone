@@ -127,7 +127,7 @@ fn update_input_mode(
 fn pause_is_pending(next_game_state: &NextState<GameState>) -> bool {
     matches!(
         next_game_state,
-        NextState::Pending(GameState::Paused) | NextState::PendingIfNeq(GameState::Paused)
+        NextState::Pending(GameState::Paused) | NextState::PendingIfDifferent(GameState::Paused)
     )
 }
 

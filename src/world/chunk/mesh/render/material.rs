@@ -3,7 +3,10 @@ use crate::{
     textures::{BlockTextures, TextureState},
     world::chunk::ambient_occlusion::AO_BRIGHTNESS,
 };
-use bevy::{prelude::*, render::extract_resource::ExtractResource};
+use bevy::{
+    prelude::*,
+    render::{RenderApp, extract_resource::ExtractResource},
+};
 
 #[derive(Resource, Clone)]
 pub(super) struct TerrainMaterialState {
@@ -14,7 +17,7 @@ pub(super) struct TerrainMaterialState {
     pub(super) ao_brightness: [f32; 4],
 }
 
-impl ExtractResource for TerrainMaterialState {
+impl ExtractResource<RenderApp> for TerrainMaterialState {
     type Source = TerrainMaterialState;
 
     fn extract_resource(source: &Self::Source) -> Self {

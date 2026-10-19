@@ -1,8 +1,12 @@
+// TODO(Bevy 0.21): migrate `Interaction` to `Hovered`/`Pressed` before it is removed.
+#![allow(deprecated)]
+
 use std::collections::VecDeque;
 
 use bevy::{
     prelude::*,
     ui::{FocusPolicy, RelativeCursorPosition, UiSystems},
+    ui_widgets::Button,
     window::PrimaryWindow,
 };
 
@@ -259,6 +263,8 @@ fn spawn_slot_row(parent: &mut ChildSpawnerCommands, slots: impl IntoIterator<It
                     InventorySlot(index),
                     RelativeCursorPosition::default(),
                     Button,
+                    Interaction::default(),
+                    FocusPolicy::Block,
                     Node {
                         width: Val::Px(SLOT_SIZE),
                         height: Val::Px(SLOT_SIZE),
@@ -758,7 +764,7 @@ fn close_inventory(
 /// toggling closed or leaving gameplay via `DespawnOnExit` — funnels through
 /// this one teardown, mirroring the pause menu's lifecycle.
 fn return_carried_stack(
-    _: On<Despawn, InventoryOverlay>,
+    _: On<Despawn<InventoryOverlay>>,
     mut ui: ResMut<InventoryUi>,
     mut inventories: Query<&mut Inventory, With<Player>>,
 ) {

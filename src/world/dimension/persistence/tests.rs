@@ -8,8 +8,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-use bevy::prelude::*;
-
 use super::*;
 use crate::{
     item::Item,

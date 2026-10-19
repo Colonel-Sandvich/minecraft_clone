@@ -1,7 +1,11 @@
+// TODO(Bevy 0.21): migrate `Interaction` to `Hovered`/`Pressed` before it is removed.
+#![allow(deprecated)]
+
 use bevy::{
     image::{ImageLoaderSettings, ImageSampler},
     prelude::*,
     ui::{FocusPolicy, widget::NodeImageMode},
+    ui_widgets::Button,
 };
 
 use crate::game_state::GameState;
@@ -171,6 +175,8 @@ fn spawn_menu_button(
     if let Some(action) = action {
         button.insert((
             Button,
+            Interaction::default(),
+            FocusPolicy::Block,
             action,
             PauseButtonVisual {
                 normal: textures.button.clone(),

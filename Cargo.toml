@@ -8,19 +8,20 @@ default = []
 turso-store = ["dep:tokio", "dep:turso"]
 
 [dependencies]
-bevy = { version = "0.19.0", features = ["wayland", "dynamic_linking"] }
+bevy = { version = "0.20.0", features = ["wayland", "dynamic_linking"] }
 #NOTE: Disabling bevy/dynamic_linking may improve the performance of this linker (mold).
-avian3d = { version = "0.7.0" }
-bevy-inspector-egui = { version = "0.37.0" }
+# Avian 0.8 is not released yet; pin main until the release lands.
+avian3d = { git = "https://github.com/avianphysics/avian", rev = "3fb380874552587dfed69f6926145f2093cf7e6d" }
+bevy-inspector-egui = { version = "0.38.0" }
 rusqlite = { version = "0.40.1", features = ["bundled"] }
 tokio = { version = "1.0", features = ["rt-multi-thread"], optional = true }
 turso = { version = "0.8.2", default-features = false, optional = true }
 strum = { version = "0.28.0", features = ["derive"] }
 itertools = "0.15.0"
-bevy_shader = "0.19.0"
-bevy_mesh = "0.19.0"
-bevy-settings = "0.19.0"
-bevy_dev_tools = "0.19.0"
+bevy_shader = "0.20.0"
+bevy_mesh = "0.20.0"
+bevy-settings = "0.20.0"
+bevy_dev_tools = { version = "0.20.0", features = ["render"] }
 bytemuck = { version = "1", features = ["derive"] }
 image = "0.25"
 serde = { version = "1", features = ["derive"] }
@@ -28,8 +29,8 @@ bincode = { version = "2", features = ["serde"] }
 
 [dev-dependencies]
 criterion = "0.8.2"
-naga = { version = "29.0.3", features = ["wgsl-in"] }
-wgpu = { version = "29.0.3", default-features = false, features = ["wgsl", "dx12", "metal", "vulkan", "naga-ir"] }
+naga = { version = "30.0.0", features = ["wgsl-in"] }
+wgpu = { version = "30.0.1", default-features = false, features = ["wgsl", "dx12", "metal", "vulkan", "naga-ir"] }
 
 [[bench]]
 name = "light_propagation"

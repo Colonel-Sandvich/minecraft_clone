@@ -71,7 +71,9 @@ pub(crate) fn column_colliders_ready(
         if actual_position.chunk_pos() != position {
             return false;
         }
-        let collider_count = children.map_or(0, |children| colliders.iter_many(children).count());
+        let collider_count = children.map_or(0, |children| {
+            colliders.iter_many(children).matched().count()
+        });
         if (contents.solid == 0 && collider_count != 0)
             || (contents.solid > 0 && collider_count == 0)
         {
@@ -137,7 +139,7 @@ fn rebuild_chunk_colliders(
         }
 
         if let Some(children) = children {
-            for collider_entity in collider_q.iter_many(children) {
+            for collider_entity in collider_q.iter_many(children).matched() {
                 if let Ok(mut entity) = commands.get_entity(collider_entity) {
                     entity.despawn();
                 }

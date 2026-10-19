@@ -254,12 +254,12 @@ fn update_global_resources(
         globals.material_state_dirty = true;
     }
     if let Some(frame_buffers) = globals.frame_buffers.as_ref() {
-        render_queue.0.write_buffer(
+        render_queue.write_buffer(
             &frame_buffers.view_projection,
             0,
             bytemuck::cast_slice(view_projection.as_ref()),
         );
-        render_queue.0.write_buffer(
+        render_queue.write_buffer(
             &frame_buffers.visual_settings,
             0,
             bytemuck::bytes_of(&visual_settings),
@@ -461,7 +461,7 @@ fn write_light_buffer_once(
     if updated_light_buffers.insert(buffer.id()) {
         let bytes = bytemuck::cast_slice(light.data());
         debug_assert_eq!(buffer.size(), bytes.len() as u64);
-        render_queue.0.write_buffer(buffer, 0, bytes);
+        render_queue.write_buffer(buffer, 0, bytes);
     }
 }
 

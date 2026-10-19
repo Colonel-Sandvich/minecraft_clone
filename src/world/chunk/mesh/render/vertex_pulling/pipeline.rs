@@ -205,6 +205,7 @@ fn pipeline_descriptor(
             shader_defs: vec![],
             entry_point: Some(Cow::Borrowed("vertex")),
             buffers: vec![],
+            constants: vec![],
         },
         primitive: PrimitiveState {
             topology: PrimitiveTopology::TriangleList,
@@ -231,6 +232,7 @@ fn pipeline_descriptor(
             shader,
             shader_defs: vec![],
             entry_point: Some(Cow::Borrowed("fragment")),
+            constants: vec![],
             targets: vec![Some(ColorTargetState {
                 format: TextureFormat::Rgba8UnormSrgb,
                 blend,

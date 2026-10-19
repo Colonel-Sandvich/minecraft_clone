@@ -13,7 +13,7 @@ use crate::{
 
 use super::ItemStack;
 
-const DROPPED_BLOCK_SHADER_PATH: &str = "shaders/dropped_block.wgsl";
+const DROPPED_BLOCK_SHADER_PATH: &str = "shaders/dropped_block.wesl";
 const CUBOID_VERTICES_PER_FACE: usize = 4;
 
 /// Face order emitted by Bevy's `CuboidMeshBuilder`.

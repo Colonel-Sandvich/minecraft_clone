@@ -117,7 +117,7 @@ fn on_drop_item(
             LinearVelocity(look_direction * ITEM_DROP_SPEED),
             Mesh3d(item_render_assets.cube_mesh.clone()),
             MeshMaterial3d(item_render_assets.material_for(stack)),
-            MeshTag(u32::from(dropped_item_render_id(stack.item))),
+            MeshTag::new(u32::from(dropped_item_render_id(stack.item))),
         ));
     }
 }
@@ -135,7 +135,7 @@ fn dropped_item_render_id(item: Item) -> u16 {
     }
 }
 
-fn on_player_spawn(add: On<Add, Player>, mut commands: Commands) {
+fn on_player_spawn(add: On<Add<Player>>, mut commands: Commands) {
     let sensor = commands.spawn(PlayerPickupSensor).id();
     commands.entity(add.entity).add_child(sensor);
 }
@@ -205,7 +205,7 @@ struct ItemPickupDelay(Timer);
     Collider::cuboid(0.25, 0.25, 0.25),
     CollisionLayers = ITEM_COLLISION_LAYERS,
     LockedAxes = LockedAxes::ROTATION_LOCKED,
-    SweptCcd = SweptCcd::LINEAR,
+    SweptCcd = SweptCcd::new().with_mode(SweepMode::Linear),
     TransformInterpolation,
     Mesh3d
 )]
@@ -269,7 +269,7 @@ mod tests {
         assert_eq!(**mesh_tag, u32::from(render_id_for_block(Item::Dirt)));
         assert!(locked_axes.is_rotation_locked());
         assert!(!locked_axes.is_translation_locked());
-        assert_eq!(*swept_ccd, SweptCcd::LINEAR);
+        assert_eq!(*swept_ccd, SweptCcd::new().with_mode(SweepMode::Linear));
     }
 
     #[test]

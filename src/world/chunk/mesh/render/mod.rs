@@ -59,6 +59,6 @@ impl Plugin for TerrainRenderPlugin {
     }
 }
 
-impl SyncComponent for ChunkMeshLayer {
+impl SyncComponent<RenderApp> for ChunkMeshLayer {
     type Target = ChunkMeshLayer;
 }

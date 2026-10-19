@@ -1,5 +1,3 @@
-use bevy::prelude::*;
-
 use crate::item::Item;
 
 use super::*;
