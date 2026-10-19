@@ -23,6 +23,8 @@ use visuals::{TerrainAnimationClock, TerrainVisualSettings};
 
 pub(super) const VERTEX_PULLING_SHADER_SOURCE: &str =
     include_str!("../../../../../assets/shaders/vertex_pulling.wesl");
+pub(super) const TERRAIN_SHADING_SHADER_SOURCE: &str =
+    include_str!("../../../../../assets/shaders/terrain_shading.wesl");
 
 pub(super) struct TerrainRenderPlugin;
 

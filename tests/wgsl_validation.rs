@@ -9,6 +9,8 @@ use wesl::{
 };
 
 const TERRAIN_TABLES_SHADER_SOURCE: &str = include_str!("../assets/shaders/terrain_tables.wesl");
+const TERRAIN_SHADING_SHADER_SOURCE: &str = include_str!("../assets/shaders/terrain_shading.wesl");
+const MESH_SHADER_SOURCE: &str = include_str!("../assets/shaders/mesh_shader.wesl");
 
 #[derive(Debug, PartialEq, Eq)]
 struct ShaderResource<'a> {
@@ -36,11 +38,19 @@ fn shader_module_path(components: &[&str]) -> ModulePath {
     )
 }
 
-fn compile_terrain_shader() -> String {
+fn compile_shader(root: &str) -> String {
     let mut resolver = VirtualResolver::new();
     resolver.add_module(
         shader_module_path(&["shaders", "vertex_pulling"]),
         TERRAIN_SHADER_SOURCE.into(),
+    );
+    resolver.add_module(
+        shader_module_path(&["shaders", "mesh_shader"]),
+        MESH_SHADER_SOURCE.into(),
+    );
+    resolver.add_module(
+        shader_module_path(&["shaders", "terrain_shading"]),
+        TERRAIN_SHADING_SHADER_SOURCE.into(),
     );
     resolver.add_module(
         shader_module_path(&["shaders", "terrain_tables"]),
@@ -55,18 +65,20 @@ fn compile_terrain_shader() -> String {
         ..Default::default()
     };
 
-    wesl::compile(
-        &shader_module_path(&["shaders", "vertex_pulling"]),
-        &options,
-        &resolver,
-    )
-    .expect("vertex_pulling.wesl should compile from WESL to WGSL")
-    .to_string()
+    wesl::compile(&shader_module_path(&["shaders", root]), &options, &resolver)
+        .unwrap_or_else(|error| panic!("{root}.wesl should compile from WESL to WGSL: {error}"))
+        .to_string()
+}
+
+fn parse_shader(root: &str) -> naga::Module {
+    let source = compile_shader(root);
+    wgsl::parse_str(&source).unwrap_or_else(|error| {
+        panic!("compiled {root}.wesl should parse as WGSL: {error:?}");
+    })
 }
 
 fn parse_vertex_pulling_shader() -> naga::Module {
-    let source = compile_terrain_shader();
-    wgsl::parse_str(&source).expect("compiled vertex_pulling.wesl should parse as WGSL")
+    parse_shader("vertex_pulling")
 }
 
 #[test]
@@ -75,6 +87,95 @@ fn vertex_pulling_wesl_validates() {
     valid::Validator::new(valid::ValidationFlags::all(), valid::Capabilities::empty())
         .validate(&module)
         .expect("vertex_pulling.wesl should validate");
+}
+
+#[test]
+fn mesh_shader_wesl_validates() {
+    let source = compile_shader("mesh_shader");
+    assert!(
+        source.contains("enable wgpu_mesh_shader;"),
+        "mesh shader must keep the mesh-shader WGSL extension enabled"
+    );
+    let module = parse_shader("mesh_shader");
+    valid::Validator::new(
+        valid::ValidationFlags::all(),
+        valid::Capabilities::MESH_SHADER,
+    )
+    .validate(&module)
+    .expect("mesh_shader.wesl should validate");
+}
+
+#[test]
+fn mesh_shader_lowers_to_spirv() {
+    let module = parse_shader("mesh_shader");
+    let info = valid::Validator::new(
+        valid::ValidationFlags::all(),
+        valid::Capabilities::MESH_SHADER,
+    )
+    .validate(&module)
+    .expect("mesh_shader.wesl should validate before lowering");
+    let options = naga::back::spv::Options {
+        lang_version: (1, 4),
+        ..Default::default()
+    };
+    let words = naga::back::spv::write_vec(&module, &info, &options, None)
+        .expect("mesh_shader.wesl should lower to SPIR-V");
+    assert!(!words.is_empty(), "SPIR-V output should not be empty");
+}
+
+#[test]
+fn mesh_shader_declares_mesh_output_and_entry_points() {
+    let module = parse_shader("mesh_shader");
+    let mesh = module
+        .entry_points
+        .iter()
+        .find(|entry| entry.name == "mesh")
+        .expect("mesh_shader.wesl should declare a `mesh` entry point");
+    assert_eq!(mesh.stage, naga::ShaderStage::Mesh);
+    let info = mesh
+        .mesh_info
+        .as_ref()
+        .expect("`mesh` should be a mesh-shader entry point");
+    assert_eq!(info.topology, naga::MeshOutputTopology::Triangles);
+    assert_eq!(info.max_vertices, 32 * 6);
+    assert_eq!(info.max_primitives, 32 * 2);
+    assert!(
+        module
+            .entry_points
+            .iter()
+            .any(|entry| entry.name == "fragment" && entry.stage == naga::ShaderStage::Fragment),
+        "mesh_shader.wesl should reuse the fragment entry-point name"
+    );
+    assert!(
+        !module
+            .entry_points
+            .iter()
+            .any(|entry| entry.stage == naga::ShaderStage::Task),
+        "this backend intentionally has no task shader"
+    );
+}
+
+#[test]
+fn mesh_shader_bindings_match_render_layout() {
+    let module = parse_shader("mesh_shader");
+    let expected = BTreeSet::from([
+        (0, 0),
+        (0, 1),
+        (0, 2),
+        (0, 4),
+        (0, 5),
+        (0, 6),
+        (0, 7),
+        (0, 8),
+        (1, 0),
+        (1, 1),
+        (1, 2),
+    ]);
+    let bindings = shader_resources(&module)
+        .iter()
+        .map(|resource| (resource.group, resource.binding))
+        .collect::<BTreeSet<_>>();
+    assert_eq!(bindings, expected);
 }
 
 #[test]
@@ -106,78 +207,88 @@ fn vertex_pulling_bindings_match_render_layout() {
 fn vertex_pulling_resource_metadata_matches_render_layout() {
     let module = parse_vertex_pulling_shader();
     let resources = shader_resources(&module);
+    let expected = vec![
+        ShaderResource {
+            group: 0,
+            binding: 0,
+            name: "view_proj",
+            kind: ResourceKind::Uniform,
+        },
+        ShaderResource {
+            group: 0,
+            binding: 1,
+            name: "terrain_texture",
+            kind: ResourceKind::Texture2dArrayFloat,
+        },
+        ShaderResource {
+            group: 0,
+            binding: 2,
+            name: "terrain_sampler",
+            kind: ResourceKind::Sampler,
+        },
+        ShaderResource {
+            group: 0,
+            binding: 4,
+            name: "texture_layers",
+            kind: ResourceKind::ReadOnlyStorage,
+        },
+        ShaderResource {
+            group: 0,
+            binding: 5,
+            name: "tint_colors",
+            kind: ResourceKind::ReadOnlyStorage,
+        },
+        ShaderResource {
+            group: 0,
+            binding: 6,
+            name: "ao_brightness",
+            kind: ResourceKind::Uniform,
+        },
+        ShaderResource {
+            group: 0,
+            binding: 7,
+            name: "emission_factors",
+            kind: ResourceKind::ReadOnlyStorage,
+        },
+        ShaderResource {
+            group: 0,
+            binding: 8,
+            name: "terrain_visuals",
+            kind: ResourceKind::Uniform,
+        },
+        ShaderResource {
+            group: 1,
+            binding: 0,
+            name: "faces",
+            kind: ResourceKind::ReadOnlyStorage,
+        },
+        ShaderResource {
+            group: 1,
+            binding: 1,
+            name: "chunk_origin",
+            kind: ResourceKind::Uniform,
+        },
+        ShaderResource {
+            group: 1,
+            binding: 2,
+            name: "light_data",
+            kind: ResourceKind::ReadOnlyStorage,
+        },
+    ];
 
-    assert_eq!(
-        resources,
-        vec![
-            ShaderResource {
-                group: 0,
-                binding: 0,
-                name: "view_proj",
-                kind: ResourceKind::Uniform,
-            },
-            ShaderResource {
-                group: 0,
-                binding: 1,
-                name: "terrain_texture",
-                kind: ResourceKind::Texture2dArrayFloat,
-            },
-            ShaderResource {
-                group: 0,
-                binding: 2,
-                name: "terrain_sampler",
-                kind: ResourceKind::Sampler,
-            },
-            ShaderResource {
-                group: 0,
-                binding: 4,
-                name: "texture_layers",
-                kind: ResourceKind::ReadOnlyStorage,
-            },
-            ShaderResource {
-                group: 0,
-                binding: 5,
-                name: "tint_colors",
-                kind: ResourceKind::ReadOnlyStorage,
-            },
-            ShaderResource {
-                group: 0,
-                binding: 6,
-                name: "ao_brightness",
-                kind: ResourceKind::Uniform,
-            },
-            ShaderResource {
-                group: 0,
-                binding: 7,
-                name: "emission_factors",
-                kind: ResourceKind::ReadOnlyStorage,
-            },
-            ShaderResource {
-                group: 0,
-                binding: 8,
-                name: "terrain_visuals",
-                kind: ResourceKind::Uniform,
-            },
-            ShaderResource {
-                group: 1,
-                binding: 0,
-                name: "faces",
-                kind: ResourceKind::ReadOnlyStorage,
-            },
-            ShaderResource {
-                group: 1,
-                binding: 1,
-                name: "chunk_origin",
-                kind: ResourceKind::Uniform,
-            },
-            ShaderResource {
-                group: 1,
-                binding: 2,
-                name: "light_data",
-                kind: ResourceKind::ReadOnlyStorage,
-            },
-        ]
-    );
+    assert_eq!(resources.len(), expected.len());
+    for (actual, expected) in resources.iter().zip(expected) {
+        assert_eq!(actual.group, expected.group);
+        assert_eq!(actual.binding, expected.binding);
+        assert_eq!(actual.kind, expected.kind);
+        // WESL escapes imported declaration names with their module path.
+        assert!(
+            actual.name.ends_with(expected.name),
+            "resource {:?} should end with {:?}",
+            actual.name,
+            expected.name
+        );
+    }
 }
 
 fn shader_resources(module: &naga::Module) -> Vec<ShaderResource<'_>> {

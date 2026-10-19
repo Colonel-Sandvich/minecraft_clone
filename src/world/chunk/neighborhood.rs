@@ -279,11 +279,11 @@ mod tests {
     fn shader_uses_the_cpu_padded_chunk_dimension() {
         let expected = format!("const PADDED_DIM: u32 = {PADDED_CHUNK_SIZE}u;");
         assert!(
-            crate::world::chunk::mesh::TERRAIN_SHADER_SOURCE.contains(&expected),
+            crate::world::chunk::mesh::TERRAIN_SHADING_SHADER_SOURCE.contains(&expected),
             "terrain shader must use the CPU padded chunk dimension"
         );
         assert!(
-            crate::world::chunk::mesh::TERRAIN_SHADER_SOURCE
+            crate::world::chunk::mesh::TERRAIN_SHADING_SHADER_SOURCE
                 .contains("ilp.x + ilp.z * PADDED_DIM + ilp.y * PADDED_AREA"),
             "terrain shader must use the shared X-fast padded layout"
         );

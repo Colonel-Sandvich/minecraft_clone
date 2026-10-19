@@ -25,6 +25,9 @@ pub(crate) use components::{PreparedChunkMeshLight, SharedLightDataKey};
 /// Shader source exposed for CPU/GPU contract validation.
 pub const TERRAIN_SHADER_SOURCE: &str = render::VERTEX_PULLING_SHADER_SOURCE;
 
+/// Shared terrain shading module used by both rendering backends.
+pub const TERRAIN_SHADING_SHADER_SOURCE: &str = render::TERRAIN_SHADING_SHADER_SOURCE;
+
 pub struct ChunkMeshPlugin;
 
 impl Plugin for ChunkMeshPlugin {
