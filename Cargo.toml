@@ -5,7 +5,7 @@ edition = "2024"
 
 [features]
 default = []
-turso-store = ["dep:tokio", "dep:turso"]
+turso-store = ["dep:tokio", "dep:turso", "dep:branches"]
 
 [dependencies]
 bevy = { version = "0.20.0", features = ["wayland", "dynamic_linking"] }
@@ -15,7 +15,11 @@ avian3d = { git = "https://github.com/avianphysics/avian", rev = "3fb38087455258
 bevy-inspector-egui = { version = "0.38.0" }
 rusqlite = { version = "0.40.1", features = ["bundled"] }
 tokio = { version = "1.0", features = ["rt-multi-thread"], optional = true }
-turso = { version = "0.8.2", default-features = false, optional = true }
+# `turso_core` depends on `branches` without its `std` feature, which makes
+# `branches` use `core::intrinsics::abort` — removed in newer nightlies.
+# Enabling `std` here unifies the feature and keeps `turso-store` buildable.
+branches = { version = "0.4.6", features = ["std"], optional = true }
+turso = { version = "0.8.3", default-features = false, optional = true }
 strum = { version = "0.28.0", features = ["derive"] }
 itertools = "0.15.0"
 bevy_shader = "0.20.0"
