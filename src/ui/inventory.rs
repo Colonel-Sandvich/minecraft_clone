@@ -89,6 +89,7 @@ impl InventoryUi {
 #[derive(Clone, Debug)]
 struct StackDrag {
     button: MouseButton,
+    origin: usize,
     slots: Vec<usize>,
 }
 
@@ -468,7 +469,8 @@ fn handle_inventory_ui_input(
                 Some(index) if ui.cursor_stack.is_some() => {
                     ui.drag = Some(StackDrag {
                         button,
-                        slots: vec![index],
+                        origin: index,
+                        slots: Vec::new(),
                     });
                 }
                 Some(index) => {
@@ -494,10 +496,15 @@ fn handle_inventory_ui_input(
         }
     }
 
+    let held = ui.cursor_stack;
     if let Some(drag) = &mut ui.drag
         && mouse.pressed(drag.button)
         && let Some(index) = hovered
+        && index != drag.origin
         && !drag.slots.contains(&index)
+        && let Some(held) = held
+        && held.count() > drag.slots.len() as u16
+        && slot_accepts(inventory.slot(index), held.item)
     {
         drag.slots.push(index);
     }
@@ -510,7 +517,23 @@ fn handle_inventory_ui_input(
             return;
         }
 
-        if drag.slots.len() == 1 {
+        if drag.slots.len() > 1 {
+            distribute_drag(
+                &mut inventory,
+                &mut ui.cursor_stack,
+                &drag.slots,
+                drag.button,
+            );
+        } else if let Some(index) = drag.slots.first().copied() {
+            // A single visited target behaves like a click, matching
+            // Minecraft's quick-craft release for one slot.
+            click_slot(&mut inventory, index, &mut ui.cursor_stack, drag.button);
+            if drag.button == MouseButton::Left {
+                ui.last_left_click = ui
+                    .cursor_stack
+                    .map(|stack| (index, stack.item, real_time.elapsed_secs_f64()));
+            }
+        } else {
             match hovered {
                 Some(index) => {
                     click_slot(&mut inventory, index, &mut ui.cursor_stack, drag.button);
@@ -532,13 +555,6 @@ fn handle_inventory_ui_input(
                 }
                 None => {}
             }
-        } else {
-            distribute_drag(
-                &mut inventory,
-                &mut ui.cursor_stack,
-                &drag.slots,
-                drag.button,
-            );
         }
     }
 }
@@ -1308,6 +1324,7 @@ mod tests {
             ui.cursor_stack = ItemStack::try_new(Item::Dirt, 5);
             ui.drag = Some(StackDrag {
                 button: MouseButton::Left,
+                origin: 0,
                 slots: vec![0, 1],
             });
         }
@@ -1537,7 +1554,8 @@ mod tests {
             ui.cursor_stack = ItemStack::try_new(Item::Dirt, 4);
             ui.drag = Some(StackDrag {
                 button: MouseButton::Left,
-                slots: vec![0],
+                origin: 0,
+                slots: Vec::new(),
             });
         }
         app.world_mut()
@@ -1553,7 +1571,7 @@ mod tests {
                 .as_ref()
                 .unwrap()
                 .slots,
-            vec![0, 1]
+            vec![1]
         );
         // `Pressed` stays on the press origin during a drag; cursor geometry is
         // the authoritative current target.
@@ -1569,8 +1587,8 @@ mod tests {
             .query::<&Inventory>()
             .single(app.world())
             .unwrap();
-        assert_eq!(inventory.slot(0), ItemStack::try_new(Item::Dirt, 2));
-        assert_eq!(inventory.slot(1), ItemStack::try_new(Item::Dirt, 2));
+        assert_eq!(inventory.slot(0), None);
+        assert_eq!(inventory.slot(1), ItemStack::try_new(Item::Dirt, 4));
         assert_eq!(app.world().resource::<InventoryUi>().cursor_stack, None);
     }
 
@@ -1642,7 +1660,8 @@ mod tests {
             ui.cursor_stack = ItemStack::try_new(Item::Dirt, 5);
             ui.drag = Some(StackDrag {
                 button: MouseButton::Left,
-                slots: vec![0],
+                origin: 0,
+                slots: Vec::new(),
             });
         }
         {
@@ -1695,7 +1714,8 @@ mod tests {
             ui.cursor_stack = Some(ItemStack::one(Item::Dirt));
             ui.drag = Some(StackDrag {
                 button: MouseButton::Left,
-                slots: vec![0],
+                origin: 0,
+                slots: Vec::new(),
             });
         }
         app.world_mut()
@@ -1755,6 +1775,7 @@ mod tests {
             ui.cursor_stack = ItemStack::try_new(Item::Dirt, 5);
             ui.drag = Some(StackDrag {
                 button: MouseButton::Left,
+                origin: 0,
                 slots: vec![0, 1],
             });
         }
