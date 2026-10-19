@@ -6,7 +6,7 @@ use bevy::{color::palettes::basic, prelude::*};
 
 use crate::{
     game_state::{GameState, InputRouting, gameplay_input_active},
-    item::{Inventory, ItemStack},
+    item::{Inventory, Item, ItemStack},
     ui::Hotbar,
     world::{
         ACTOR_LAYER, WORLD_LAYER,
@@ -250,7 +250,7 @@ fn apply_block_interaction_requests(
                 let Some(stack) = hotbar.selected_stack(&inventory) else {
                     continue;
                 };
-                let Some(cell) = ChunkCell::try_block(stack.item) else {
+                let Some(cell) = placement_cell_for_item(stack.item) else {
                     continue;
                 };
                 if placement_requires_actor_clearance(cell)
@@ -328,6 +328,18 @@ fn committed_block_edit(
 
 fn placement_requires_actor_clearance(cell: ChunkCell) -> bool {
     cell.is_solid()
+}
+
+/// The cell a held item places.
+///
+/// Water is the only non-block placeable: it always seeds a source, which is
+/// how a developer can start a flow by hand without a bucket system.
+fn placement_cell_for_item(item: Item) -> Option<ChunkCell> {
+    if item == Item::Water {
+        Some(ChunkCell::water_source())
+    } else {
+        ChunkCell::try_block(item)
+    }
 }
 
 fn block_place_would_intersect(pos: ChunkBlockPos, spatial_query: &SpatialQuery) -> bool {

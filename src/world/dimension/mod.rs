@@ -6,7 +6,7 @@
     )
 )]
 mod derived_work;
-mod fluid;
+pub(crate) mod fluid;
 mod invalidation;
 mod light;
 mod light_patch;
@@ -41,7 +41,7 @@ use self::{
     },
 };
 use super::{
-    chunk::{ChunkColumn, ChunkPos},
+    chunk::{ChunkColumn, ChunkIndex, ChunkPos, ScheduledFluids, WorldBlockPos},
     definition::{DimensionCatalog, DimensionDefinition, DimensionId},
     generation::WorldHeight,
 };
@@ -108,6 +108,7 @@ pub struct Dimension {
     stream: DimensionStreamState,
     light_tasks: DimensionLightTasks,
     derived_work: DimensionDerivedWork,
+    scheduled_fluids: ScheduledFluids,
 }
 
 #[derive(Debug)]
@@ -137,6 +138,7 @@ impl Dimension {
             stream: DimensionStreamState::new(owner),
             light_tasks: DimensionLightTasks::default(),
             derived_work: DimensionDerivedWork::new(),
+            scheduled_fluids: ScheduledFluids::default(),
         }
     }
 
@@ -414,6 +416,50 @@ impl Dimension {
     /// Durable save obligations live outside this queue and are unaffected.
     pub(crate) fn clear_disposable_work(&mut self) {
         self.derived_work.clear();
+    }
+
+    /// Wakes the fluid cells around a changed block, mirroring vanilla's
+    /// `setBlock` notifications: the edited cell and its six face neighbours.
+    ///
+    /// A wake whose edited cell is outside this dimension's published chunks is
+    /// dropped, so a plan shared across coordinate spaces cannot tick another
+    /// dimension's water. Wakes that land in an unpublished face-neighbour
+    /// chunk are retained, like vanilla's stored ticks, and fire once that
+    /// chunk is processed.
+    pub(crate) fn wake_fluids_around(&mut self, position: IVec3) {
+        let chunk = WorldBlockPos::from_ivec3(position).split().chunk();
+        if self.published_chunk_entity(chunk).is_none() {
+            return;
+        }
+        self.scheduled_fluids.wake_with_neighbours(position);
+    }
+
+    /// Re-schedules fluid ticks restored from a chunk save. Ticks for cells
+    /// that no longer hold fluid were filtered out at the load boundary.
+    pub(crate) fn restore_scheduled_fluids(&mut self, positions: &[IVec3]) {
+        for &position in positions {
+            self.scheduled_fluids.wake_cell(position);
+        }
+    }
+
+    /// Groups the pending fluid ticks by chunk for chunk-save capture.
+    pub(crate) fn scheduled_fluid_indices_by_chunk(
+        &self,
+    ) -> std::collections::HashMap<ChunkPos, Vec<ChunkIndex>> {
+        self.scheduled_fluids.indices_by_chunk()
+    }
+
+    pub(crate) fn take_scheduled_fluids(&mut self) -> ScheduledFluids {
+        core::mem::take(&mut self.scheduled_fluids)
+    }
+
+    pub(crate) fn set_scheduled_fluids(&mut self, scheduled: ScheduledFluids) {
+        self.scheduled_fluids = scheduled;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn scheduled_fluids(&self) -> &ScheduledFluids {
+        &self.scheduled_fluids
     }
 
     fn enqueue_published_derived_work(

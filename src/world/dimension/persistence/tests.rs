@@ -14,7 +14,9 @@ use super::*;
 use crate::{
     item::Item,
     world::{
-        chunk::{ChunkColumn, ChunkHeightmap, ChunkLight, ChunkPos},
+        chunk::{
+            ChunkCell, ChunkColumn, ChunkHeightmap, ChunkIndex, ChunkLight, ChunkPos, LocalBlockPos,
+        },
         definition::{ChunkAddress, DimensionId},
         generation::WorldMetadata,
         storage::{ChunkRepository, ChunkStore, InMemoryChunkStore},
@@ -159,21 +161,23 @@ impl ChunkStore for ScriptedSaveStore {
     fn load_chunk(
         &self,
         address: ChunkAddress,
-    ) -> ChunkStoreResult<Option<(Chunk, ChunkHeightmap)>> {
+    ) -> ChunkStoreResult<Option<(Chunk, ChunkHeightmap, Vec<ChunkIndex>)>> {
         self.inner.load_chunk(address)
     }
 
-    fn save_chunk(
+    fn save_chunk_with_scheduled(
         &self,
         address: ChunkAddress,
         chunk: &Chunk,
         heightmap: &ChunkHeightmap,
+        scheduled: &[ChunkIndex],
     ) -> ChunkStoreResult<()> {
         let call = self.calls.fetch_add(1, Ordering::SeqCst);
         if call < self.failures_before_success {
             return Err(io_error(self.failure_kind));
         }
-        self.inner.save_chunk(address, chunk, heightmap)
+        self.inner
+            .save_chunk_with_scheduled(address, chunk, heightmap, scheduled)
     }
 }
 
@@ -215,15 +219,16 @@ impl ChunkStore for GatedFirstSaveStore {
     fn load_chunk(
         &self,
         address: ChunkAddress,
-    ) -> ChunkStoreResult<Option<(Chunk, ChunkHeightmap)>> {
+    ) -> ChunkStoreResult<Option<(Chunk, ChunkHeightmap, Vec<ChunkIndex>)>> {
         self.inner.load_chunk(address)
     }
 
-    fn save_chunk(
+    fn save_chunk_with_scheduled(
         &self,
         address: ChunkAddress,
         chunk: &Chunk,
         heightmap: &ChunkHeightmap,
+        scheduled: &[ChunkIndex],
     ) -> ChunkStoreResult<()> {
         let call = self.calls.fetch_add(1, Ordering::SeqCst);
         if call == 0 {
@@ -235,7 +240,8 @@ impl ChunkStore for GatedFirstSaveStore {
                 return Err(io_error(kind));
             }
         }
-        self.inner.save_chunk(address, chunk, heightmap)
+        self.inner
+            .save_chunk_with_scheduled(address, chunk, heightmap, scheduled)
     }
 }
 
@@ -273,6 +279,8 @@ fn capture_all_dimension_save_snapshots(
         &Chunk,
         &ChunkHeightmap,
         Option<&ChunkNeedsSave>,
+        Option<&ChunkSaveExempt>,
+        Option<&ChunkSavedFluidTicks>,
     )>,
 ) {
     for (dimension, desired_view, owner) in &dimensions {
@@ -419,7 +427,7 @@ fn transient_failure_retries_owned_snapshot_after_root_despawn() {
     });
 
     assert_eq!(control.calls.load(Ordering::SeqCst), 2);
-    let (stored, stored_heightmap) = repository.load_chunk(address).unwrap().unwrap();
+    let (stored, stored_heightmap, _) = repository.load_chunk(address).unwrap().unwrap();
     assert_eq!(stored, expected);
     assert_eq!(stored_heightmap, heightmap);
 }
@@ -479,7 +487,7 @@ fn newer_live_revision_coalesces_behind_in_flight_snapshot() {
     });
 
     assert_eq!(control.calls.load(Ordering::SeqCst), 2);
-    let (stored, _) = repository.load_chunk(address).unwrap().unwrap();
+    let (stored, _, _) = repository.load_chunk(address).unwrap().unwrap();
     assert_eq!(stored, expected);
 }
 
@@ -537,9 +545,9 @@ fn equal_local_columns_in_different_dimensions_save_concurrently() {
             && world.get::<ChunkNeedsSave>(grass_entity).is_none()
     });
 
-    let (stored_overworld, stored_overworld_heightmap) =
+    let (stored_overworld, stored_overworld_heightmap, _) =
         repository.load_chunk(overworld_address).unwrap().unwrap();
-    let (stored_grass, stored_grass_heightmap) =
+    let (stored_grass, stored_grass_heightmap, _) =
         repository.load_chunk(grass_address).unwrap().unwrap();
     assert_eq!(stored_overworld, overworld_chunk);
     assert_eq!(stored_overworld_heightmap, overworld_heightmap);
@@ -567,8 +575,111 @@ fn dirty_chunks_are_persisted_and_marked_clean() {
         world.get::<ChunkNeedsSave>(entity).is_none()
     });
 
-    let (loaded, _) = repository.load_chunk(overworld(position)).unwrap().unwrap();
+    let (loaded, _, _) = repository.load_chunk(overworld(position)).unwrap().unwrap();
     assert_eq!(loaded, chunk);
+}
+
+#[test]
+fn pending_fluid_ticks_are_saved_even_without_content_changes() {
+    let metadata = WorldMetadata::with_seed(9);
+    let repository = ChunkRepository::new(InMemoryChunkStore::new(metadata));
+    let position = ChunkPos::new(2, 0, -1);
+    let mut chunk = Chunk::default();
+    chunk.set_cell_xyz(1, 0, 0, ChunkCell::water_source());
+    let (mut app, owner) = save_app(repository.clone(), usize::MAX);
+    let entity = app
+        .world_mut()
+        .spawn((
+            ChildOf(owner),
+            ChunkPosition::from(position),
+            chunk.clone(),
+            ChunkLight::default(),
+            ChunkHeightmap::default(),
+        ))
+        .id();
+    assert_eq!(
+        app.world_mut()
+            .get_mut::<Dimension>(owner)
+            .unwrap()
+            .register_published_chunk(position, entity),
+        None
+    );
+
+    let tick = position
+        .block(LocalBlockPos::new(1, 0, 0))
+        .world()
+        .as_ivec3();
+    app.world_mut()
+        .get_mut::<Dimension>(owner)
+        .unwrap()
+        .restore_scheduled_fluids(&[tick]);
+
+    update_until(&mut app, |world| {
+        !world
+            .resource::<ChunkSaveTasks>()
+            .has_uncommitted_dimension(DimensionId::OVERWORLD)
+    });
+
+    assert!(app.world().get::<ChunkNeedsSave>(entity).is_none());
+    assert_eq!(
+        app.world().get::<ChunkSavedFluidTicks>(entity),
+        Some(&ChunkSavedFluidTicks(vec![
+            LocalBlockPos::new(1, 0, 0).index()
+        ]))
+    );
+    let (stored, _heightmap, ticks) = repository.load_chunk(overworld(position)).unwrap().unwrap();
+    assert_eq!(stored, chunk);
+    assert_eq!(ticks, vec![LocalBlockPos::new(1, 0, 0).index()]);
+}
+
+#[test]
+fn save_exempt_chunks_are_never_captured() {
+    let metadata = WorldMetadata::with_seed(9);
+    let repository = ChunkRepository::new(InMemoryChunkStore::new(metadata));
+    let (mut app, owner) = save_app(repository.clone(), usize::MAX);
+    let position = ChunkPos::ZERO;
+    let entity = app
+        .world_mut()
+        .spawn((
+            ChildOf(owner),
+            ChunkPosition::from(position),
+            Chunk::default(),
+            ChunkLight::default(),
+            ChunkHeightmap::default(),
+            ChunkNeedsSave,
+            ChunkSaveExempt,
+        ))
+        .id();
+    assert_eq!(
+        app.world_mut()
+            .get_mut::<Dimension>(owner)
+            .unwrap()
+            .register_published_chunk(position, entity),
+        None
+    );
+    let tick = position
+        .block(LocalBlockPos::new(0, 0, 0))
+        .world()
+        .as_ivec3();
+    app.world_mut()
+        .get_mut::<Dimension>(owner)
+        .unwrap()
+        .restore_scheduled_fluids(&[tick]);
+
+    for _ in 0..4 {
+        app.update();
+    }
+
+    let save_tasks = app.world().resource::<ChunkSaveTasks>();
+    assert!(!save_tasks.has_uncommitted_dimension(DimensionId::OVERWORLD));
+    assert!(save_tasks.pending.is_empty());
+    assert!(save_tasks.in_flight.is_empty());
+    assert!(
+        repository
+            .load_chunk(overworld(position))
+            .unwrap()
+            .is_none()
+    );
 }
 
 #[test]
@@ -593,7 +704,7 @@ fn dirty_chunks_are_persisted_under_their_root_dimension() {
     });
 
     let address = ChunkAddress::new(DimensionId::GRASS_FLOOR, position);
-    let (loaded, _) = repository.load_chunk(address).unwrap().unwrap();
+    let (loaded, _, _) = repository.load_chunk(address).unwrap().unwrap();
     assert_eq!(loaded, chunk);
     assert!(
         repository
@@ -730,7 +841,7 @@ fn stale_revision_completion_cannot_clean_identical_live_content() {
     });
 
     assert_eq!(calls.load(Ordering::SeqCst), 2);
-    let (loaded, _) = repository.load_chunk(overworld(position)).unwrap().unwrap();
+    let (loaded, _, _) = repository.load_chunk(overworld(position)).unwrap().unwrap();
     assert_eq!(loaded, original);
 }
 
@@ -778,7 +889,7 @@ fn stale_heightmap_completion_cannot_clean_a_chunk() {
     });
 
     assert_eq!(calls.load(Ordering::SeqCst), 2);
-    let (_, stored_heightmap) = repository.load_chunk(overworld(position)).unwrap().unwrap();
+    let (_, stored_heightmap, _) = repository.load_chunk(overworld(position)).unwrap().unwrap();
     assert_eq!(stored_heightmap, current_heightmap);
 }
 
@@ -977,7 +1088,7 @@ fn permanent_failure_retains_the_newest_owned_snapshot_after_despawn() {
             .has_uncommitted_dimension(DimensionId::OVERWORLD)
     });
     assert_eq!(control.calls.load(Ordering::SeqCst), 2);
-    let (stored, _) = repository.load_chunk(address).unwrap().unwrap();
+    let (stored, _, _) = repository.load_chunk(address).unwrap().unwrap();
     assert_eq!(stored, expected);
 }
 

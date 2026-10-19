@@ -10,7 +10,12 @@ use crate::{
 
 // Development saves are intentionally invalidated when the durable schema or
 // chunk encoding changes instead of carrying migrations indefinitely.
-pub const CHUNK_FORMAT_VERSION: u32 = 2;
+/// Version of the persisted chunk storage format.
+///
+/// Do not bump this unless the author has made it obvious the game is actually
+/// released somewhere; it exists so incompatible dev saves are rejected
+/// cleanly, not as a release marker.
+pub const CHUNK_FORMAT_VERSION: u32 = 1;
 pub const WORLD_GENERATOR_VERSION: u32 = 1;
 pub const DEFAULT_DIMENSION_HEIGHT_IN_SUB_CHUNKS: usize = 5;
 pub const DEFAULT_DEV_WORLD_SEED: u64 = 0x11c7_7473_eead_0b0f;

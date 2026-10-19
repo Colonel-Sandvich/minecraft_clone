@@ -1,9 +1,11 @@
+#![feature(const_default)]
 #![feature(const_trait_impl)]
 
 pub mod app;
 pub mod audio;
 pub mod block;
 pub mod game_state;
+mod game_test;
 pub mod input;
 pub mod item;
 pub mod light;
@@ -12,6 +14,7 @@ pub mod mob;
 pub mod player;
 pub mod quad;
 pub mod textures;
+mod tick_control;
 pub mod ui;
 pub mod util;
 pub mod world;

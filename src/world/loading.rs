@@ -69,6 +69,9 @@ pub struct LoadedColumnChunk {
     pub chunk: Chunk,
     pub contents: ChunkContentCounts,
     pub source: ChunkLoadSource,
+    /// World positions that had pending fluid ticks in the stored blob and
+    /// still hold fluid; the dimension re-schedules them on install.
+    pub scheduled: Vec<IVec3>,
 }
 
 /// A complete configured-height column, ordered from lowest to highest Y.
@@ -143,16 +146,29 @@ pub fn load_or_generate_column(
     let mut chunks = Vec::with_capacity(height_chunks);
     for y in 0..height_chunks {
         let chunk_position = address.column().chunk(y as i32);
-        let (chunk, source) = match stored_chunks.peek() {
+        let (chunk, source, scheduled) = match stored_chunks.peek() {
             Some(stored) if stored.position() == chunk_position => {
                 let stored = stored_chunks
                     .next()
                     .expect("peeked stored chunk must exist");
-                (stored.chunk, ChunkLoadSource::Stored)
+                let scheduled = stored
+                    .scheduled()
+                    .iter()
+                    .filter_map(|index| {
+                        let local = index.local();
+                        stored
+                            .chunk
+                            .cell_xyz(local.x(), local.y(), local.z())
+                            .is_fluid()
+                            .then(|| chunk_position.block(local).world().as_ivec3())
+                    })
+                    .collect();
+                (stored.chunk, ChunkLoadSource::Stored, scheduled)
             }
             _ => (
                 generate_dimension_chunk(repository.metadata(), &definition, chunk_position),
                 ChunkLoadSource::Generated,
+                Vec::new(),
             ),
         };
         let contents = chunk.compute_content_counts();
@@ -161,6 +177,7 @@ pub fn load_or_generate_column(
             chunk,
             contents,
             source,
+            scheduled,
         });
     }
     assert!(
@@ -195,6 +212,7 @@ mod tests {
     use crate::{
         item::Item,
         world::{
+            chunk::{ChunkCell, ChunkIndex, LocalBlockPos},
             definition::{ChunkAddress, ColumnAddress, DimensionId},
             generation::{WorldMetadata, generate_dimension_chunk},
             storage::{
@@ -218,7 +236,7 @@ mod tests {
         fn load_chunk(
             &self,
             _address: ChunkAddress,
-        ) -> ChunkStoreResult<Option<(Chunk, ChunkHeightmap)>> {
+        ) -> ChunkStoreResult<Option<(Chunk, ChunkHeightmap, Vec<ChunkIndex>)>> {
             panic!("column loading must not fall back to one store call per subchunk")
         }
 
@@ -233,11 +251,12 @@ mod tests {
             Ok(self.stored.clone())
         }
 
-        fn save_chunk(
+        fn save_chunk_with_scheduled(
             &self,
             _address: ChunkAddress,
             _chunk: &Chunk,
             _heightmap: &ChunkHeightmap,
+            _scheduled: &[ChunkIndex],
         ) -> ChunkStoreResult<()> {
             Ok(())
         }
@@ -250,6 +269,7 @@ mod tests {
         let address = ColumnAddress::new(DimensionId::OVERWORLD, position);
         let mut persisted = Chunk::default();
         persisted.set_cell_xyz(0, 0, 0, Item::Glowstone.into());
+        persisted.set_cell_xyz(4, 0, 4, ChunkCell::water_source());
         let heightmap = ChunkHeightmap {
             heights: [[19; crate::world::chunk::CHUNK_SIZE]; crate::world::chunk::CHUNK_SIZE],
         };
@@ -257,7 +277,12 @@ mod tests {
             address,
             metadata.height(),
             heightmap,
-            vec![StoredChunk::new(address.chunk(1), persisted.clone())],
+            vec![
+                StoredChunk::new(address.chunk(1), persisted.clone()).with_scheduled(vec![
+                    LocalBlockPos::new(4, 0, 4).index(),
+                    LocalBlockPos::new(9, 9, 9).index(),
+                ]),
+            ],
         )
         .unwrap();
         let loads = Arc::new(AtomicUsize::new(0));
@@ -281,6 +306,20 @@ mod tests {
         assert_eq!(loaded.chunks()[1].source, ChunkLoadSource::Stored);
         assert_eq!(loaded.chunks()[1].chunk, persisted);
         assert_eq!(loaded.chunks()[2].source, ChunkLoadSource::Generated);
+        assert_eq!(
+            loaded.chunks()[1].scheduled,
+            vec![
+                address
+                    .column()
+                    .chunk(1)
+                    .block(LocalBlockPos::new(4, 0, 4))
+                    .world()
+                    .as_ivec3()
+            ],
+            "stored ticks survive only for cells that still hold fluid"
+        );
+        assert!(loaded.chunks()[0].scheduled.is_empty());
+        assert!(loaded.chunks()[2].scheduled.is_empty());
         assert_eq!(
             loaded.chunks()[0].chunk,
             generate_dimension_chunk(

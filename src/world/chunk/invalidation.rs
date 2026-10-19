@@ -1,8 +1,11 @@
 use std::collections::{HashMap, HashSet};
 
+use bevy::math::IVec3;
+
 use super::{
     components::ChunkContentCounts,
     coords::{ChunkColumn, ChunkPos, LocalBlockPos},
+    data::Chunk,
     neighborhood::NeighborOffset,
     state::CellDelta,
 };
@@ -116,6 +119,7 @@ struct ChunkWork {
 pub struct ChunkInvalidationPlan {
     chunks: HashMap<ChunkPos, ChunkWork>,
     light_columns: HashSet<ChunkColumn>,
+    fluid_wakes: HashSet<IVec3>,
 }
 
 impl ChunkInvalidationPlan {
@@ -124,7 +128,7 @@ impl ChunkInvalidationPlan {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.chunks.is_empty() && self.light_columns.is_empty()
+        self.chunks.is_empty() && self.light_columns.is_empty() && self.fluid_wakes.is_empty()
     }
 
     pub fn chunk_count(&self) -> usize {
@@ -158,6 +162,14 @@ impl ChunkInvalidationPlan {
     pub fn clear(&mut self) {
         self.chunks.clear();
         self.light_columns.clear();
+        self.fluid_wakes.clear();
+    }
+
+    /// World positions of the fluid-relevant cell changes in this plan, for the
+    /// fluid scheduler to wake. Each position is the changed cell itself; the
+    /// scheduler expands it to the cell and its neighbours.
+    pub fn fluid_wakes(&self) -> impl Iterator<Item = IVec3> + '_ {
+        self.fluid_wakes.iter().copied()
     }
 
     pub fn record_cell_delta(
@@ -171,6 +183,11 @@ impl ChunkInvalidationPlan {
 
         if effects.needs_light_rebuild() {
             self.record_light_columns(chunk);
+        }
+
+        if effects.needs_fluid_step() {
+            self.fluid_wakes
+                .insert(chunk.block(local).world().as_ivec3());
         }
 
         let mut halo = 0;
@@ -190,11 +207,27 @@ impl ChunkInvalidationPlan {
         effects
     }
 
+    /// Schedules every fluid cell in a chunk that was constructed cell by cell
+    /// outside the editor, such as a debug plot.
+    ///
+    /// A built chunk has no cell deltas to report, so its fluids would look
+    /// settled before they ever flowed. Treating the whole content as just
+    /// placed matches vanilla's `onPlace` scheduling for freshly written water.
+    pub fn record_placed_fluids(&mut self, chunk_pos: ChunkPos, chunk: &Chunk) {
+        for (cell, local) in chunk.iter() {
+            if cell.is_fluid() {
+                self.fluid_wakes
+                    .insert(chunk_pos.block(local).world().as_ivec3());
+            }
+        }
+    }
+
     /// Records the work needed when already-resident data becomes visible.
     ///
     /// Lighting and neighboring meshes already saw this chunk as support data,
-    /// so publication only initializes the chunk's own derived consumers and
-    /// wakes nearby fluid simulation at the newly writable boundary.
+    /// so publication only initializes the chunk's own derived consumers.
+    /// Fluids are not woken: settled water has no pending tick in vanilla, and a
+    /// newly published chunk does not schedule its neighbours' fluids.
     pub fn record_chunk_published(&mut self, chunk: ChunkPos, contents: ChunkContentCounts) {
         let mut own = 0;
         if contents.rendered > 0 {
@@ -510,5 +543,52 @@ mod tests {
 
         plan.clear();
         assert!(plan.is_empty());
+    }
+
+    #[test]
+    fn fluid_relevant_deltas_record_wakes_and_others_do_not() {
+        let chunk = ChunkPos::new(2, 0, -3);
+        let local = LocalBlockPos::new(1, 4, 2);
+        let wake = chunk.block(local).world().as_ivec3();
+
+        let mut plan = ChunkInvalidationPlan::new();
+        plan.record_cell_delta(
+            chunk,
+            local,
+            delta(ChunkCell::EMPTY, ChunkCell::water_source()),
+        );
+        assert_eq!(plan.fluid_wakes().collect::<Vec<_>>(), vec![wake]);
+
+        plan.clear();
+        plan.record_cell_delta(chunk, local, delta(Item::Stone.into(), Item::Dirt.into()));
+        assert!(plan.fluid_wakes().next().is_none());
+    }
+
+    #[test]
+    fn placed_fluids_are_scheduled_with_their_world_positions() {
+        let chunk_pos = ChunkPos::new(-3, 1, 7);
+        let mut chunk = Chunk::default();
+        chunk.set_cell(bevy::math::UVec3::new(1, 2, 3), ChunkCell::water_source());
+        chunk.set_cell(bevy::math::UVec3::new(1, 2, 4), Item::Stone.into());
+        chunk.set_cell(bevy::math::UVec3::new(7, 0, 0), ChunkCell::water_flow(5));
+
+        let mut plan = ChunkInvalidationPlan::new();
+        plan.record_placed_fluids(chunk_pos, &chunk);
+
+        let mut wakes = plan.fluid_wakes().collect::<Vec<_>>();
+        wakes.sort_by_key(|pos| (pos.x, pos.y, pos.z));
+        assert_eq!(
+            wakes,
+            vec![
+                chunk_pos
+                    .block(LocalBlockPos::new(1, 2, 3))
+                    .world()
+                    .as_ivec3(),
+                chunk_pos
+                    .block(LocalBlockPos::new(7, 0, 0))
+                    .world()
+                    .as_ivec3(),
+            ]
+        );
     }
 }

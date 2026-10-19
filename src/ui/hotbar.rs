@@ -242,6 +242,14 @@ fn generate_block_icons(
         icons.insert(item, handle);
     }
 
+    // Water is placeable but is not a block item, so it gets the same
+    // isometric icon from its still texture with the terrain tint.
+    if let Some(water_tex) = load_block_texture("textures/block/water_still.png") {
+        let tint = Srgba::hex("55B8FF").unwrap().to_vec4();
+        let icon = render_isometric_block(&water_tex, &water_tex, tint, tint);
+        icons.insert(Item::Water, images.add(icon));
+    }
+
     info!("Generated {} item icons", icons.len());
     commands.insert_resource(ItemIcons { icons });
 }

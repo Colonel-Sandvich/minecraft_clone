@@ -11,6 +11,7 @@ pub mod mesh;
 mod mutation;
 pub(crate) mod neighborhood;
 mod state;
+mod water_scenarios;
 
 use bevy::prelude::*;
 
@@ -20,7 +21,7 @@ use mesh::ChunkMeshPlugin;
 pub use codec::ChunkDecodeError;
 pub use components::{
     ChunkContentCounts, ChunkNeedsFluidStep, ChunkNeedsLightRebuild, ChunkNeedsSave,
-    ChunkPerfCounters, ChunkPosition,
+    ChunkPerfCounters, ChunkPosition, ChunkSaveExempt, ChunkSavedFluidTicks,
 };
 pub use coords::{
     CHUNK_ISIZE, CHUNK_SIZE, CHUNK_VOLUME, ChunkBlockPos, ChunkColumn, ChunkIndex, ChunkPos,
@@ -28,7 +29,7 @@ pub use coords::{
 };
 pub use data::{CellStorage, Chunk, ChunkCellIter, ChunkPalette, ChunkRevision, PaletteEntry};
 pub use fluid_sim::FluidStepResult;
-pub(crate) use fluid_sim::{FluidSnapshot, simulate_fluid_step};
+pub(crate) use fluid_sim::{FluidSnapshot, FluidStep, ScheduledFluids, simulate_fluid_step};
 pub use invalidation::{ChunkInvalidationEffects, ChunkInvalidationPlan, classify_cell_delta};
 pub use light::{ChunkHeightmap, ChunkLight};
 pub use mutation::ChunkEditor;
@@ -38,6 +39,10 @@ pub use state::{
 };
 
 pub(crate) use neighborhood::chunk_neighbor_offsets;
+pub(crate) use water_scenarios::{
+    SceneLayers, WATER_SCENARIOS, WaterScenario, char_from_cell, for_each_edit_cell, layout_scene,
+    phase_expected, phase_max_steps, scene_size,
+};
 
 pub struct ChunkPlugin;
 

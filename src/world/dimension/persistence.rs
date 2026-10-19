@@ -9,7 +9,10 @@ use bevy::{
 use super::{Active, ChunkTaskPool, DesiredColumnView, Dimension};
 
 use crate::world::{
-    chunk::{Chunk, ChunkColumn, ChunkHeightmap, ChunkNeedsSave, ChunkPosition, ChunkRevision},
+    chunk::{
+        Chunk, ChunkColumn, ChunkHeightmap, ChunkIndex, ChunkNeedsSave, ChunkPosition,
+        ChunkRevision, ChunkSaveExempt, ChunkSavedFluidTicks,
+    },
     definition::ChunkAddress,
     storage::{ChunkRepository, ChunkStoreError, ChunkStoreResult},
 };
@@ -83,6 +86,7 @@ impl ChunkSaveTasks {
                     payload: Arc::new(ChunkSavePayload {
                         chunk: Chunk::default(),
                         heightmap: ChunkHeightmap::default(),
+                        scheduled: Vec::new(),
                     }),
                     source: None,
                 },
@@ -175,6 +179,7 @@ impl ChunkSaveTasks {
         source: LiveChunkSaveSource,
         chunk: &Chunk,
         heightmap: ChunkHeightmap,
+        scheduled: Vec<ChunkIndex>,
         eviction_priority: bool,
     ) {
         let ticket = ChunkSaveTicket {
@@ -184,6 +189,7 @@ impl ChunkSaveTasks {
 
         if let Some(pending) = self.pending.get_mut(&address)
             && pending.snapshot.ticket() == ticket
+            && pending.snapshot.payload.scheduled == scheduled
         {
             pending.eviction_priority = eviction_priority;
             return;
@@ -191,6 +197,7 @@ impl ChunkSaveTasks {
 
         if let Some(in_flight) = self.in_flight.get_mut(&address)
             && in_flight.snapshot.ticket() == ticket
+            && in_flight.snapshot.payload.scheduled == scheduled
         {
             in_flight.eviction_priority = eviction_priority;
             self.pending.remove(&address);
@@ -210,6 +217,7 @@ impl ChunkSaveTasks {
                     payload: Arc::new(ChunkSavePayload {
                         chunk: chunk.clone(),
                         heightmap,
+                        scheduled,
                     }),
                     source: Some(source),
                 },
@@ -260,6 +268,8 @@ impl OwnedChunkSaveSnapshot {
 struct ChunkSavePayload {
     chunk: Chunk,
     heightmap: ChunkHeightmap,
+    /// Pending fluid ticks captured with the chunk, as chunk-local indices.
+    scheduled: Vec<ChunkIndex>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -376,6 +386,8 @@ pub(crate) fn start_chunk_save_tasks(
         &Chunk,
         &ChunkHeightmap,
         Option<&ChunkNeedsSave>,
+        Option<&ChunkSaveExempt>,
+        Option<&ChunkSavedFluidTicks>,
     )>,
     repository: Res<ChunkRepository>,
     save_budget: Res<ChunkSaveBudget>,
@@ -454,17 +466,36 @@ pub(crate) fn capture_dimension_save_snapshots(
         &Chunk,
         &ChunkHeightmap,
         Option<&ChunkNeedsSave>,
+        Option<&ChunkSaveExempt>,
+        Option<&ChunkSavedFluidTicks>,
     )>,
 ) -> usize {
     dimension.assert_stream_owner(owner);
+    let scheduled_by_chunk = dimension.scheduled_fluid_indices_by_chunk();
     let mut captured = 0;
     for (registered_position, entity) in dimension.iter_loaded_chunks() {
-        let (position, chunk, heightmap, needs_save) = chunks.get(entity).unwrap_or_else(|error| {
-            panic!(
-                "loaded chunk {registered_position:?} ({entity:?}) must retain its save components: {error}"
-            )
-        });
-        if needs_save.is_none() {
+        let (position, chunk, heightmap, needs_save, save_exempt, saved_ticks) =
+            chunks.get(entity).unwrap_or_else(|error| {
+                panic!(
+                    "loaded chunk {registered_position:?} ({entity:?}) must retain its save components: {error}"
+                )
+            });
+        if save_exempt.is_some() {
+            continue;
+        }
+        // Pending fluid ticks must reach the save even when the block content
+        // did not change, or a reload would freeze mid-flow water. The
+        // checkpoint from the last successful save keeps this from rewriting an
+        // unchanged tick set every frame.
+        let scheduled = scheduled_by_chunk
+            .get(&registered_position)
+            .cloned()
+            .unwrap_or_default();
+        let ticks_unchanged = match saved_ticks {
+            Some(saved) => saved.0 == scheduled,
+            None => scheduled.is_empty(),
+        };
+        if needs_save.is_none() && ticks_unchanged {
             continue;
         }
         assert_eq!(
@@ -481,6 +512,7 @@ pub(crate) fn capture_dimension_save_snapshots(
             },
             chunk,
             *heightmap,
+            scheduled,
             context.eviction_priority(registered_position.column()),
         );
         captured += 1;
@@ -511,6 +543,11 @@ fn clear_live_source_if_current(
     {
         return;
     }
+    // The payload's pending-tick set is now on disk for this chunk, whatever
+    // else changed while the save was in flight.
+    commands
+        .entity(source.entity)
+        .insert(ChunkSavedFluidTicks(snapshot.payload.scheduled.clone()));
     let Ok((position, chunk, heightmap, Some(_))) = chunks.get(source.entity) else {
         return;
     };
@@ -563,10 +600,11 @@ fn save_chunk_snapshot(
     snapshot: &OwnedChunkSaveSnapshot,
     repository: &ChunkRepository,
 ) -> ChunkStoreResult<()> {
-    repository.save_chunk(
+    repository.save_chunk_with_scheduled(
         address,
         &snapshot.payload.chunk,
         &snapshot.payload.heightmap,
+        &snapshot.payload.scheduled,
     )
 }
 

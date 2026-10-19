@@ -195,6 +195,12 @@ pub(crate) fn finish_column_loads(
                 ))
                 .id();
             entities.push(entity);
+
+            // Ticks that were pending when the chunk was saved resume here,
+            // exactly where vanilla restores its stored block/fluid ticks.
+            if !loaded_chunk.scheduled.is_empty() {
+                dimension.restore_scheduled_fluids(&loaded_chunk.scheduled);
+            }
         }
 
         dimension.install_accepted_column(ticket, incarnation, entities);

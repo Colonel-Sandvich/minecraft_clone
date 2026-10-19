@@ -27,10 +27,12 @@ impl Default for Inventory {
             Item::OakLeaves,
             Item::Glowstone,
             Item::Grass,
-            Item::Ice,
+            Item::Water,
         ]) {
             *slot = Some(ItemStack::full(item));
         }
+
+        slots[INVENTORY_SLOTS - 1] = Some(ItemStack::full(Item::Ice));
         Self { slots }
     }
 }
@@ -141,6 +143,29 @@ impl Inventory {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn default_inventory_stocks_water_and_ice_for_manual_water_tests() {
+        let inventory = Inventory::default();
+
+        // Hotbar digit 9 (index 8) holds water, and the main-grid slot
+        // directly above it (the last inventory slot) holds ice.
+        assert_eq!(
+            inventory.slot(HOTBAR_SLOTS - 1),
+            Some(ItemStack::full(Item::Water))
+        );
+        assert_eq!(
+            inventory.slot(INVENTORY_SLOTS - 1),
+            Some(ItemStack::full(Item::Ice))
+        );
+
+        // The UI lays the main grid out as rows of `HOTBAR_SLOTS` starting at
+        // `HOTBAR_SLOTS`, so the last slot sits in the final column.
+        assert_eq!(
+            (INVENTORY_SLOTS - 1 - HOTBAR_SLOTS) % HOTBAR_SLOTS,
+            HOTBAR_SLOTS - 1
+        );
+    }
 
     #[test]
     fn taking_the_last_item_empties_the_slot() {

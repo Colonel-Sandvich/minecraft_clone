@@ -1,7 +1,10 @@
 pub mod collide_and_slide;
 pub mod controller;
 
-use crate::game_state::gameplay_input_active;
+use crate::{
+    game_state::gameplay_input_active,
+    tick_control::{TickControlSet, player_ticks_allowed},
+};
 use avian3d::physics_transform::PhysicsTransformSystems;
 use avian3d::prelude::PhysicsSystems;
 use bevy::prelude::*;
@@ -20,6 +23,8 @@ impl Plugin for MobPhysicsPlugin {
             FixedUpdate,
             apply_horizontal_drag
                 .in_set(MobPhysicsSystems::HorizontalDrag)
+                .in_set(TickControlSet::Player)
+                .run_if(player_ticks_allowed)
                 .before(PhysicsSystems::StepSimulation),
         );
 
@@ -30,6 +35,7 @@ impl Plugin for MobPhysicsPlugin {
             FixedPostUpdate,
             (move_character_controllers, apply_vertical_physics)
                 .chain()
+                .run_if(player_ticks_allowed)
                 .after(PhysicsSystems::StepSimulation)
                 .before(PhysicsTransformSystems::PositionToTransform),
         );
@@ -46,6 +52,8 @@ impl Plugin for MobControllerPlugin {
             FixedUpdate,
             (apply_flight_vertical_input, apply_player_movement_input)
                 .distributive_run_if(gameplay_input_active)
+                .run_if(player_ticks_allowed)
+                .in_set(TickControlSet::Player)
                 .after(MobPhysicsSystems::HorizontalDrag)
                 .before(PhysicsSystems::StepSimulation),
         );

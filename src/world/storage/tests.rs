@@ -7,7 +7,7 @@ use std::{
 use super::*;
 use crate::item::Item;
 use crate::player::PlayerId;
-use crate::world::chunk::{ChunkColumn, ChunkHeightmap, ChunkPos};
+use crate::world::chunk::{ChunkColumn, ChunkHeightmap, ChunkPos, LocalBlockPos};
 use crate::world::definition::{ChunkAddress, ColumnAddress, DimensionId};
 use crate::world::generation::WorldHeight;
 use bevy::math::{DVec2, DVec3};
@@ -164,11 +164,11 @@ fn assert_addressed_store_contract(store: &impl ChunkStore, height: WorldHeight)
 
     assert_eq!(
         store.load_chunk(overworld).unwrap(),
-        Some((overworld_chunk.clone(), overworld_heightmap))
+        Some((overworld_chunk.clone(), overworld_heightmap, Vec::new()))
     );
     assert_eq!(
         store.load_chunk(grass_floor).unwrap(),
-        Some((grass_floor_chunk.clone(), grass_floor_heightmap))
+        Some((grass_floor_chunk.clone(), grass_floor_heightmap, Vec::new()))
     );
 
     let overworld_column = store
@@ -216,7 +216,7 @@ impl ChunkStore for MisdirectedColumnStore {
     fn load_chunk(
         &self,
         _address: ChunkAddress,
-    ) -> ChunkStoreResult<Option<(Chunk, ChunkHeightmap)>> {
+    ) -> ChunkStoreResult<Option<(Chunk, ChunkHeightmap, Vec<ChunkIndex>)>> {
         Ok(None)
     }
 
@@ -228,11 +228,12 @@ impl ChunkStore for MisdirectedColumnStore {
         StoredColumn::empty(self.returned_address, self.returned_height).map_err(Into::into)
     }
 
-    fn save_chunk(
+    fn save_chunk_with_scheduled(
         &self,
         _address: ChunkAddress,
         _chunk: &Chunk,
         _heightmap: &ChunkHeightmap,
+        _scheduled: &[ChunkIndex],
     ) -> ChunkStoreResult<()> {
         Ok(())
     }
@@ -250,8 +251,33 @@ fn sqlite_store_roundtrips_full_chunks() {
         .save_chunk(address, &chunk, &default_heightmap())
         .unwrap();
 
-    let (loaded, _h) = store.load_chunk(address).unwrap().unwrap();
+    let (loaded, _h, _) = store.load_chunk(address).unwrap().unwrap();
     assert_eq!(loaded, chunk);
+}
+
+#[test]
+fn chunk_saves_round_trip_pending_fluid_ticks() {
+    let metadata = WorldMetadata::with_seed(42);
+    let store = test_sqlite_store(&metadata);
+    let address = chunk_address(ChunkPos::new(-2, 1, 3));
+    let chunk = chunk_with_block(Item::Grass);
+    let scheduled = vec![
+        LocalBlockPos::new(0, 0, 0).index(),
+        LocalBlockPos::new(15, 7, 2).index(),
+    ];
+
+    store
+        .save_chunk_with_scheduled(address, &chunk, &default_heightmap(), &scheduled)
+        .unwrap();
+
+    let (loaded, _heightmap, ticks) = store.load_chunk(address).unwrap().unwrap();
+    assert_eq!(loaded, chunk);
+    assert_eq!(ticks, scheduled);
+
+    let column = store
+        .load_stored_column(address.column(), metadata.height())
+        .unwrap();
+    assert_eq!(column.chunks()[0].scheduled(), scheduled.as_slice());
 }
 
 #[test]
@@ -350,7 +376,7 @@ fn sqlite_open_adds_player_schema_to_an_existing_world() {
         reopened
             .load_chunk(address)
             .unwrap()
-            .map(|(chunk, _)| chunk),
+            .map(|(chunk, _, _)| chunk),
         Some(chunk)
     );
     assert_eq!(reopened.load_player(PlayerId::LOCAL).unwrap(), None);
@@ -493,7 +519,7 @@ fn turso_store_roundtrips_full_chunks() {
         .save_chunk(address, &chunk, &default_heightmap())
         .unwrap();
 
-    let (loaded, _h) = store.load_chunk(address).unwrap().unwrap();
+    let (loaded, _h, _) = store.load_chunk(address).unwrap().unwrap();
     assert_eq!(loaded, chunk);
 }
 
@@ -540,7 +566,7 @@ fn turso_open_adds_player_schema_to_an_existing_world() {
         reopened
             .load_chunk(address)
             .unwrap()
-            .map(|(chunk, _)| chunk),
+            .map(|(chunk, _, _)| chunk),
         Some(chunk)
     );
     assert_eq!(reopened.load_player(PlayerId::LOCAL).unwrap(), None);
@@ -627,7 +653,7 @@ fn sqlite_store_rejects_world_metadata_mismatch() {
 fn sqlite_store_rejects_the_previous_storage_format_cleanly() {
     let metadata = WorldMetadata::with_seed(42);
     let mut legacy_metadata = metadata.clone();
-    legacy_metadata.chunk_format_version = 1;
+    legacy_metadata.chunk_format_version = 0;
     let store = test_sqlite_store(&legacy_metadata);
     let connection = rusqlite::Connection::open(&store.path).unwrap();
     connection
@@ -657,7 +683,7 @@ fn sqlite_store_rejects_the_previous_storage_format_cleanly() {
             key,
             expected,
             found,
-        }) if key == "chunk_format_version" && expected == "2" && found == "1"
+        }) if key == "chunk_format_version" && expected == "1" && found == "0"
     ));
 }
 
@@ -913,7 +939,7 @@ fn development_world_paths_include_complete_format_identity() {
     ] {
         assert_ne!(path, development_world_path(&different));
     }
-    assert!(path.ends_with("seed-0000000000000001-g1-c2-h5.sqlite3"));
+    assert!(path.ends_with("seed-0000000000000001-g1-c1-h5.sqlite3"));
     #[cfg(feature = "turso-store")]
-    assert!(development_turso_path(&base).ends_with("seed-0000000000000001-g1-c2-h5.turso"));
+    assert!(development_turso_path(&base).ends_with("seed-0000000000000001-g1-c1-h5.turso"));
 }

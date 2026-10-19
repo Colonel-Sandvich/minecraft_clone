@@ -1,14 +1,27 @@
 use std::collections::HashMap;
 
 use super::{
-    coords::{CHUNK_SIZE, CHUNK_VOLUME, chunk_linear_index},
+    coords::{CHUNK_SIZE, CHUNK_VOLUME, ChunkIndex, chunk_linear_index},
     data::Chunk,
     state::ChunkCell,
 };
 
 impl Chunk {
     /// Encode this chunk with semantic palette names and MSB-first packed indices.
+    ///
+    /// A chunk without pending fluid ticks encodes exactly like the
+    /// pre-scheduling format; see [`Self::to_storage_bytes_with_scheduled`].
     pub fn to_storage_bytes(&self) -> Vec<u8> {
+        self.to_storage_bytes_with_scheduled(&[])
+    }
+
+    /// Encode this chunk plus its pending fluid ticks.
+    ///
+    /// Pending ticks are chunk-local [`ChunkIndex`] positions appended after the
+    /// packed body as `[u16 count][u16 index; count]` (little-endian), sorted and
+    /// deduplicated for a deterministic encoding. The section is omitted when
+    /// there are no pending ticks.
+    pub fn to_storage_bytes_with_scheduled(&self, scheduled: &[ChunkIndex]) -> Vec<u8> {
         let palette = self.storage_palette();
         let bits = bits_for(palette.len());
         let cell_to_idx: HashMap<ChunkCell, u32> = palette
@@ -34,10 +47,38 @@ impl Chunk {
         let body_bytes = (indices.len() * bits as usize).div_ceil(8);
         bytes.resize(body_start + body_bytes, 0);
         pack(&mut bytes[body_start..], &indices, bits);
+
+        if !scheduled.is_empty() {
+            let mut sorted = scheduled.to_vec();
+            sorted.sort_unstable();
+            sorted.dedup();
+            bytes.extend_from_slice(&(sorted.len() as u16).to_le_bytes());
+            for index in sorted {
+                bytes.extend_from_slice(&(index.as_usize() as u16).to_le_bytes());
+            }
+        }
+
         bytes
     }
 
+    /// Decodes one chunk, rejecting blobs that carry pending fluid ticks.
+    ///
+    /// Persistence boundaries should decode through
+    /// [`Self::try_from_storage_bytes_with_scheduled`] so restored ticks are
+    /// not silently discarded.
     pub fn try_from_storage_bytes(bytes: &[u8]) -> Result<Self, ChunkDecodeError> {
+        let (chunk, scheduled) = Self::try_from_storage_bytes_with_scheduled(bytes)?;
+        if scheduled.is_empty() {
+            Ok(chunk)
+        } else {
+            Err(ChunkDecodeError::InvalidHeader)
+        }
+    }
+
+    /// Decodes one chunk plus its optional trailing pending-tick section.
+    pub fn try_from_storage_bytes_with_scheduled(
+        bytes: &[u8],
+    ) -> Result<(Self, Vec<ChunkIndex>), ChunkDecodeError> {
         if bytes.len() < 3 {
             return Err(ChunkDecodeError::Truncated);
         }
@@ -97,11 +138,30 @@ impl Chunk {
         }
 
         pos += body_bytes;
-        if pos != bytes.len() {
-            return Err(ChunkDecodeError::InvalidHeader);
+        if pos > bytes.len() {
+            return Err(ChunkDecodeError::Truncated);
         }
 
-        Ok(chunk)
+        let mut scheduled = Vec::new();
+        if pos < bytes.len() {
+            let trailer = &bytes[pos..];
+            let count = trailer
+                .get(..2)
+                .map(|count| u16::from_le_bytes([count[0], count[1]]) as usize)
+                .ok_or(ChunkDecodeError::InvalidHeader)?;
+            if trailer.len() != 2 + count * 2 {
+                return Err(ChunkDecodeError::InvalidHeader);
+            }
+            for index in 0..count {
+                let offset = 2 + index * 2;
+                let raw = u16::from_le_bytes([trailer[offset], trailer[offset + 1]]);
+                let index = ChunkIndex::try_from_usize(raw as usize)
+                    .ok_or(ChunkDecodeError::InvalidHeader)?;
+                scheduled.push(index);
+            }
+        }
+
+        Ok((chunk, scheduled))
     }
 }
 
@@ -160,6 +220,7 @@ impl std::error::Error for ChunkDecodeError {}
 mod tests {
     use super::*;
     use crate::item::Item;
+    use crate::world::chunk::LocalBlockPos;
 
     #[test]
     fn representative_encoding_has_stable_wire_fingerprint() {
@@ -169,12 +230,84 @@ mod tests {
         chunk.set_cell_xyz(0, 0, 1, Item::Stone.into());
         chunk.set_cell_xyz(15, 15, 15, ChunkCell::water_source());
 
-        let bytes = chunk.to_storage_bytes();
+        let bytes = chunk.to_storage_bytes_with_scheduled(&[
+            LocalBlockPos::new(15, 15, 15).index(),
+            LocalBlockPos::new(0, 8, 3).index(),
+        ]);
         let fingerprint = bytes.iter().fold(0xcbf2_9ce4_8422_2325u64, |hash, byte| {
             (hash ^ u64::from(*byte)).wrapping_mul(0x1000_0000_01b3)
         });
 
-        assert_eq!(bytes.len(), 1_575);
-        assert_eq!(fingerprint, 0x63fa_5f04_4acf_91df);
+        assert_eq!(bytes.len(), 1_581);
+        assert_eq!(fingerprint, 0x4584_c82a_691d_4c13);
+    }
+
+    #[test]
+    fn pending_ticks_round_trip_through_the_trailing_section() {
+        let mut chunk = Chunk::default();
+        chunk.set_cell_xyz(4, 5, 6, ChunkCell::water_source());
+
+        let ticks = vec![
+            LocalBlockPos::new(7, 1, 2).index(),
+            LocalBlockPos::new(4, 5, 6).index(),
+            LocalBlockPos::new(7, 1, 2).index(),
+        ];
+        let bytes = chunk.to_storage_bytes_with_scheduled(&ticks);
+        let (decoded, scheduled) = Chunk::try_from_storage_bytes_with_scheduled(&bytes).unwrap();
+
+        assert_eq!(decoded, chunk);
+        assert_eq!(
+            scheduled,
+            vec![
+                LocalBlockPos::new(4, 5, 6).index(),
+                LocalBlockPos::new(7, 1, 2).index(),
+            ]
+        );
+        assert!(
+            Chunk::try_from_storage_bytes(&bytes).is_err(),
+            "content-only decode must reject blobs that still carry pending ticks"
+        );
+    }
+
+    #[test]
+    fn settled_chunks_stay_byte_identical_and_decode_without_ticks() {
+        let mut chunk = Chunk::default();
+        chunk.set_cell_xyz(0, 0, 0, Item::Stone.into());
+
+        let plain = chunk.to_storage_bytes();
+        assert_eq!(chunk.to_storage_bytes_with_scheduled(&[]), plain);
+
+        let (decoded, scheduled) = Chunk::try_from_storage_bytes_with_scheduled(&plain).unwrap();
+        assert_eq!(decoded, chunk);
+        assert!(scheduled.is_empty());
+    }
+
+    #[test]
+    fn malformed_pending_tick_sections_are_rejected() {
+        let chunk = Chunk::default();
+        let bytes = chunk.to_storage_bytes();
+
+        let mut wrong_count = bytes.clone();
+        wrong_count.extend_from_slice(&2u16.to_le_bytes());
+        wrong_count.extend_from_slice(&0u16.to_le_bytes());
+        assert_eq!(
+            Chunk::try_from_storage_bytes_with_scheduled(&wrong_count),
+            Err(ChunkDecodeError::InvalidHeader)
+        );
+
+        let mut out_of_range = bytes.clone();
+        out_of_range.extend_from_slice(&1u16.to_le_bytes());
+        out_of_range.extend_from_slice(&(CHUNK_VOLUME as u16).to_le_bytes());
+        assert_eq!(
+            Chunk::try_from_storage_bytes_with_scheduled(&out_of_range),
+            Err(ChunkDecodeError::InvalidHeader)
+        );
+
+        let mut missing_index = bytes.clone();
+        missing_index.extend_from_slice(&1u16.to_le_bytes());
+        assert_eq!(
+            Chunk::try_from_storage_bytes_with_scheduled(&missing_index),
+            Err(ChunkDecodeError::InvalidHeader)
+        );
     }
 }

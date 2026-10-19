@@ -67,10 +67,16 @@ pub(super) struct DroppedItemRenderAssets {
 
 impl DroppedItemRenderAssets {
     pub(super) fn material_for(&self, stack: ItemStack) -> Handle<DroppedBlockMaterial> {
-        let layer = stack
-            .item
-            .material_layer()
-            .expect("only block-items have a cube dropped-item model");
+        // Water is placeable but not a block item; it renders with the
+        // translucent water material.
+        let layer = if stack.item == super::Item::Water {
+            BlockMaterialLayer::Translucent
+        } else {
+            stack
+                .item
+                .material_layer()
+                .expect("only block-items have a cube dropped-item model")
+        };
         self.materials[layer.index()].clone()
     }
 
