@@ -223,10 +223,12 @@ fn generate_block_icons(
     mut commands: Commands,
     item_icons: Res<ItemIcons>,
     mut images: ResMut<Assets<Image>>,
+    mut generated: Local<bool>,
 ) {
-    if !item_icons.icons.is_empty() {
+    if *generated || !item_icons.icons.is_empty() {
         return;
     }
+    *generated = true;
 
     let mut icons = HashMap::new();
     for item in Item::BLOCKS {
