@@ -102,6 +102,9 @@ fn extract_changed<T: Component + Clone>(
         return;
     }
 
+    // `contiguous_iter` is only available for table-backed archetypes. Keep
+    // the ordinary iterator as a correctness fallback for sparse/component
+    // archetypes rather than treating it as unreachable.
     commands.try_insert_batch(
         query
             .iter()

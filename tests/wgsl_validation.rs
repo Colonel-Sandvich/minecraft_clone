@@ -210,7 +210,9 @@ fn vertex_pulling_resource_metadata_matches_render_layout() {
 
     // WESL's escape mangler prefixes imported declarations with the package
     // and module path. Keep the full qualified names exact so a rename or an
-    // accidentally different binding source is caught.
+    // accidentally different binding source is caught. These names may need
+    // updating deliberately when upgrading WESL; do not loosen them to suffix
+    // matching just to make an upgrade pass.
     assert_eq!(
         resources,
         vec![

@@ -199,6 +199,9 @@ fn pick_up_eligible_items(
 #[derive(Component)]
 struct ItemPickupDelay(Timer);
 
+/// Dropped items are rotation-locked and small enough to trigger swept CCD
+/// regularly, so use the cheaper linear sweep explicitly. Avian 0.8 enables
+/// swept CCD for fast dynamic bodies even without this component.
 #[derive(Component)]
 #[require(
     RigidBody::Dynamic,
