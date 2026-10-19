@@ -13,9 +13,9 @@ use crate::world::{
 };
 
 use super::{
-    ChunkStore, ChunkStoreResult, SQL_CREATE_WORLD_METADATA, SQL_INSERT_METADATA_VALUE,
-    SQL_SELECT_METADATA_VALUE, StoredChunk, StoredColumn, StoredPlayer, StoredPlayerPosition,
-    metadata_entries,
+    ChunkStore, ChunkStoreError, ChunkStoreResult, SQL_CREATE_WORLD_METADATA,
+    SQL_INSERT_METADATA_VALUE, SQL_SELECT_METADATA_VALUE, StoredChunk, StoredColumn, StoredPlayer,
+    StoredPlayerPosition, metadata_entries,
 };
 
 const SQLITE_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -92,7 +92,12 @@ impl SqliteChunkStore {
     pub fn open(path: impl AsRef<Path>, metadata: &WorldMetadata) -> ChunkStoreResult<Self> {
         let path = path.as_ref().to_path_buf();
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
+            std::fs::create_dir_all(parent).map_err(|error| {
+                ChunkStoreError::from(error).context(format!(
+                    "failed to create SQLite chunk store directory {}",
+                    parent.display()
+                ))
+            })?;
         }
 
         let store = Self {
@@ -105,8 +110,18 @@ impl SqliteChunkStore {
     }
 
     fn open_connection(&self) -> ChunkStoreResult<Connection> {
-        let connection = Connection::open(&self.path)?;
-        configure_connection(&connection)?;
+        let connection = Connection::open(&self.path).map_err(|error| {
+            ChunkStoreError::from(error).context(format!(
+                "failed to open SQLite chunk store {}",
+                self.path.display()
+            ))
+        })?;
+        configure_connection(&connection).map_err(|error| {
+            error.context(format!(
+                "failed to configure SQLite chunk store {}",
+                self.path.display()
+            ))
+        })?;
         Ok(connection)
     }
 

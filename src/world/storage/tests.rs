@@ -202,6 +202,50 @@ fn assert_addressed_store_contract(store: &impl ChunkStore, height: WorldHeight)
     );
 }
 
+struct FailingStore {
+    metadata: WorldMetadata,
+    error: ChunkStoreError,
+}
+
+impl ChunkStore for FailingStore {
+    fn metadata(&self) -> &WorldMetadata {
+        &self.metadata
+    }
+
+    fn load_chunk(
+        &self,
+        _address: ChunkAddress,
+    ) -> ChunkStoreResult<Option<(Chunk, ChunkHeightmap, Vec<ChunkIndex>)>> {
+        Err(self.error.clone())
+    }
+
+    fn load_stored_column(
+        &self,
+        _address: ColumnAddress,
+        _height: WorldHeight,
+    ) -> ChunkStoreResult<StoredColumn> {
+        Err(self.error.clone())
+    }
+
+    fn save_chunk_with_scheduled(
+        &self,
+        _address: ChunkAddress,
+        _chunk: &Chunk,
+        _heightmap: &ChunkHeightmap,
+        _scheduled: &[ChunkIndex],
+    ) -> ChunkStoreResult<()> {
+        Err(self.error.clone())
+    }
+
+    fn load_player(&self, _id: PlayerId) -> ChunkStoreResult<Option<StoredPlayer>> {
+        Err(self.error.clone())
+    }
+
+    fn save_player(&self, _player: &StoredPlayer) -> ChunkStoreResult<()> {
+        Err(self.error.clone())
+    }
+}
+
 struct MisdirectedColumnStore {
     metadata: WorldMetadata,
     returned_address: ColumnAddress,
@@ -918,6 +962,123 @@ fn repository_rejects_columns_returned_for_another_dimension() {
             }
         )) if actual_request == requested && actual_return == returned
     ));
+}
+
+fn transient_io_error() -> ChunkStoreError {
+    ChunkStoreError::Io {
+        kind: std::io::ErrorKind::TimedOut,
+        message: "scripted timeout".to_owned(),
+    }
+}
+
+#[test]
+fn repository_chunk_errors_include_dimension_and_chunk_address() {
+    let metadata = WorldMetadata::with_seed(42);
+    let address = chunk_address(ChunkPos::new(-2, 1, 3));
+    let repository = ChunkRepository::new(FailingStore {
+        metadata,
+        error: transient_io_error(),
+    });
+
+    let load = repository.load_chunk(address).unwrap_err();
+    assert!(
+        load.to_string()
+            .contains("failed to load chunk in dimension 0 at (-2, 1, 3)")
+    );
+    assert!(load.is_transient());
+    assert!(matches!(
+        load.root_cause(),
+        ChunkStoreError::Io {
+            kind: std::io::ErrorKind::TimedOut,
+            ..
+        }
+    ));
+
+    let save = repository
+        .save_chunk(address, &Chunk::default(), &default_heightmap())
+        .unwrap_err();
+    assert!(
+        save.to_string()
+            .contains("failed to save chunk in dimension 0 at (-2, 1, 3)")
+    );
+}
+
+#[test]
+fn repository_column_errors_include_dimension_and_column_address() {
+    let metadata = WorldMetadata::with_seed(42);
+    let address = ColumnAddress::new(DimensionId::OVERWORLD, ChunkColumn::new(-4, 7));
+    let repository = ChunkRepository::new(FailingStore {
+        metadata,
+        error: transient_io_error(),
+    });
+
+    let error = repository.load_stored_column(address).unwrap_err();
+
+    assert!(
+        error
+            .to_string()
+            .contains("failed to load column in dimension 0 at (-4, 7)")
+    );
+    assert!(error.is_transient());
+}
+
+#[test]
+fn repository_player_errors_include_player_id() {
+    let metadata = WorldMetadata::with_seed(42);
+    let repository = ChunkRepository::new(FailingStore {
+        metadata,
+        error: transient_io_error(),
+    });
+    let player = stored_player(
+        PlayerId::LOCAL,
+        DimensionId::OVERWORLD,
+        Vec3::new(1.0, 2.0, 3.0),
+    );
+
+    let load = repository.load_player(PlayerId::LOCAL).unwrap_err();
+    assert!(load.to_string().starts_with("failed to load player 1:"));
+
+    let save = repository.save_player(&player).unwrap_err();
+    assert!(save.to_string().starts_with("failed to save player 1:"));
+}
+
+#[test]
+fn sqlite_open_errors_include_the_store_path() {
+    let metadata = WorldMetadata::with_seed(42);
+    let root = test_store_path("sqlite-open-parent");
+    let _ = std::fs::remove_file(&root);
+    std::fs::write(&root, b"not a directory").unwrap();
+    let path = root.join("store.sqlite3");
+
+    let error = SqliteChunkStore::open(&path, &metadata)
+        .err()
+        .expect("opening a store under a regular file must fail");
+
+    assert!(
+        error.to_string().contains(&root.display().to_string()),
+        "{error}"
+    );
+    std::fs::remove_file(&root).unwrap();
+}
+
+#[cfg(feature = "turso-store")]
+#[test]
+fn turso_open_errors_include_the_store_path() {
+    let metadata = WorldMetadata::with_seed(42);
+    let root = test_store_path("turso-open-parent");
+    let _ = std::fs::remove_file(&root);
+    std::fs::write(&root, b"not a directory").unwrap();
+    let path = root.join("store.turso");
+
+    let error = TursoChunkStore::open(&path, &metadata)
+        .err()
+        .expect("opening a store under a regular file must fail");
+
+    assert!(
+        error.to_string().contains(&root.display().to_string()),
+        "{error}"
+    );
+    std::fs::remove_file(&root).unwrap();
 }
 
 #[test]

@@ -80,6 +80,7 @@ ON CONFLICT(id) DO UPDATE SET
     local_y = excluded.local_y";
 
 pub struct TursoChunkStore {
+    path: PathBuf,
     database: turso::Database,
     runtime: tokio::runtime::Runtime,
     metadata: WorldMetadata,
@@ -87,25 +88,38 @@ pub struct TursoChunkStore {
 
 impl TursoChunkStore {
     pub fn open(path: impl AsRef<Path>, metadata: &WorldMetadata) -> ChunkStoreResult<Self> {
-        let path = path.as_ref();
+        let path = path.as_ref().to_path_buf();
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
+            std::fs::create_dir_all(parent).map_err(|error| {
+                ChunkStoreError::from(error).context(format!(
+                    "failed to create Turso chunk store directory {}",
+                    parent.display()
+                ))
+            })?;
         }
 
-        let path = path_to_string(path)?;
+        let path_string = path_to_string(&path)?;
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()
             .map_err(|error| ChunkStoreError::Runtime {
                 message: error.to_string(),
             })?;
-        let database = runtime.block_on(async {
-            turso::Builder::new_local(&path)
-                .experimental_multiprocess_wal(true)
-                .build()
-                .await
-        })?;
+        let database = runtime
+            .block_on(async {
+                turso::Builder::new_local(&path_string)
+                    .experimental_multiprocess_wal(true)
+                    .build()
+                    .await
+            })
+            .map_err(|error| {
+                ChunkStoreError::from(error).context(format!(
+                    "failed to open Turso chunk store {}",
+                    path.display()
+                ))
+            })?;
         let store = Self {
+            path,
             database,
             runtime,
             metadata: metadata.clone(),
@@ -114,8 +128,17 @@ impl TursoChunkStore {
         Ok(store)
     }
 
+    fn connect(&self) -> ChunkStoreResult<turso::Connection> {
+        self.database.connect().map_err(|error| {
+            ChunkStoreError::from(error).context(format!(
+                "failed to connect to Turso chunk store {}",
+                self.path.display()
+            ))
+        })
+    }
+
     async fn initialize(&self, metadata: &WorldMetadata) -> ChunkStoreResult<()> {
-        let connection = self.database.connect()?;
+        let connection = self.connect()?;
         connection.execute(SQL_CREATE_WORLD_METADATA, ()).await?;
         for (key, value) in metadata_entries(metadata) {
             ensure_metadata_value(&connection, key, value).await?;
@@ -147,7 +170,7 @@ impl TursoChunkStore {
     #[cfg(test)]
     pub(super) fn drop_player_schema_for_test(&self) -> ChunkStoreResult<()> {
         self.runtime.block_on(async {
-            let connection = self.database.connect()?;
+            let connection = self.connect()?;
             connection.execute("DROP TABLE players", ()).await?;
             Ok(())
         })
@@ -156,7 +179,7 @@ impl TursoChunkStore {
     #[cfg(test)]
     pub(super) fn player_position_index_columns_for_test(&self) -> ChunkStoreResult<Vec<String>> {
         self.runtime.block_on(async {
-            let connection = self.database.connect()?;
+            let connection = self.connect()?;
             let mut rows = connection
                 .query("PRAGMA index_info('players_by_chunk_position')", ())
                 .await?;
@@ -179,7 +202,7 @@ impl ChunkStore for TursoChunkStore {
         address: ChunkAddress,
     ) -> ChunkStoreResult<Option<(Chunk, ChunkHeightmap, Vec<ChunkIndex>)>> {
         self.runtime.block_on(async {
-            let connection = self.database.connect()?;
+            let connection = self.connect()?;
             let position = address.position();
             let bytes = {
                 let mut rows = connection
@@ -211,7 +234,7 @@ impl ChunkStore for TursoChunkStore {
         height: WorldHeight,
     ) -> ChunkStoreResult<StoredColumn> {
         self.runtime.block_on(async {
-            let connection = self.database.connect()?;
+            let connection = self.connect()?;
             let column = address.column();
             let mut rows = connection
                 .query(
@@ -248,7 +271,7 @@ impl ChunkStore for TursoChunkStore {
         let heightmap_bytes = heightmap.to_bytes();
 
         self.runtime.block_on(async {
-            let mut connection = self.database.connect()?;
+            let mut connection = self.connect()?;
             let transaction = connection.transaction().await?;
             let position = address.position();
             let dimension = i64::from(address.dimension().get());
@@ -281,7 +304,7 @@ impl ChunkStore for TursoChunkStore {
 
     fn load_player(&self, id: PlayerId) -> ChunkStoreResult<Option<StoredPlayer>> {
         self.runtime.block_on(async {
-            let connection = self.database.connect()?;
+            let connection = self.connect()?;
             let mut rows = connection.query(SQL_SELECT_PLAYER, (id.get(),)).await?;
             let Some(row) = rows.next().await? else {
                 return Ok(None);
@@ -303,7 +326,7 @@ impl ChunkStore for TursoChunkStore {
 
     fn save_player(&self, player: &StoredPlayer) -> ChunkStoreResult<()> {
         self.runtime.block_on(async {
-            let connection = self.database.connect()?;
+            let connection = self.connect()?;
             let position = player.position();
             let chunk = position.chunk();
             let local = position.local();

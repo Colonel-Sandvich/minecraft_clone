@@ -354,6 +354,27 @@ impl std::fmt::Display for StoredColumnError {
 
 impl std::error::Error for StoredColumnError {}
 
+fn describe_chunk(address: ChunkAddress) -> String {
+    let position = address.position();
+    format!(
+        "chunk in dimension {} at ({}, {}, {})",
+        address.dimension(),
+        position.x(),
+        position.y(),
+        position.z()
+    )
+}
+
+fn describe_column(address: ColumnAddress) -> String {
+    let column = address.column();
+    format!(
+        "column in dimension {} at ({}, {})",
+        address.dimension(),
+        column.x(),
+        column.z()
+    )
+}
+
 pub trait ChunkStore: Send + Sync + 'static {
     fn metadata(&self) -> &WorldMetadata;
 
@@ -371,7 +392,10 @@ pub trait ChunkStore: Send + Sync + 'static {
         let mut heightmap = ChunkHeightmap::default();
         for y in 0..height.chunks_i32() {
             let chunk_address = address.chunk(y);
-            if let Some((chunk, loaded_heightmap, scheduled)) = self.load_chunk(chunk_address)? {
+            let loaded = self.load_chunk(chunk_address).map_err(|error| {
+                error.context(format!("failed to load {}", describe_chunk(chunk_address)))
+            })?;
+            if let Some((chunk, loaded_heightmap, scheduled)) = loaded {
                 heightmap = loaded_heightmap;
                 chunks.push(StoredChunk::new(chunk_address, chunk).with_scheduled(scheduled));
             }
@@ -442,12 +466,19 @@ impl ChunkRepository {
         address: ChunkAddress,
     ) -> ChunkStoreResult<Option<(Chunk, ChunkHeightmap, Vec<ChunkIndex>)>> {
         self.validate_address(address)?;
-        self.store.load_chunk(address)
+        self.store
+            .load_chunk(address)
+            .map_err(|error| error.context(format!("failed to load {}", describe_chunk(address))))
     }
 
     pub fn load_stored_column(&self, address: ColumnAddress) -> ChunkStoreResult<StoredColumn> {
         let height = self.dimension_height(address.dimension())?;
-        let stored = self.store.load_stored_column(address, height)?;
+        let stored = self
+            .store
+            .load_stored_column(address, height)
+            .map_err(|error| {
+                error.context(format!("failed to load {}", describe_column(address)))
+            })?;
         stored.validate_request(address, height)?;
         Ok(stored)
     }
@@ -471,10 +502,15 @@ impl ChunkRepository {
         self.validate_address(address)?;
         self.store
             .save_chunk_with_scheduled(address, chunk, heightmap, scheduled)
+            .map_err(|error| error.context(format!("failed to save {}", describe_chunk(address))))
     }
 
     pub fn load_player(&self, id: PlayerId) -> ChunkStoreResult<Option<StoredPlayer>> {
-        let Some(player) = self.store.load_player(id)? else {
+        let Some(player) = self
+            .store
+            .load_player(id)
+            .map_err(|error| error.context(format!("failed to load player {}", id.get())))?
+        else {
             return Ok(None);
         };
         if player.id() != id {
@@ -489,7 +525,9 @@ impl ChunkRepository {
 
     pub fn save_player(&self, player: &StoredPlayer) -> ChunkStoreResult<()> {
         self.validate_player_position(player.position())?;
-        self.store.save_player(player)
+        self.store
+            .save_player(player)
+            .map_err(|error| error.context(format!("failed to save player {}", player.id().get())))
     }
 
     pub fn dimension_height(&self, dimension: DimensionId) -> ChunkStoreResult<WorldHeight> {
@@ -580,6 +618,17 @@ pub enum TursoStoreErrorKind {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ChunkStoreError {
+    /// Operation context such as the store path, dimension, or address.
+    ///
+    /// The wrapped error stays matchable through [`Self::root_cause`] so
+    /// callers can still classify the underlying failure as transient or
+    /// permanent. This deliberately stays a plain error value rather than a
+    /// `BevyError`: these failures are recoverable and must not be routed to
+    /// Bevy's panicking fallback handler.
+    Context {
+        context: String,
+        source: Box<ChunkStoreError>,
+    },
     LockPoisoned {
         store: &'static str,
     },
@@ -629,6 +678,7 @@ pub enum ChunkStoreError {
 impl std::fmt::Display for ChunkStoreError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Context { context, source } => write!(f, "{context}: {source}"),
             Self::LockPoisoned { store } => write!(f, "{store} lock poisoned"),
             Self::Sqlite {
                 code,
@@ -677,11 +727,35 @@ impl std::fmt::Display for ChunkStoreError {
     }
 }
 
-impl std::error::Error for ChunkStoreError {}
+impl std::error::Error for ChunkStoreError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Context { source, .. } => Some(source.as_ref()),
+            _ => None,
+        }
+    }
+}
 
 impl ChunkStoreError {
+    /// Attaches operation context while preserving the underlying error kind.
+    pub fn context(self, context: impl Into<String>) -> Self {
+        Self::Context {
+            context: context.into(),
+            source: Box::new(self),
+        }
+    }
+
+    /// Returns the innermost error, skipping any operation context.
+    pub fn root_cause(&self) -> &Self {
+        match self {
+            Self::Context { source, .. } => source.root_cause(),
+            other => other,
+        }
+    }
+
     pub fn is_transient(&self) -> bool {
         match self {
+            Self::Context { source, .. } => source.is_transient(),
             Self::Sqlite { code, .. } => matches!(
                 code,
                 Some(
