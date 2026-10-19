@@ -44,14 +44,21 @@ fn mesh(@builtin(local_invocation_index) invocation: u32,
     let first_face = workgroup_id.x * FACES_PER_WORKGROUP;
 
     if first_face >= face_count {
-        mesh_output.vertex_count = 0u;
-        mesh_output.primitive_count = 0u;
+        if invocation == 0u {
+            mesh_output.vertex_count = 0u;
+            mesh_output.primitive_count = 0u;
+        }
+        // The output copy runs per invocation on return, so make invocation
+        // 0's counts visible before any invocation starts copying.
+        workgroupBarrier();
         return;
     }
 
     let valid_faces = min(face_count - first_face, FACES_PER_WORKGROUP);
-    mesh_output.vertex_count = valid_faces * VERTICES_PER_FACE;
-    mesh_output.primitive_count = valid_faces * PRIMITIVES_PER_FACE;
+    if invocation == 0u {
+        mesh_output.vertex_count = valid_faces * VERTICES_PER_FACE;
+        mesh_output.primitive_count = valid_faces * PRIMITIVES_PER_FACE;
+    }
 
     let face_idx = first_face + invocation;
     if face_idx < face_count {
@@ -72,7 +79,8 @@ fn mesh(@builtin(local_invocation_index) invocation: u32,
     }
 
     // Naga copies the workgroup output to the stage outputs on return; make
-    // sure every invocation's writes are visible before that copy starts.
+    // sure invocation 0's counts and every invocation's vertices/primitives
+    // are visible before that copy starts.
     workgroupBarrier();
 }
 

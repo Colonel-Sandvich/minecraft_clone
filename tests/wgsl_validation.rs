@@ -207,88 +207,81 @@ fn vertex_pulling_bindings_match_render_layout() {
 fn vertex_pulling_resource_metadata_matches_render_layout() {
     let module = parse_vertex_pulling_shader();
     let resources = shader_resources(&module);
-    let expected = vec![
-        ShaderResource {
-            group: 0,
-            binding: 0,
-            name: "view_proj",
-            kind: ResourceKind::Uniform,
-        },
-        ShaderResource {
-            group: 0,
-            binding: 1,
-            name: "terrain_texture",
-            kind: ResourceKind::Texture2dArrayFloat,
-        },
-        ShaderResource {
-            group: 0,
-            binding: 2,
-            name: "terrain_sampler",
-            kind: ResourceKind::Sampler,
-        },
-        ShaderResource {
-            group: 0,
-            binding: 4,
-            name: "texture_layers",
-            kind: ResourceKind::ReadOnlyStorage,
-        },
-        ShaderResource {
-            group: 0,
-            binding: 5,
-            name: "tint_colors",
-            kind: ResourceKind::ReadOnlyStorage,
-        },
-        ShaderResource {
-            group: 0,
-            binding: 6,
-            name: "ao_brightness",
-            kind: ResourceKind::Uniform,
-        },
-        ShaderResource {
-            group: 0,
-            binding: 7,
-            name: "emission_factors",
-            kind: ResourceKind::ReadOnlyStorage,
-        },
-        ShaderResource {
-            group: 0,
-            binding: 8,
-            name: "terrain_visuals",
-            kind: ResourceKind::Uniform,
-        },
-        ShaderResource {
-            group: 1,
-            binding: 0,
-            name: "faces",
-            kind: ResourceKind::ReadOnlyStorage,
-        },
-        ShaderResource {
-            group: 1,
-            binding: 1,
-            name: "chunk_origin",
-            kind: ResourceKind::Uniform,
-        },
-        ShaderResource {
-            group: 1,
-            binding: 2,
-            name: "light_data",
-            kind: ResourceKind::ReadOnlyStorage,
-        },
-    ];
 
-    assert_eq!(resources.len(), expected.len());
-    for (actual, expected) in resources.iter().zip(expected) {
-        assert_eq!(actual.group, expected.group);
-        assert_eq!(actual.binding, expected.binding);
-        assert_eq!(actual.kind, expected.kind);
-        // WESL escapes imported declaration names with their module path.
-        assert!(
-            actual.name.ends_with(expected.name),
-            "resource {:?} should end with {:?}",
-            actual.name,
-            expected.name
-        );
-    }
+    // WESL's escape mangler prefixes imported declarations with the package
+    // and module path. Keep the full qualified names exact so a rename or an
+    // accidentally different binding source is caught.
+    assert_eq!(
+        resources,
+        vec![
+            ShaderResource {
+                group: 0,
+                binding: 0,
+                name: "package_shaders__1terrain_shading__1view_proj",
+                kind: ResourceKind::Uniform,
+            },
+            ShaderResource {
+                group: 0,
+                binding: 1,
+                name: "package_shaders__1terrain_shading__1terrain_texture",
+                kind: ResourceKind::Texture2dArrayFloat,
+            },
+            ShaderResource {
+                group: 0,
+                binding: 2,
+                name: "package_shaders__1terrain_shading__1terrain_sampler",
+                kind: ResourceKind::Sampler,
+            },
+            ShaderResource {
+                group: 0,
+                binding: 4,
+                name: "package_shaders__1terrain_shading__1texture_layers",
+                kind: ResourceKind::ReadOnlyStorage,
+            },
+            ShaderResource {
+                group: 0,
+                binding: 5,
+                name: "package_shaders__1terrain_shading__1tint_colors",
+                kind: ResourceKind::ReadOnlyStorage,
+            },
+            ShaderResource {
+                group: 0,
+                binding: 6,
+                name: "package_shaders__1terrain_shading__1ao_brightness",
+                kind: ResourceKind::Uniform,
+            },
+            ShaderResource {
+                group: 0,
+                binding: 7,
+                name: "package_shaders__1terrain_shading__1emission_factors",
+                kind: ResourceKind::ReadOnlyStorage,
+            },
+            ShaderResource {
+                group: 0,
+                binding: 8,
+                name: "package_shaders__1terrain_shading__1terrain_visuals",
+                kind: ResourceKind::Uniform,
+            },
+            ShaderResource {
+                group: 1,
+                binding: 0,
+                name: "package_shaders__1terrain_shading_faces",
+                kind: ResourceKind::ReadOnlyStorage,
+            },
+            ShaderResource {
+                group: 1,
+                binding: 1,
+                name: "package_shaders__1terrain_shading__1chunk_origin",
+                kind: ResourceKind::Uniform,
+            },
+            ShaderResource {
+                group: 1,
+                binding: 2,
+                name: "package_shaders__1terrain_shading__1light_data",
+                kind: ResourceKind::ReadOnlyStorage,
+            },
+        ]
+    );
 }
 
 fn shader_resources(module: &naga::Module) -> Vec<ShaderResource<'_>> {
