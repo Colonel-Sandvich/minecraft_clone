@@ -50,7 +50,7 @@ impl Plugin for DebugPlugin {
 struct DebugOverlay;
 
 #[derive(Resource, Default)]
-struct DebugVisible(bool);
+pub(super) struct DebugVisible(pub(super) bool);
 
 #[derive(Resource, Default)]
 struct ChunkBordersVisible(bool);
@@ -92,7 +92,7 @@ fn spawn_label_parent(mut commands: Commands) {
     ));
 }
 
-fn toggle_debug(
+pub(super) fn toggle_debug(
     keys: Res<ButtonInput<KeyCode>>,
     mut visible: ResMut<DebugVisible>,
     mut combo: ResMut<ModifierCombo>,

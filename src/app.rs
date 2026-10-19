@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant};
 
-use avian3d::PhysicsPlugins;
+use avian3d::{PhysicsPlugins, prelude::PhysicsDebugPlugin};
 #[cfg(debug_assertions)]
 use bevy::render::settings::InstanceFlags;
 use bevy::{
@@ -93,7 +93,9 @@ impl Plugin for AppPlugin {
             1.0 / FIXED_TICK_RATE_HZ,
         )))
         .add_plugins(PhysicsPlugins::default())
-        // .add_plugins(PhysicsDebugPlugin::default())
+        // Available in release like the F3 text overlay; gizmo rendering is
+        // gated by a disabled-by-default configuration.
+        .add_plugins(PhysicsDebugPlugin)
         .add_plugins((FrameTimeDiagnosticsPlugin::default(),))
         .add_systems(Update, log_frame_perf)
         .add_plugins(WorldInspectorPlugin::new().run_if(input_toggle_active(false, KeyCode::F5)));
