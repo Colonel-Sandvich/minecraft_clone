@@ -28,6 +28,7 @@ pub(super) struct InventoryUiPlugin;
 impl Plugin for InventoryUiPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<InventoryUi>()
+            .init_resource::<DragPreview>()
             .add_observer(return_carried_stack)
             .add_systems(
                 PreUpdate,
@@ -46,11 +47,12 @@ impl Plugin for InventoryUiPlugin {
                 (
                     update_gameplay_hud_visibility,
                     (
-                        update_inventory_slots,
-                        update_cursor_stack,
-                        update_slot_highlights,
                         update_drag_preview,
+                        update_inventory_slots,
+                        update_slot_highlights,
+                        update_cursor_stack,
                     )
+                        .chain()
                         .run_if(inventory_ui_open),
                 ),
             );
@@ -95,6 +97,9 @@ struct DragProjection {
     cursor: Option<ItemStack>,
 }
 
+#[derive(Resource, Default)]
+struct DragPreview(Option<DragProjection>);
+
 #[derive(Clone, Copy, Debug)]
 struct PendingInventoryDrop {
     stack: ItemStack,
@@ -137,10 +142,15 @@ struct CursorStackCount;
 const SLOT_SIZE: f32 = 54.0;
 const ITEM_ICON_SIZE: f32 = 44.0;
 const SLOT_GAP: f32 = 4.0;
-/// Translucent veils and ghost icons mark slots a drag would change without
-/// hiding what they currently hold.
-const PREVIEW_VEIL: Color = Color::srgba(0.05, 0.05, 0.05, 0.4);
-const GHOST_ALPHA: f32 = 0.55;
+const SLOT_IDLE: Color = Color::srgb(0.32, 0.32, 0.32);
+const SLOT_HOVER: Color = Color::srgb(0.48, 0.48, 0.48);
+const SLOT_PRESSED: Color = Color::srgb(0.62, 0.62, 0.62);
+/// A pending drag is highlighted on the slot itself, behind its contents, so
+/// it cannot be confused with the committed hover/pressed backgrounds.
+const SLOT_PENDING: Color = Color::srgb(0.58, 0.58, 0.58);
+const SLOT_BORDER: Color = Color::srgb(0.12, 0.12, 0.12);
+const PENDING_BORDER: Color = Color::srgb(1.0, 0.82, 0.25);
+const PENDING_COUNT: Color = Color::srgb(1.0, 0.85, 0.2);
 
 /// Spawns the panel. The overlay's lifetime is the open state: it is spawned
 /// by the toggle and despawned on close (or by [`DespawnOnExit`] when gameplay
@@ -278,8 +288,8 @@ fn spawn_slot_row(parent: &mut ChildSpawnerCommands, slots: impl IntoIterator<It
                         border: UiRect::all(Val::Px(2.0)),
                         ..default()
                     },
-                    BackgroundColor(Color::srgb(0.32, 0.32, 0.32)),
-                    BorderColor::all(Color::srgb(0.12, 0.12, 0.12)),
+                    BackgroundColor(SLOT_IDLE),
+                    BorderColor::all(SLOT_BORDER),
                 ))
                 .with_children(|slot| {
                     slot.spawn((
@@ -315,7 +325,6 @@ fn spawn_slot_row(parent: &mut ChildSpawnerCommands, slots: impl IntoIterator<It
                             justify_content: JustifyContent::Center,
                             ..default()
                         },
-                        BackgroundColor(Color::NONE),
                         Visibility::Hidden,
                         Pickable::IGNORE,
                     ))
@@ -823,49 +832,128 @@ fn update_inventory_slots(
     mut slot_counts: Query<(&InventorySlotCount, &mut Text)>,
 ) {
     for (slot, mut image) in &mut slot_icons {
-        image.image = inventory
+        let target = inventory
             .slot(slot.0)
             .and_then(|stack| icons.icons.get(&stack.item))
             .cloned()
             .unwrap_or_default();
+        if image.image != target {
+            image.image = target;
+        }
     }
     for (slot, mut text) in &mut slot_counts {
-        text.0 = hotbar_count_label(inventory.slot(slot.0));
+        let target = hotbar_count_label(inventory.slot(slot.0));
+        if text.0 != target {
+            text.0 = target;
+        }
     }
 }
 
 fn update_cursor_stack(
     ui: Res<InventoryUi>,
+    preview: Res<DragPreview>,
     icons: Res<ItemIcons>,
     window: Single<&Window, With<PrimaryWindow>>,
     mut root: Single<&mut Node, With<CursorStackRoot>>,
     mut image: Single<&mut ImageNode, With<CursorStackIcon>>,
     mut count: Single<&mut Text, With<CursorStackCount>>,
+    mut count_color: Single<&mut TextColor, With<CursorStackCount>>,
 ) {
-    let Some(stack) = ui.cursor_stack else {
-        root.display = Display::None;
+    let (item, label, color) = if let Some(projection) = &preview.0 {
+        match projection.cursor {
+            Some(stack) => (
+                Some(stack.item),
+                hotbar_count_label(Some(stack)),
+                Color::WHITE,
+            ),
+            // Vanilla keeps a yellow "0" on the cursor when a quick-craft
+            // consumes the whole carried stack.
+            None => (
+                ui.cursor_stack.map(|stack| stack.item),
+                "0".to_string(),
+                PENDING_COUNT,
+            ),
+        }
+    } else {
+        let Some(stack) = ui.cursor_stack else {
+            if root.display != Display::None {
+                root.display = Display::None;
+            }
+            return;
+        };
+        (
+            Some(stack.item),
+            hotbar_count_label(Some(stack)),
+            Color::WHITE,
+        )
+    };
+
+    let Some(item) = item else {
+        if root.display != Display::None {
+            root.display = Display::None;
+        }
         return;
     };
-    root.display = Display::Flex;
-    if let Some(position) = window.cursor_position() {
-        root.left = Val::Px(position.x + 8.0);
-        root.top = Val::Px(position.y + 8.0);
+
+    if root.display != Display::Flex {
+        root.display = Display::Flex;
     }
-    image.image = icons.icons.get(&stack.item).cloned().unwrap_or_default();
-    count.0 = hotbar_count_label(Some(stack));
+    if let Some(position) = window.cursor_position() {
+        let left = Val::Px(position.x + 8.0);
+        let top = Val::Px(position.y + 8.0);
+        if root.left != left {
+            root.left = left;
+        }
+        if root.top != top {
+            root.top = top;
+        }
+    }
+    let target_image = icons.icons.get(&item).cloned().unwrap_or_default();
+    if image.image != target_image {
+        image.image = target_image;
+    }
+    if count.0 != label {
+        count.0 = label;
+    }
+    if count_color.0 != color {
+        count_color.0 = color;
+    }
 }
 
 fn update_slot_highlights(
-    mut slots: Query<(&Hovered, Has<Pressed>, &mut BackgroundColor), With<InventorySlot>>,
+    preview: Res<DragPreview>,
+    mut slots: Query<
+        (
+            &InventorySlot,
+            &Hovered,
+            Has<Pressed>,
+            &mut BackgroundColor,
+            &mut BorderColor,
+        ),
+        With<InventorySlot>,
+    >,
 ) {
-    for (hovered, pressed, mut color) in &mut slots {
-        color.0 = if pressed {
-            Color::srgb(0.62, 0.62, 0.62)
+    for (slot, hovered, pressed, mut background, mut border) in &mut slots {
+        let pending = preview
+            .0
+            .as_ref()
+            .is_some_and(|preview| preview.slots.iter().any(|(index, _)| *index == slot.0));
+        let (target_background, target_border) = if pending {
+            (SLOT_PENDING, PENDING_BORDER)
+        } else if pressed {
+            (SLOT_PRESSED, SLOT_BORDER)
         } else if hovered.get() {
-            Color::srgb(0.48, 0.48, 0.48)
+            (SLOT_HOVER, SLOT_BORDER)
         } else {
-            Color::srgb(0.32, 0.32, 0.32)
+            (SLOT_IDLE, SLOT_BORDER)
         };
+
+        if background.0 != target_background {
+            background.0 = target_background;
+        }
+        if border.top != target_border {
+            border.set_all(target_border);
+        }
     }
 }
 
@@ -873,41 +961,74 @@ fn update_drag_preview(
     ui: Res<InventoryUi>,
     inventory: Single<&Inventory, With<Player>>,
     icons: Res<ItemIcons>,
-    mut previews: Query<(&InventorySlotPreview, &mut Visibility, &mut BackgroundColor)>,
+    mut preview: ResMut<DragPreview>,
+    mut previews: Query<(&InventorySlotPreview, &mut Visibility), Without<InventorySlotCount>>,
     mut preview_icons: Query<(&InventoryPreviewIcon, &mut ImageNode)>,
-    mut preview_counts: Query<(&InventoryPreviewCount, &mut Text)>,
+    mut preview_counts: Query<(&InventoryPreviewCount, &mut Text, &mut TextColor)>,
+    mut real_counts: Query<(&InventorySlotCount, &mut Visibility), Without<InventoryPreviewCount>>,
 ) {
     // A one-slot drag releases as a plain click, which the ghost cannot
     // predict, so only multi-slot painting previews a distribution.
-    let projection = ui
-        .drag
-        .as_ref()
-        .filter(|drag| drag.slots.len() > 1)
-        .zip(ui.cursor_stack)
-        .map(|(drag, cursor)| drag_preview(&inventory, cursor, &drag.slots, drag.button));
+    let active =
+        ui.drag.as_ref().is_some_and(|drag| drag.slots.len() > 1) && ui.cursor_stack.is_some();
+    if !active && preview.0.is_none() {
+        return;
+    }
+
+    let projection = active.then(|| {
+        let drag = ui.drag.as_ref().unwrap();
+        let cursor = ui.cursor_stack.unwrap();
+        drag_preview(&inventory, cursor, &drag.slots, drag.button)
+    });
     let planned = projection
         .as_ref()
         .map(|projection| projection.slots.as_slice());
 
-    for (slot, mut visibility, mut background) in &mut previews {
-        let previewed = planned_stack(planned, slot.0).is_some();
-        *visibility = if previewed {
+    for (slot, mut visibility) in &mut previews {
+        let target = if planned_stack(planned, slot.0).is_some() {
             Visibility::Visible
         } else {
             Visibility::Hidden
         };
-        background.0 = if previewed { PREVIEW_VEIL } else { Color::NONE };
+        if *visibility != target {
+            *visibility = target;
+        }
     }
     for (slot, mut image) in &mut preview_icons {
-        image.image = planned_stack(planned, slot.0)
+        let target = planned_stack(planned, slot.0)
             .and_then(|stack| icons.icons.get(&stack.item))
             .cloned()
             .unwrap_or_default();
-        image.color = Color::srgba(1.0, 1.0, 1.0, GHOST_ALPHA);
+        if image.image != target {
+            image.image = target;
+        }
+        if image.color != Color::WHITE {
+            image.color = Color::WHITE;
+        }
     }
-    for (slot, mut text) in &mut preview_counts {
-        text.0 = planned_stack(planned, slot.0)
+    for (slot, mut text, mut color) in &mut preview_counts {
+        let target = planned_stack(planned, slot.0)
             .map_or(String::new(), |stack| hotbar_count_label(Some(stack)));
+        if text.0 != target {
+            text.0 = target;
+        }
+        if color.0 != PENDING_COUNT {
+            color.0 = PENDING_COUNT;
+        }
+    }
+    for (slot, mut visibility) in &mut real_counts {
+        let target = if planned_stack(planned, slot.0).is_some() {
+            Visibility::Hidden
+        } else {
+            Visibility::Inherited
+        };
+        if *visibility != target {
+            *visibility = target;
+        }
+    }
+
+    if preview.0 != projection {
+        preview.0 = projection;
     }
 }
 
@@ -1102,13 +1223,15 @@ mod tests {
     #[test]
     fn slot_highlights_use_hovered_and_pressed_state() {
         let mut app = App::new();
-        app.add_systems(Update, update_slot_highlights);
+        app.init_resource::<DragPreview>()
+            .add_systems(Update, update_slot_highlights);
         let normal = app
             .world_mut()
             .spawn((
                 InventorySlot(0),
                 Hovered::default(),
                 BackgroundColor(Color::BLACK),
+                BorderColor::all(SLOT_BORDER),
             ))
             .id();
         let hovered = app
@@ -1117,6 +1240,7 @@ mod tests {
                 InventorySlot(1),
                 Hovered(true),
                 BackgroundColor(Color::BLACK),
+                BorderColor::all(SLOT_BORDER),
             ))
             .id();
         let pressed = app
@@ -1126,15 +1250,155 @@ mod tests {
                 Hovered(true),
                 Pressed,
                 BackgroundColor(Color::BLACK),
+                BorderColor::all(SLOT_BORDER),
             ))
             .id();
 
         app.update();
 
         let background = |entity| app.world().get::<BackgroundColor>(entity).map(|bg| bg.0);
-        assert_eq!(background(normal), Some(Color::srgb(0.32, 0.32, 0.32)));
-        assert_eq!(background(hovered), Some(Color::srgb(0.48, 0.48, 0.48)));
-        assert_eq!(background(pressed), Some(Color::srgb(0.62, 0.62, 0.62)));
+        assert_eq!(background(normal), Some(SLOT_IDLE));
+        assert_eq!(background(hovered), Some(SLOT_HOVER));
+        assert_eq!(background(pressed), Some(SLOT_PRESSED));
+    }
+
+    #[test]
+    fn pending_drag_highlights_slots_and_hides_real_counts() {
+        let mut app = App::new();
+        app.init_resource::<InventoryUi>()
+            .init_resource::<DragPreview>()
+            .init_resource::<ItemIcons>()
+            .add_systems(
+                Update,
+                (update_drag_preview, update_slot_highlights).chain(),
+            );
+        app.world_mut()
+            .spawn((Player::default(), Inventory::empty()));
+        let slots: Vec<Entity> = (0..2)
+            .map(|index| {
+                app.world_mut()
+                    .spawn((
+                        InventorySlot(index),
+                        Hovered::default(),
+                        BackgroundColor(SLOT_IDLE),
+                        BorderColor::all(SLOT_BORDER),
+                    ))
+                    .id()
+            })
+            .collect();
+        let counts: Vec<Entity> = (0..2)
+            .map(|index| {
+                app.world_mut()
+                    .spawn((
+                        InventorySlotCount(index),
+                        Text::new(""),
+                        Visibility::Inherited,
+                    ))
+                    .id()
+            })
+            .collect();
+        {
+            let mut ui = app.world_mut().resource_mut::<InventoryUi>();
+            ui.cursor_stack = ItemStack::try_new(Item::Dirt, 5);
+            ui.drag = Some(StackDrag {
+                button: MouseButton::Left,
+                slots: vec![0, 1],
+            });
+        }
+
+        app.update();
+
+        for slot in &slots {
+            assert_eq!(
+                app.world().get::<BackgroundColor>(*slot).map(|bg| bg.0),
+                Some(SLOT_PENDING)
+            );
+            assert_eq!(
+                app.world()
+                    .get::<BorderColor>(*slot)
+                    .map(|border| border.top),
+                Some(PENDING_BORDER)
+            );
+        }
+        for count in &counts {
+            assert_eq!(
+                app.world().get::<Visibility>(*count),
+                Some(&Visibility::Hidden)
+            );
+        }
+
+        app.world_mut().resource_mut::<InventoryUi>().drag = None;
+        app.update();
+
+        for slot in &slots {
+            assert_eq!(
+                app.world().get::<BackgroundColor>(*slot).map(|bg| bg.0),
+                Some(SLOT_IDLE)
+            );
+            assert_eq!(
+                app.world()
+                    .get::<BorderColor>(*slot)
+                    .map(|border| border.top),
+                Some(SLOT_BORDER)
+            );
+        }
+        for count in &counts {
+            assert_eq!(
+                app.world().get::<Visibility>(*count),
+                Some(&Visibility::Inherited)
+            );
+        }
+    }
+
+    #[test]
+    fn cursor_shows_the_projected_remainder_during_a_drag() {
+        let mut app = App::new();
+        app.init_resource::<InventoryUi>()
+            .init_resource::<DragPreview>()
+            .init_resource::<ItemIcons>()
+            .add_systems(Update, update_cursor_stack);
+        app.world_mut().spawn((Window::default(), PrimaryWindow));
+        app.world_mut().spawn((CursorStackRoot, Node::default()));
+        app.world_mut()
+            .spawn((CursorStackIcon, ImageNode::default()));
+        let count = app
+            .world_mut()
+            .spawn((CursorStackCount, Text::new(""), TextColor(Color::WHITE)))
+            .id();
+        {
+            let mut ui = app.world_mut().resource_mut::<InventoryUi>();
+            ui.cursor_stack = ItemStack::try_new(Item::Dirt, 5);
+        }
+        app.world_mut().resource_mut::<DragPreview>().0 = Some(DragProjection {
+            slots: vec![],
+            cursor: ItemStack::try_new(Item::Dirt, 2),
+        });
+
+        app.update();
+
+        assert_eq!(
+            app.world().get::<Text>(count).map(|text| text.0.as_str()),
+            Some("2")
+        );
+        assert_eq!(
+            app.world().get::<TextColor>(count).map(|color| color.0),
+            Some(Color::WHITE)
+        );
+
+        app.world_mut().resource_mut::<DragPreview>().0 = Some(DragProjection {
+            slots: vec![],
+            cursor: None,
+        });
+        app.update();
+
+        assert_eq!(
+            app.world().get::<Text>(count).map(|text| text.0.as_str()),
+            Some("0")
+        );
+        assert_eq!(
+            app.world().get::<TextColor>(count).map(|color| color.0),
+            Some(PENDING_COUNT)
+        );
     }
 
     #[test]
@@ -1307,16 +1571,13 @@ mod tests {
     #[test]
     fn drag_preview_marks_planned_slots_and_clears_when_the_drag_ends() {
         let mut app = inventory_input_app();
-        app.init_resource::<ItemIcons>();
+        app.init_resource::<ItemIcons>()
+            .init_resource::<DragPreview>();
         app.add_systems(Update, update_drag_preview);
         let overlays: Vec<Entity> = (0..2)
             .map(|index| {
                 app.world_mut()
-                    .spawn((
-                        InventorySlotPreview(index),
-                        BackgroundColor(Color::NONE),
-                        Visibility::Hidden,
-                    ))
+                    .spawn((InventorySlotPreview(index), Visibility::Hidden))
                     .id()
             })
             .collect();
@@ -1358,10 +1619,6 @@ mod tests {
             assert_eq!(
                 app.world().get::<Visibility>(*overlay),
                 Some(&Visibility::Hidden)
-            );
-            assert_eq!(
-                app.world().get::<BackgroundColor>(*overlay).map(|bg| bg.0),
-                Some(Color::NONE)
             );
         }
     }
