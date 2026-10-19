@@ -1,6 +1,9 @@
 use bevy::{
     image::{ImageLoaderSettings, ImageSampler},
-    input_focus::{AutoFocus, FocusCause, InputFocus, IsFocused, IsFocusedHelper},
+    input_focus::{
+        AutoFocus, FocusCause, InputFocus, IsFocused, IsFocusedHelper,
+        tab_navigation::{TabGroup, TabIndex, TabNavigationPlugin},
+    },
     picking::hover::Hovered,
     prelude::*,
     ui::{Pressed, widget::NodeImageMode},
@@ -19,6 +22,10 @@ pub struct PauseMenuPlugin;
 
 impl Plugin for PauseMenuPlugin {
     fn build(&self, app: &mut App) {
+        if !app.is_plugin_added::<TabNavigationPlugin>() {
+            app.add_plugins(TabNavigationPlugin);
+        }
+
         app.init_resource::<UiSettings>()
             .add_systems(OnEnter(GameState::Paused), spawn_pause_menu)
             .add_observer(handle_pause_menu_action)
@@ -40,11 +47,14 @@ enum PauseMenuAction {
     CycleUiScale,
 }
 
-#[derive(Component, Clone, Copy, PartialEq, Eq)]
+#[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
 enum PauseMenuPage {
     Main,
     Options,
 }
+
+#[derive(Component, Clone, Copy)]
+struct PauseMenuButtonPage(PauseMenuPage);
 
 #[derive(Component)]
 struct UiScaleValueText;
@@ -92,6 +102,7 @@ fn spawn_pause_menu(
         .spawn((
             Name::new("Pause Menu"),
             PauseMenuRoot,
+            TabGroup::modal(),
             DespawnOnExit(GameState::Paused),
             Node {
                 position_type: PositionType::Absolute,
@@ -132,15 +143,23 @@ fn spawn_pause_menu(
                             page,
                             "Back to Game",
                             Some(PauseMenuAction::Resume),
+                            PauseMenuPage::Main,
                             &textures,
                         );
                         spawn_menu_button(
                             page,
                             "Options...",
                             Some(PauseMenuAction::OpenOptions),
+                            PauseMenuPage::Main,
                             &textures,
                         );
-                        spawn_menu_button(page, "Save and Quit  (coming soon)", None, &textures);
+                        spawn_menu_button(
+                            page,
+                            "Save and Quit  (coming soon)",
+                            None,
+                            PauseMenuPage::Main,
+                            &textures,
+                        );
 
                         spawn_menu_hint(page, "Press Esc to return to the game");
                     });
@@ -178,12 +197,14 @@ fn spawn_pause_menu(
                             page,
                             "Change UI Scale",
                             Some(PauseMenuAction::CycleUiScale),
+                            PauseMenuPage::Options,
                             &textures,
                         );
                         spawn_menu_button(
                             page,
                             "Back",
                             Some(PauseMenuAction::CloseOptions),
+                            PauseMenuPage::Options,
                             &textures,
                         );
 
@@ -241,6 +262,7 @@ fn spawn_menu_button(
     parent: &mut ChildSpawnerCommands,
     label: &'static str,
     action: Option<PauseMenuAction>,
+    page: PauseMenuPage,
     textures: &PauseMenuTextures,
 ) {
     let enabled = action.is_some();
@@ -262,10 +284,13 @@ fn spawn_menu_button(
     ));
 
     if let Some(action) = action {
+        let tab_index = if page == PauseMenuPage::Main { 0 } else { -1 };
         button.insert((
             Button,
             Hovered::default(),
             ActivateOnPress,
+            PauseMenuButtonPage(page),
+            TabIndex(tab_index),
             action,
             PauseButtonVisual {
                 normal: textures.button.clone(),
@@ -304,6 +329,7 @@ fn handle_pause_menu_action(
     mut settings: ResMut<UiSettings>,
     mut commands: Commands,
     mut pages: Query<(&PauseMenuPage, &mut Node)>,
+    mut tab_indices: Query<(&PauseMenuButtonPage, &mut TabIndex)>,
     focus_targets: Query<(Entity, &PauseMenuAction)>,
     mut input_focus: Option<ResMut<InputFocus>>,
 ) {
@@ -318,7 +344,7 @@ fn handle_pause_menu_action(
     match *action {
         PauseMenuAction::Resume => next_game_state.set(GameState::Playing),
         PauseMenuAction::OpenOptions => {
-            show_page(&mut pages, PauseMenuPage::Options);
+            show_page(&mut pages, &mut tab_indices, PauseMenuPage::Options);
             focus_action(
                 PauseMenuAction::CycleUiScale,
                 &focus_targets,
@@ -326,7 +352,7 @@ fn handle_pause_menu_action(
             );
         }
         PauseMenuAction::CloseOptions => {
-            show_page(&mut pages, PauseMenuPage::Main);
+            show_page(&mut pages, &mut tab_indices, PauseMenuPage::Main);
             focus_action(PauseMenuAction::Resume, &focus_targets, &mut input_focus);
         }
         PauseMenuAction::CycleUiScale => {
@@ -337,7 +363,11 @@ fn handle_pause_menu_action(
     }
 }
 
-fn show_page(pages: &mut Query<(&PauseMenuPage, &mut Node)>, page: PauseMenuPage) {
+fn show_page(
+    pages: &mut Query<(&PauseMenuPage, &mut Node)>,
+    tab_indices: &mut Query<(&PauseMenuButtonPage, &mut TabIndex)>,
+    page: PauseMenuPage,
+) {
     for (candidate, mut node) in pages.iter_mut() {
         let display = if *candidate == page {
             Display::Flex
@@ -346,6 +376,15 @@ fn show_page(pages: &mut Query<(&PauseMenuPage, &mut Node)>, page: PauseMenuPage
         };
         if node.display != display {
             node.display = display;
+        }
+    }
+
+    // Bevy's visibility propagation does not always mark `Display::None` subtrees hidden
+    // immediately, so also take hidden-page buttons out of sequential tab navigation.
+    for (button_page, mut tab_index) in tab_indices.iter_mut() {
+        let target = if button_page.0 == page { 0 } else { -1 };
+        if tab_index.0 != target {
+            tab_index.0 = target;
         }
     }
 }
@@ -408,6 +447,282 @@ fn update_button_visuals(
 #[cfg(test)]
 mod tests {
     use std::path::Path;
+
+    use bevy::{
+        asset::AssetPlugin,
+        camera::visibility::VisibilityPlugin,
+        image::Image,
+        input::{
+            ButtonState, InputPlugin,
+            keyboard::{Key, KeyboardInput},
+        },
+        input_focus::{
+            AutoFocus, InputDispatchPlugin, InputFocus, InputFocusPlugin, InputFocusVisible,
+            tab_navigation::{TabIndex, TabNavigationPlugin},
+        },
+        mesh::{Mesh, skinning::SkinnedMeshInverseBindposes},
+        state::app::StatesPlugin,
+        ui_widgets::ButtonPlugin,
+        window::PrimaryWindow,
+    };
+
+    use super::*;
+
+    fn pause_menu_app() -> App {
+        let mut app = App::new();
+        app.add_plugins((
+            MinimalPlugins,
+            StatesPlugin,
+            AssetPlugin::default(),
+            VisibilityPlugin,
+            InputPlugin,
+            InputFocusPlugin,
+            InputDispatchPlugin,
+            ButtonPlugin,
+            PauseMenuPlugin,
+        ))
+        .insert_state(GameState::Playing);
+        app.init_asset::<Image>();
+        app.init_asset::<Mesh>();
+        app.init_asset::<SkinnedMeshInverseBindposes>();
+        app.world_mut().spawn((Window::default(), PrimaryWindow));
+        app.update();
+
+        app.world_mut()
+            .resource_mut::<NextState<GameState>>()
+            .set(GameState::Paused);
+        app.update();
+        app
+    }
+
+    fn find_named(app: &mut App, name: &str) -> Entity {
+        let mut query = app.world_mut().query::<(Entity, &Name)>();
+        query
+            .iter(app.world())
+            .find_map(|(entity, candidate)| (candidate.as_str() == name).then_some(entity))
+            .unwrap_or_else(|| panic!("missing entity named {name}"))
+    }
+
+    fn page_entity(app: &mut App, page: PauseMenuPage) -> Entity {
+        let mut query = app.world_mut().query::<(Entity, &PauseMenuPage)>();
+        query
+            .iter(app.world())
+            .find_map(|(entity, candidate)| (*candidate == page).then_some(entity))
+            .unwrap_or_else(|| panic!("missing page {page:?}"))
+    }
+
+    fn page_display(app: &mut App, page: PauseMenuPage) -> Display {
+        let entity = page_entity(app, page);
+        app.world().get::<Node>(entity).expect("page node").display
+    }
+
+    fn tab_index(app: &App, entity: Entity) -> Option<i32> {
+        app.world().get::<TabIndex>(entity).map(|index| index.0)
+    }
+
+    fn press_key(app: &mut App, key_code: KeyCode, logical_key: Key) {
+        let window = app
+            .world_mut()
+            .query_filtered::<Entity, With<PrimaryWindow>>()
+            .single(app.world())
+            .expect("primary window");
+        app.world_mut().write_message(KeyboardInput {
+            key_code,
+            logical_key,
+            state: ButtonState::Pressed,
+            text: None,
+            repeat: false,
+            window,
+        });
+        app.update();
+    }
+
+    fn press_tab(app: &mut App, shift: bool) {
+        if shift {
+            app.world_mut()
+                .resource_mut::<ButtonInput<KeyCode>>()
+                .press(KeyCode::ShiftLeft);
+        }
+        press_key(app, KeyCode::Tab, Key::Tab);
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .reset_all();
+    }
+
+    #[test]
+    fn pause_menu_main_page_tab_order_skips_disabled_and_hidden_buttons() {
+        let mut app = pause_menu_app();
+        let root = find_named(&mut app, "Pause Menu");
+        let resume = find_named(&mut app, "Back to Game");
+        let options = find_named(&mut app, "Options...");
+        let save_and_quit = find_named(&mut app, "Save and Quit  (coming soon)");
+        let change_scale = find_named(&mut app, "Change UI Scale");
+        let back = find_named(&mut app, "Back");
+
+        let tab_group = app.world().get::<TabGroup>(root).expect("modal tab group");
+        assert!(tab_group.modal, "the pause menu must trap tab navigation");
+        assert_eq!(page_display(&mut app, PauseMenuPage::Main), Display::Flex);
+        assert_eq!(
+            page_display(&mut app, PauseMenuPage::Options),
+            Display::None
+        );
+        assert_eq!(tab_index(&app, resume), Some(0));
+        assert_eq!(tab_index(&app, options), Some(0));
+        assert_eq!(tab_index(&app, change_scale), Some(-1));
+        assert_eq!(tab_index(&app, back), Some(-1));
+        assert!(app.world().get::<AutoFocus>(resume).is_some());
+        assert_eq!(
+            app.world().resource::<InputFocus>().get(),
+            Some(resume),
+            "Resume keeps autofocus when the pause menu opens"
+        );
+
+        assert!(app.world().get::<TabIndex>(save_and_quit).is_none());
+        assert!(app.world().get::<Button>(save_and_quit).is_none());
+
+        // Enabled main-page buttons tab in visual order: Resume -> Options -> Resume.
+        press_tab(&mut app, false);
+        assert_eq!(app.world().resource::<InputFocus>().get(), Some(options));
+        assert!(app.world().resource::<InputFocusVisible>().0);
+        let visual = app.world().get::<PauseButtonVisual>(options).unwrap();
+        let image = app.world().get::<ImageNode>(options).unwrap();
+        assert_eq!(
+            image.image, visual.highlighted,
+            "keyboard focus must use the existing highlighted-button visual"
+        );
+
+        press_tab(&mut app, false);
+        assert_eq!(app.world().resource::<InputFocus>().get(), Some(resume));
+
+        // Reverse wraps from the first button to the last enabled one, still skipping disabled
+        // and hidden-page buttons.
+        press_tab(&mut app, true);
+        assert_eq!(app.world().resource::<InputFocus>().get(), Some(options));
+    }
+
+    #[test]
+    fn options_page_switches_tab_indices_and_focus() {
+        let mut app = pause_menu_app();
+        let options_button = find_named(&mut app, "Options...");
+        let resume = find_named(&mut app, "Back to Game");
+        let change_scale = find_named(&mut app, "Change UI Scale");
+        let back = find_named(&mut app, "Back");
+
+        press_tab(&mut app, false);
+        assert_eq!(
+            app.world().resource::<InputFocus>().get(),
+            Some(options_button)
+        );
+        press_key(&mut app, KeyCode::Enter, Key::Enter);
+
+        assert_eq!(page_display(&mut app, PauseMenuPage::Main), Display::None);
+        assert_eq!(
+            page_display(&mut app, PauseMenuPage::Options),
+            Display::Flex
+        );
+        assert_eq!(
+            app.world().resource::<InputFocus>().get(),
+            Some(change_scale),
+            "opening Options keeps the existing focus transfer"
+        );
+        assert_eq!(tab_index(&app, resume), Some(-1));
+        assert_eq!(tab_index(&app, options_button), Some(-1));
+        assert_eq!(tab_index(&app, change_scale), Some(0));
+        assert_eq!(tab_index(&app, back), Some(0));
+
+        // Hidden main-page buttons are not part of the wrap on the Options page.
+        press_tab(&mut app, false);
+        assert_eq!(app.world().resource::<InputFocus>().get(), Some(back));
+        press_tab(&mut app, false);
+        assert_eq!(
+            app.world().resource::<InputFocus>().get(),
+            Some(change_scale)
+        );
+        press_tab(&mut app, true);
+        assert_eq!(app.world().resource::<InputFocus>().get(), Some(back));
+
+        press_key(&mut app, KeyCode::Enter, Key::Enter);
+        assert_eq!(page_display(&mut app, PauseMenuPage::Main), Display::Flex);
+        assert_eq!(
+            page_display(&mut app, PauseMenuPage::Options),
+            Display::None
+        );
+        assert_eq!(
+            app.world().resource::<InputFocus>().get(),
+            Some(resume),
+            "closing Options keeps the existing focus transfer"
+        );
+        assert_eq!(tab_index(&app, resume), Some(0));
+        assert_eq!(tab_index(&app, options_button), Some(0));
+        assert_eq!(tab_index(&app, change_scale), Some(-1));
+        assert_eq!(tab_index(&app, back), Some(-1));
+    }
+
+    #[test]
+    fn keyboard_activation_cycles_ui_scale_on_the_options_page() {
+        let mut app = pause_menu_app();
+        let options_button = find_named(&mut app, "Options...");
+        let change_scale = find_named(&mut app, "Change UI Scale");
+
+        press_tab(&mut app, false);
+        assert_eq!(
+            app.world().resource::<InputFocus>().get(),
+            Some(options_button)
+        );
+        press_key(&mut app, KeyCode::Enter, Key::Enter);
+        assert_eq!(
+            app.world().resource::<InputFocus>().get(),
+            Some(change_scale)
+        );
+
+        assert_eq!(app.world().resource::<UiSettings>().scale, 1.0);
+        press_key(&mut app, KeyCode::Space, Key::Space);
+        assert_eq!(
+            app.world().resource::<UiSettings>().scale,
+            1.25,
+            "Space must use the existing Activate handler to cycle UI scale"
+        );
+    }
+
+    #[test]
+    fn enter_activates_the_focused_resume_button() {
+        let mut app = pause_menu_app();
+        let resume = find_named(&mut app, "Back to Game");
+        assert_eq!(app.world().resource::<InputFocus>().get(), Some(resume));
+
+        press_key(&mut app, KeyCode::Enter, Key::Enter);
+
+        assert_eq!(
+            *app.world().resource::<State<GameState>>().get(),
+            GameState::Playing,
+            "Enter must use the existing Activate handler to resume"
+        );
+    }
+
+    #[test]
+    fn space_activates_the_focused_resume_button() {
+        let mut app = pause_menu_app();
+        let resume = find_named(&mut app, "Back to Game");
+        assert_eq!(app.world().resource::<InputFocus>().get(), Some(resume));
+
+        press_key(&mut app, KeyCode::Space, Key::Space);
+
+        assert_eq!(
+            *app.world().resource::<State<GameState>>().get(),
+            GameState::Playing,
+            "Space must use the existing Activate handler to resume"
+        );
+    }
+
+    #[test]
+    fn pause_menu_registers_tab_navigation() {
+        let mut app = App::new();
+        app.add_plugins(PauseMenuPlugin);
+        assert!(
+            app.is_plugin_added::<TabNavigationPlugin>(),
+            "the pause menu must install tab navigation exactly when it is missing"
+        );
+    }
 
     #[test]
     fn pause_menu_texture_assets_are_present() {
