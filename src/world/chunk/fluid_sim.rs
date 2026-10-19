@@ -304,19 +304,21 @@ fn recompute_fluid(
         return Some(profile.source());
     }
 
-    // A cell under the same fluid is falling, no matter how it was fed.
-    if has_same_fluid_above(snapshot, pos, profile) {
-        return Some(profile.falling());
-    }
-
     // Two horizontal sources plus replaceable support convert a flowing cell
-    // back into a source. Java Edition only has this two-source rule; the
+    // back into a source. Vanilla runs this conversion before the falling
+    // check, so a cell under the same fluid still becomes a source when two
+    // sources feed it. Java Edition only has this two-source rule; the
     // one-source-plus-source-above variant is Bedrock behaviour.
     if profile.creates_sources
         && horizontal_source_neighbors(snapshot, pos, profile) >= 2
         && source_conversion_support(snapshot, pos, profile)
     {
         return Some(profile.source());
+    }
+
+    // A cell under the same fluid is falling, no matter how it was fed.
+    if has_same_fluid_above(snapshot, pos, profile) {
+        return Some(profile.falling());
     }
 
     // The level is one below the fullest reachable horizontal neighbour; with

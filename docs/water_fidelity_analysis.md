@@ -25,19 +25,20 @@ One fluid step runs every fifth game tick (4 steps/second), matching vanilla's
 5-tick spread delay. A step has two phases that mirror vanilla's
 `FlowingFluid.tick`:
 
-**Phase 1 — recompute (`getNewLiquid`).** Every existing fluid cell computes
+**Phase 1 — recompute (`getNewLiquid`).** Every scheduled fluid cell computes
 its own next state, in this order:
 
 1. A source stays a source.
-2. If the same fluid sits directly above, the cell is falling (flowing level 8)
-   — regardless of how it was fed.
-3. Else, if two or more horizontal neighbours are sources **and** the block
-   below is a solid block or a water source, the cell becomes a source.
+2. If two or more horizontal neighbours are sources **and** the block below is
+   a solid block or a water source, the cell becomes a source — even when the
+   same fluid sits directly above it.
+3. Else, if the same fluid sits directly above, the cell is falling (flowing
+   level 8) — regardless of how it was fed.
 4. Else its level is one below the fullest horizontal same-fluid neighbour
    (sources counting as level 8). With no such neighbour the cell dries up.
 
-**Phase 2 — spread (`FlowingFluid.spread`).** Each cell then spreads using its
-recomputed state:
+**Phase 2 — spread (`FlowingFluid.spread`).** Each ticked cell then spreads
+using its recomputed state:
 
 - If the cell below is empty, place falling water there. Additionally spread
   sideways when the cell has three or more horizontal source neighbours (the
@@ -68,6 +69,7 @@ water with water, so existing cells change only through their own recompute.
 | Two sources with a gap over stone create a source | `infinite_source_gap_over_stone` |
 | Conversion support also accepts a **water source** below | `gap_over_source_becomes_source` |
 | Java has **no** one-source-plus-source-above rule; that cell is falling | `source_above_is_falling_not_source` |
+| Conversion runs before the falling check: two sources under water still convert | `two_sources_under_water_become_source` |
 | Three or more source neighbours spread sideways while pouring | `three_sources_spread_while_falling` |
 | A source pours first; once the pour fails it spreads sideways | `source_over_hole_spreads_sideways` |
 | Flowing water above a hole never spreads sideways | `flow_into_hole_stays_narrow` |
@@ -114,13 +116,21 @@ its *second* step instead of its first, because the placed cell gets its own
 update one step after it is created — exactly what vanilla's placed-block
 scheduling (`onPlace` → `scheduleTick(..., 5)`) produces.
 
+A fifth deviation surfaced later, during the pre-merge review: the solver ran
+the same-fluid-above falling check before the two-source conversion. A 1.20.1
+live probe (two sources with a gap, a water source above the gap, stone below)
+showed the gap cell becomes a **source** (`water[level=0]`), while a control
+with one source and water above is falling (`water[level=8]`). The checks were
+reordered to match; `two_sources_under_water_become_source` pins it.
+
 ## Remaining known differences
 
 These are structural or untested corners, not observed mismatches:
 
 - **Scheduling model.** Ticks are gated on a scheduled-cell set, mirroring
   vanilla: block changes wake the edited cell and its neighbours, fluid writes
-  wake the cell they land in, and a changed cell reschedules itself. The
+  wake the cell they land in and its six face neighbours, and a changed cell
+  reschedules itself. The
   scheduled cells of the active chunks are batch-processed in a fixed order
   every fifth tick, so the exact tick-by-tick order during rearrangements (e.g.
   the drain order of a channel) can still differ from vanilla's priority queue;

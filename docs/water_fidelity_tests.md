@@ -266,7 +266,7 @@ slope-search shape, simplified replaceability) are
 documented in `docs/water_fidelity_analysis.md`.
 
 When adding a scenario for a behaviour you are unsure about, check that doc
-first: the four deviations found so far (one-source-plus-source-above
-conversion, sideways spread while pouring with 3+ sources, sources above a
-hole, and cells losing their level when upstream spread is suppressed) are all
-fixed and covered.
+first: the deviations found so far (one-source-plus-source-above conversion,
+sideways spread while pouring with 3+ sources, sources above a hole, cells
+losing their level when upstream spread is suppressed, and the falling check
+running before the two-source conversion) are all fixed and covered.

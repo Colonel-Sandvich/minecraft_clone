@@ -421,8 +421,11 @@ impl Dimension {
     /// Wakes the fluid cells around a changed block, mirroring vanilla's
     /// `setBlock` notifications: the edited cell and its six face neighbours.
     ///
-    /// Wakes outside this dimension's published chunks are dropped, so a plan
-    /// shared across coordinate spaces cannot tick another dimension's water.
+    /// A wake whose edited cell is outside this dimension's published chunks is
+    /// dropped, so a plan shared across coordinate spaces cannot tick another
+    /// dimension's water. Wakes that land in an unpublished face-neighbour
+    /// chunk are retained, like vanilla's stored ticks, and fire once that
+    /// chunk is processed.
     pub(crate) fn wake_fluids_around(&mut self, position: IVec3) {
         let chunk = WorldBlockPos::from_ivec3(position).split().chunk();
         if self.published_chunk_entity(chunk).is_none() {

@@ -229,6 +229,23 @@ pub(crate) const WATER_SCENARIOS: &[WaterScenario] = &[
         ..Default::default()
     },
     WaterScenario {
+        name: "two_sources_under_water_become_source",
+        input: &[
+            &["#####"; 3],
+            &["#####", "#S.S#", "#####"],
+            &["#####", "##S##", "#####"],
+        ],
+        expected: &[
+            &["#####"; 3],
+            &["#####", "#SSS#", "#####"],
+            &["#####", "##S##", "#####"],
+        ],
+        description: "Vanilla converts a cell fed by two sources before the same-fluid-above \
+                      falling check, so the gap becomes a source even with water directly \
+                      above it.",
+        ..Default::default()
+    },
+    WaterScenario {
         name: "three_sources_spread_while_falling",
         input: &[
             &["######", "##.###", "######"],
