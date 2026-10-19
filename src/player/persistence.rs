@@ -85,6 +85,7 @@ fn save_player_positions(
             Err(error) => {
                 error!(
                     player_id = player.id.get(),
+                    dimension = %dimension.id(),
                     %error,
                     "Failed to save player position; the autosave will retry"
                 );

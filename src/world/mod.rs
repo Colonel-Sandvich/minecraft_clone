@@ -184,9 +184,27 @@ fn ensure_world_resources(app: &mut App) {
         return;
     }
 
-    let repository = build_chunk_repository(&config)
-        .unwrap_or_else(|error| panic!("failed to open configured chunk store: {error}"));
+    let repository = build_chunk_repository(&config).unwrap_or_else(|error| {
+        panic!(
+            "failed to initialize {}: {error}",
+            describe_storage(&config.storage)
+        )
+    });
     app.insert_resource(repository);
+}
+
+fn describe_storage(storage: &WorldStorageConfig) -> String {
+    match storage {
+        WorldStorageConfig::InMemory => "in-memory chunk store".to_owned(),
+        WorldStorageConfig::Noop => "no-op chunk store".to_owned(),
+        WorldStorageConfig::Sqlite { path } => {
+            format!("SQLite chunk store at {}", path.display())
+        }
+        #[cfg(feature = "turso-store")]
+        WorldStorageConfig::Turso { path } => {
+            format!("Turso chunk store at {}", path.display())
+        }
+    }
 }
 
 fn build_chunk_repository(config: &WorldConfig) -> ChunkStoreResult<ChunkRepository> {

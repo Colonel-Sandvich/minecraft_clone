@@ -72,7 +72,11 @@ fn spawn_player(
             Ok(None) => {}
             Err(error) => {
                 persistence_enabled = false;
-                error!(%error, "Failed to load player position; using the active arrival and disabling position saves");
+                error!(
+                    player_id = super::PlayerId::LOCAL.get(),
+                    %error,
+                    "Failed to load player position; using the active arrival and disabling position saves"
+                );
             }
         }
     }
