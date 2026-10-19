@@ -20,6 +20,7 @@ pub(super) struct CrosshairRoot;
 fn spawn_crosshair(mut commands: Commands) {
     commands.spawn((
         CrosshairRoot,
+        Pickable::IGNORE,
         Node {
             display: Display::Flex,
             align_items: AlignItems::Center,
@@ -36,6 +37,7 @@ fn spawn_crosshair(mut commands: Commands) {
                 ..default()
             },
             TextColor(Color::WHITE),
+            Pickable::IGNORE,
         )],
     ));
 }

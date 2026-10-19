@@ -39,5 +39,5 @@ impl Plugin for UIPlugin {
 
 #[cfg(debug_assertions)]
 fn spawn_diagnostics_overlay(mut commands: Commands) {
-    commands.spawn(DiagnosticsOverlay::fps());
+    commands.spawn((DiagnosticsOverlay::fps(), Pickable::IGNORE));
 }

@@ -104,6 +104,7 @@ fn spawn_hotbar_ui(commands: &mut Commands, bg_handle: &Handle<Image>, sel_handl
     commands
         .spawn((
             HotbarHudRoot,
+            Pickable::IGNORE,
             Node {
                 width: Val::Vw(100.0),
                 height: Val::Vh(100.0),
@@ -116,12 +117,15 @@ fn spawn_hotbar_ui(commands: &mut Commands, bg_handle: &Handle<Image>, sel_handl
         ))
         .with_children(|parent| {
             parent
-                .spawn(Node {
-                    width: Val::Px(546.0),
-                    height: Val::Px(66.0),
-                    position_type: PositionType::Relative,
-                    ..default()
-                })
+                .spawn((
+                    Node {
+                        width: Val::Px(546.0),
+                        height: Val::Px(66.0),
+                        position_type: PositionType::Relative,
+                        ..default()
+                    },
+                    Pickable::IGNORE,
+                ))
                 .with_children(|hotbar| {
                     // background
                     hotbar.spawn((
@@ -134,23 +138,27 @@ fn spawn_hotbar_ui(commands: &mut Commands, bg_handle: &Handle<Image>, sel_handl
                             height: Val::Px(66.0),
                             ..default()
                         },
+                        Pickable::IGNORE,
                     ));
 
                     // slot row
                     hotbar
-                        .spawn(Node {
-                            width: Val::Px(546.0),
-                            height: Val::Px(66.0),
-                            display: Display::Flex,
-                            flex_direction: FlexDirection::Row,
-                            padding: UiRect::new(
-                                Val::Px(3.0),
-                                Val::Px(3.0),
-                                Val::Px(0.0),
-                                Val::Px(0.0),
-                            ),
-                            ..default()
-                        })
+                        .spawn((
+                            Node {
+                                width: Val::Px(546.0),
+                                height: Val::Px(66.0),
+                                display: Display::Flex,
+                                flex_direction: FlexDirection::Row,
+                                padding: UiRect::new(
+                                    Val::Px(3.0),
+                                    Val::Px(3.0),
+                                    Val::Px(0.0),
+                                    Val::Px(0.0),
+                                ),
+                                ..default()
+                            },
+                            Pickable::IGNORE,
+                        ))
                         .with_children(|row| {
                             for i in 0..HOTBAR_SLOTS {
                                 row.spawn((
@@ -164,6 +172,7 @@ fn spawn_hotbar_ui(commands: &mut Commands, bg_handle: &Handle<Image>, sel_handl
                                         ..default()
                                     },
                                     HotbarSlot,
+                                    Pickable::IGNORE,
                                 ))
                                 .with_children(|slot| {
                                     slot.spawn((
@@ -174,6 +183,7 @@ fn spawn_hotbar_ui(commands: &mut Commands, bg_handle: &Handle<Image>, sel_handl
                                             ..default()
                                         },
                                         HotbarIcon(i),
+                                        Pickable::IGNORE,
                                     ));
                                     slot.spawn((
                                         Text::new(""),
@@ -193,6 +203,7 @@ fn spawn_hotbar_ui(commands: &mut Commands, bg_handle: &Handle<Image>, sel_handl
                                             ..default()
                                         },
                                         HotbarCount(i),
+                                        Pickable::IGNORE,
                                     ));
                                 });
                             }
@@ -210,6 +221,7 @@ fn spawn_hotbar_ui(commands: &mut Commands, bg_handle: &Handle<Image>, sel_handl
                             ..default()
                         },
                         HotbarSelection,
+                        Pickable::IGNORE,
                     ));
                 });
         });

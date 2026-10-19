@@ -54,6 +54,7 @@ fn spawn_game_test_overlay(mut commands: Commands) {
             },
             BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.6)),
             GameTestOverlayRoot,
+            Pickable::IGNORE,
         ))
         .with_children(|overlay| {
             overlay.spawn((
@@ -64,6 +65,7 @@ fn spawn_game_test_overlay(mut commands: Commands) {
                 },
                 TextColor(Color::WHITE),
                 GameTestOverlayHeader,
+                Pickable::IGNORE,
             ));
             for (index, scenario) in WATER_SCENARIOS.iter().enumerate() {
                 overlay.spawn((
@@ -78,6 +80,7 @@ fn spawn_game_test_overlay(mut commands: Commands) {
                     },
                     TextColor(status_color(TestStatus::Pending)),
                     GameTestOverlayRow(index),
+                    Pickable::IGNORE,
                 ));
             }
             overlay.spawn((
@@ -88,6 +91,7 @@ fn spawn_game_test_overlay(mut commands: Commands) {
                 },
                 TextColor(Color::srgb(1.0, 0.75, 0.75)),
                 GameTestOverlayDetail,
+                Pickable::IGNORE,
             ));
         });
 }
@@ -99,7 +103,10 @@ fn update_game_test_overlay(
     mut header_q: Query<&mut Text, (With<GameTestOverlayHeader>, Without<GameTestOverlayRow>)>,
     mut rows_q: Query<
         (&GameTestOverlayRow, &mut Text, &mut TextColor),
-        (Without<GameTestOverlayHeader>, Without<GameTestOverlayDetail>),
+        (
+            Without<GameTestOverlayHeader>,
+            Without<GameTestOverlayDetail>,
+        ),
     >,
     mut detail_q: Query<
         &mut Text,
@@ -214,7 +221,10 @@ mod tests {
     fn first_failure_report_names_the_scenario_and_caps_lines() {
         let mut suite = WaterTestSuite::new();
         suite.entries[0].status = TestStatus::Failed;
-        suite.entries[0].detail = (0..50).map(|i| format!("row {i}")).collect::<Vec<_>>().join("\n");
+        suite.entries[0].detail = (0..50)
+            .map(|i| format!("row {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
 
         let report = first_failure_report(&suite);
         let lines = report.lines().count();

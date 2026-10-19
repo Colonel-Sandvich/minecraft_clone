@@ -71,6 +71,7 @@ fn spawn_debug_overlay(mut commands: Commands) {
             ..default()
         },
         DebugOverlay,
+        Pickable::IGNORE,
     ));
 }
 
@@ -83,6 +84,7 @@ fn spawn_label_parent(mut commands: Commands) {
             ..default()
         },
         LightLabelParent,
+        Pickable::IGNORE,
     ));
 }
 
@@ -370,6 +372,7 @@ fn manage_light_labels(
                 },
                 LightLabelPos(world),
                 LightOverlayLabel,
+                Pickable::IGNORE,
             ));
         });
     }

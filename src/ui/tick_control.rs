@@ -39,6 +39,7 @@ fn spawn_tick_control_overlay(mut commands: Commands) {
                 ..default()
             },
             TickControlOverlayRoot,
+            Pickable::IGNORE,
         ))
         .with_children(|overlay| {
             overlay
@@ -48,6 +49,7 @@ fn spawn_tick_control_overlay(mut commands: Commands) {
                         ..default()
                     },
                     BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.6)),
+                    Pickable::IGNORE,
                 ))
                 .with_children(|panel| {
                     panel.spawn((
@@ -58,6 +60,7 @@ fn spawn_tick_control_overlay(mut commands: Commands) {
                         },
                         TextColor(Color::srgb(0.95, 0.95, 1.0)),
                         TickControlOverlayText,
+                        Pickable::IGNORE,
                     ));
                 });
         });
