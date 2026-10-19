@@ -8,6 +8,7 @@ use super::PackedFace;
 
 /// Packed CPU mesh output waiting to be uploaded by the render world.
 #[derive(Component, Clone)]
+#[component(summary_tick)]
 pub struct ChunkMeshFaces {
     faces: Vec<PackedFace>,
 }
@@ -36,6 +37,7 @@ impl ChunkMeshFaces {
 
 /// Renderable material layer belonging to a chunk mesh.
 #[derive(Component, Clone)]
+#[component(summary_tick)]
 pub struct ChunkMeshLayer {
     material_layer: BlockMaterialLayer,
     face_count: u32,
@@ -81,6 +83,7 @@ fn face_count(faces: &ChunkMeshFaces) -> u32 {
 
 /// Shared padded light data used to shade a chunk mesh layer.
 #[derive(Component, Clone)]
+#[component(summary_tick)]
 pub struct ChunkMeshLight {
     data: Arc<[u32]>,
 }
@@ -135,4 +138,26 @@ impl PreparedChunkMeshLight {
 pub(crate) struct SharedLightDataKey {
     pub(crate) ptr: usize,
     pub(crate) len: usize,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn chunk_mesh_payload_components_have_summary_ticks() {
+        let mut world = World::new();
+        let ids = [
+            world.register_component::<ChunkMeshFaces>(),
+            world.register_component::<ChunkMeshLayer>(),
+            world.register_component::<ChunkMeshLight>(),
+        ];
+
+        for id in ids {
+            assert!(
+                world.components().get_info(id).unwrap().summary_tick(),
+                "chunk mesh extraction relies on a summary tick for this column"
+            );
+        }
+    }
 }

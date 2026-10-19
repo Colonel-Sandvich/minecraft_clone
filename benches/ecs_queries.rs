@@ -2,11 +2,13 @@ use std::{hint::black_box, sync::Arc, time::Duration};
 
 use avian3d::prelude::{Collider, RigidBody};
 use bevy::{
+    ecs::change_detection::ContiguousRef,
     platform::collections::{HashMap, HashSet},
     prelude::*,
 };
 use criterion::{BatchSize, BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use minecraft_clone::{
+    block::BlockMaterialLayer,
     item::Item,
     world::{
         DimensionCatalog, DimensionId, WORLD_COLLISION_LAYERS, WorldMetadata,
@@ -15,7 +17,9 @@ use minecraft_clone::{
             ChunkLight, ChunkNeedsFluidStep, ChunkNeedsLightRebuild, ChunkNeedsSave, ChunkPos,
             ChunkPosition, FluidProfile, FluidState,
             light::ChunkLightRegion,
-            mesh::{ChunkMeshBlocks, ChunkMeshLight, mesher::build},
+            mesh::{
+                ChunkMeshBlocks, ChunkMeshFaces, ChunkMeshLayer, ChunkMeshLight, mesher::build,
+            },
         },
         dimension::{Active, Dimension},
         generation::generate_chunk,
@@ -39,6 +43,21 @@ const LIGHT_REBUILD_SIDE: i32 = 32;
 const LIGHT_REBUILD_HEIGHT: i32 = 4;
 const FLUID_SIDE: i32 = 32;
 const COLLIDER_WORLD_CHUNKS: usize = 4096;
+const CHANGED_LAYER_ENTITIES: usize = 16_384;
+
+#[derive(Component)]
+struct BenchLayerArchetypeA;
+
+#[derive(Resource)]
+struct BenchLayerFaces(ChunkMeshFaces);
+
+#[derive(Resource)]
+struct BenchLayerTarget(Entity);
+
+#[derive(Resource, Default)]
+struct BenchLayerStats {
+    changed: usize,
+}
 
 #[derive(Resource, Default)]
 struct LightUploadBenchStats {
@@ -1033,6 +1052,105 @@ fn fluid_boundary_lookup_system(
     stats.boundary_flows = boundary_flow_count;
 }
 
+fn build_changed_layer_world() -> (World, Schedule) {
+    let mut world = World::new();
+    let faces = ChunkMeshFaces::new(Vec::new());
+    let mut target = Entity::PLACEHOLDER;
+
+    for index in 0..CHANGED_LAYER_ENTITIES {
+        let mut entity = world.spawn(ChunkMeshLayer::new(
+            BlockMaterialLayer::Opaque,
+            Vec3::ZERO,
+            &faces,
+        ));
+        if index % 2 == 0 {
+            entity.insert(BenchLayerArchetypeA);
+        }
+        if index == 0 {
+            target = entity.id();
+        }
+    }
+
+    world.insert_resource(BenchLayerFaces(faces));
+    world.insert_resource(BenchLayerTarget(target));
+    world.insert_resource(BenchLayerStats::default());
+    (world, Schedule::default())
+}
+
+fn touch_one_layer(
+    mut layers: Query<&mut ChunkMeshLayer>,
+    target: Res<BenchLayerTarget>,
+    faces: Res<BenchLayerFaces>,
+) {
+    if let Ok(mut layer) = layers.get_mut(target.0) {
+        layer.update(BlockMaterialLayer::Opaque, Vec3::ZERO, &faces.0);
+    }
+}
+
+fn changed_layers_filter(
+    layers: Query<&ChunkMeshLayer, Changed<ChunkMeshLayer>>,
+    mut stats: ResMut<BenchLayerStats>,
+) {
+    stats.changed = layers.iter().count();
+}
+
+fn changed_layers_summary(layers: Query<Ref<ChunkMeshLayer>>, mut stats: ResMut<BenchLayerStats>) {
+    let mut changed = 0;
+    if let Ok(tables) = layers.contiguous_iter() {
+        for layer_column in tables {
+            let (values, ticks) = ContiguousRef::split(layer_column);
+            if ticks.summary_tick_is_changed() == Some(false) {
+                continue;
+            }
+            changed += values
+                .iter()
+                .zip(ticks.is_changed_iter())
+                .filter(|(_, is_changed)| *is_changed)
+                .count();
+        }
+    } else {
+        changed = layers.iter().filter(|layer| layer.is_changed()).count();
+    }
+    stats.changed = changed;
+}
+
+fn bench_changed_layer_extraction(c: &mut Criterion) {
+    let mut group = c.benchmark_group("ecs_system_changed_layer_extraction");
+    group.throughput(Throughput::Elements(CHANGED_LAYER_ENTITIES as u64));
+
+    for (scenario, touch) in [("idle", false), ("one_changed", true)] {
+        group.bench_function(BenchmarkId::new("changed_filter", scenario), |b| {
+            let (mut world, mut schedule) = build_changed_layer_world();
+            if touch {
+                schedule.add_systems((touch_one_layer, changed_layers_filter).chain());
+            } else {
+                schedule.add_systems(changed_layers_filter);
+            }
+            schedule.initialize(&mut world).unwrap();
+            b.iter(|| {
+                schedule.run(&mut world);
+                black_box(world.resource::<BenchLayerStats>().changed)
+            });
+        });
+
+        group.bench_function(BenchmarkId::new("summary_tick", scenario), |b| {
+            let (mut world, mut schedule) = build_changed_layer_world();
+            if touch {
+                schedule.add_systems((touch_one_layer, changed_layers_summary).chain());
+            } else {
+                schedule.add_systems(changed_layers_summary);
+            }
+            schedule.initialize(&mut world).unwrap();
+            b.iter(|| {
+                schedule.run(&mut world);
+                black_box(world.resource::<BenchLayerStats>().changed)
+            });
+        });
+    }
+
+    group.finish();
+}
+
 fn bench_light_upload_dirty_loop(c: &mut Criterion) {
     let mut group = c.benchmark_group("ecs_system_light_upload_dirty_loop");
     for dirty_chunks in [1usize, 4, 16, 64, 256] {
@@ -1318,6 +1436,7 @@ criterion_group! {
         .measurement_time(Duration::from_secs(3))
         .sample_size(10);
     targets = bench_mesh_rebuild_maps, bench_light_upload_map_build, bench_light_upload_dirty_loop,
-        bench_light_rebuild, bench_fluid_boundary_lookup, bench_collider_rebuild
+        bench_changed_layer_extraction, bench_light_rebuild, bench_fluid_boundary_lookup,
+        bench_collider_rebuild
 }
 criterion_main!(ecs_query_benches);

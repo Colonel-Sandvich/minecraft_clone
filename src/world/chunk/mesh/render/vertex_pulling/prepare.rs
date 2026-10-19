@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use bevy::{
+    ecs::change_detection::ContiguousRef,
     math::Mat4,
     prelude::*,
     render::{
@@ -56,28 +57,50 @@ type MeshNeedsPreparation<Prepared = PreparedChunkMesh> = Or<(
 
 pub(super) fn extract_changed_meshes(
     mut commands: Commands,
-    meshes: Extract<Query<(RenderEntity, &ChunkMeshLayer), Changed<ChunkMeshLayer>>>,
-    faces: Extract<Query<(RenderEntity, &ChunkMeshFaces), Changed<ChunkMeshFaces>>>,
+    meshes: Extract<Query<(&RenderEntity, Ref<ChunkMeshLayer>)>>,
+    faces: Extract<Query<(&RenderEntity, Ref<ChunkMeshFaces>)>>,
 ) {
-    commands.try_insert_batch(
-        meshes
-            .iter()
-            .map(|(entity, mesh)| (entity, mesh.clone()))
-            .collect::<Vec<_>>(),
-    );
-    for (entity, faces) in &faces {
-        commands.entity(entity).insert(faces.clone());
-    }
+    extract_changed(&mut commands, &meshes);
+    extract_changed(&mut commands, &faces);
 }
 
 pub(super) fn extract_changed_lights(
     mut commands: Commands,
-    lights: Extract<Query<(RenderEntity, &ChunkMeshLight), Changed<ChunkMeshLight>>>,
+    lights: Extract<Query<(&RenderEntity, Ref<ChunkMeshLight>)>>,
 ) {
+    extract_changed(&mut commands, &lights);
+}
+
+/// Extracts only changed components while using each component column's summary
+/// tick to skip the whole table on frames where nothing changed.
+fn extract_changed<T: Component + Clone>(
+    commands: &mut Commands,
+    query: &Query<(&RenderEntity, Ref<T>)>,
+) {
+    if let Ok(tables) = query.contiguous_iter() {
+        for (render_entities, components) in tables {
+            let (values, ticks) = ContiguousRef::split(components);
+            if ticks.summary_tick_is_changed() == Some(false) {
+                continue;
+            }
+            let batch = render_entities
+                .iter()
+                .zip(values)
+                .zip(ticks.is_changed_iter())
+                .filter_map(|((entity, value), changed)| {
+                    changed.then(|| (entity.id(), value.clone()))
+                })
+                .collect::<Vec<_>>();
+            commands.try_insert_batch(batch);
+        }
+        return;
+    }
+
     commands.try_insert_batch(
-        lights
+        query
             .iter()
-            .map(|(entity, light)| (entity, light.clone()))
+            .filter(|(_, value)| value.is_changed())
+            .map(|(entity, value)| (entity.id(), (*value).clone()))
             .collect::<Vec<_>>(),
     );
 }
