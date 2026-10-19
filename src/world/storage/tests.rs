@@ -653,7 +653,7 @@ fn sqlite_store_rejects_world_metadata_mismatch() {
 fn sqlite_store_rejects_the_previous_storage_format_cleanly() {
     let metadata = WorldMetadata::with_seed(42);
     let mut legacy_metadata = metadata.clone();
-    legacy_metadata.chunk_format_version = 1;
+    legacy_metadata.chunk_format_version = 0;
     let store = test_sqlite_store(&legacy_metadata);
     let connection = rusqlite::Connection::open(&store.path).unwrap();
     connection
@@ -683,7 +683,7 @@ fn sqlite_store_rejects_the_previous_storage_format_cleanly() {
             key,
             expected,
             found,
-        }) if key == "chunk_format_version" && expected == "2" && found == "1"
+        }) if key == "chunk_format_version" && expected == "1" && found == "0"
     ));
 }
 
@@ -939,7 +939,7 @@ fn development_world_paths_include_complete_format_identity() {
     ] {
         assert_ne!(path, development_world_path(&different));
     }
-    assert!(path.ends_with("seed-0000000000000001-g1-c2-h5.sqlite3"));
+    assert!(path.ends_with("seed-0000000000000001-g1-c1-h5.sqlite3"));
     #[cfg(feature = "turso-store")]
-    assert!(development_turso_path(&base).ends_with("seed-0000000000000001-g1-c2-h5.turso"));
+    assert!(development_turso_path(&base).ends_with("seed-0000000000000001-g1-c1-h5.turso"));
 }
