@@ -169,8 +169,9 @@ pub(super) fn update_slot_highlights(
         if background.0 != target_background {
             background.0 = target_background;
         }
-        if border.top != target_border {
-            border.set_all(target_border);
+        let target_border = BorderColor::all(target_border);
+        if *border != target_border {
+            *border = target_border;
         }
     }
 }

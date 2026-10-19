@@ -451,6 +451,45 @@ fn handle_hotbar_input(
     }
 }
 
+fn update_hotbar_ui(
+    hotbar: Res<Hotbar>,
+    inventory: Single<Ref<Inventory>, With<Player>>,
+    item_icons: Res<ItemIcons>,
+    mut selection: Query<&mut Node, With<HotbarSelection>>,
+    mut icons: Query<(&HotbarIcon, &mut ImageNode)>,
+    mut counts: Query<(&HotbarCount, &mut Text)>,
+    mut initialized: Local<bool>,
+) {
+    if selection.is_empty() || icons.is_empty() || counts.is_empty() {
+        return;
+    }
+    if *initialized && !inventory.is_changed() && !hotbar.is_changed() && !item_icons.is_changed() {
+        return;
+    }
+    *initialized = true;
+
+    if let Ok(mut node) = selection.single_mut() {
+        let left = rem(hotbar.selected as f32 * HOTBAR_SLOT_WIDTH - HOTBAR_SELECTION_INSET);
+        if node.left != left {
+            node.left = left;
+        }
+    }
+
+    for (slot, mut image) in &mut icons {
+        let target = stack_icon(&item_icons, inventory.slot(slot.0));
+        if image.image != target {
+            image.image = target;
+        }
+    }
+
+    for (slot, mut text) in &mut counts {
+        let target = stack_count_label(inventory.slot(slot.0));
+        if text.0 != target {
+            text.0 = target;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -491,44 +530,5 @@ mod tests {
         press(&mut app, KeyCode::Digit3);
         run_frame(&mut app);
         assert_eq!(app.world().resource::<Hotbar>().selected, 2);
-    }
-}
-
-fn update_hotbar_ui(
-    hotbar: Res<Hotbar>,
-    inventory: Single<Ref<Inventory>, With<Player>>,
-    item_icons: Res<ItemIcons>,
-    mut selection: Query<&mut Node, With<HotbarSelection>>,
-    mut icons: Query<(&HotbarIcon, &mut ImageNode)>,
-    mut counts: Query<(&HotbarCount, &mut Text)>,
-    mut initialized: Local<bool>,
-) {
-    if selection.is_empty() || icons.is_empty() || counts.is_empty() {
-        return;
-    }
-    if *initialized && !inventory.is_changed() && !hotbar.is_changed() && !item_icons.is_changed() {
-        return;
-    }
-    *initialized = true;
-
-    if let Ok(mut node) = selection.single_mut() {
-        let left = rem(hotbar.selected as f32 * HOTBAR_SLOT_WIDTH - HOTBAR_SELECTION_INSET);
-        if node.left != left {
-            node.left = left;
-        }
-    }
-
-    for (slot, mut image) in &mut icons {
-        let target = stack_icon(&item_icons, inventory.slot(slot.0));
-        if image.image != target {
-            image.image = target;
-        }
-    }
-
-    for (slot, mut text) in &mut counts {
-        let target = stack_count_label(inventory.slot(slot.0));
-        if text.0 != target {
-            text.0 = target;
-        }
     }
 }

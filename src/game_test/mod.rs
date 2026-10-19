@@ -108,11 +108,15 @@ struct TestPlot {
 #[derive(Component)]
 struct TestPlotChunk;
 
+/// Advances with the simulation so scenario timeouts are independent of the
+/// suite's retained UI state and change detection.
+#[derive(Resource, Default)]
+pub(crate) struct WaterTestClock(u64);
+
 #[derive(Resource)]
 pub(crate) struct WaterTestSuite {
     pub(crate) entries: Vec<WaterTestEntry>,
     pub(crate) overlay_visible: bool,
-    fixed_clock: u64,
     request_run: bool,
     request_teleport: bool,
     request_dump: bool,
@@ -136,7 +140,6 @@ impl WaterTestSuite {
                 })
                 .collect(),
             overlay_visible: false,
-            fixed_clock: 0,
             request_run: false,
             request_teleport: false,
             request_dump: false,
@@ -175,6 +178,7 @@ impl Default for WaterTestSuite {
 impl Plugin for GameTestPlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(WaterTestSuite::new())
+            .init_resource::<WaterTestClock>()
             .add_systems(
                 FixedUpdate,
                 tick_suite_clock
@@ -196,8 +200,8 @@ impl Plugin for GameTestPlugin {
     }
 }
 
-fn tick_suite_clock(mut suite: ResMut<WaterTestSuite>) {
-    suite.fixed_clock = suite.fixed_clock.wrapping_add(1);
+fn tick_suite_clock(mut clock: ResMut<WaterTestClock>) {
+    clock.0 = clock.0.wrapping_add(1);
 }
 
 fn handle_suite_hotkeys(keys: Res<ButtonInput<KeyCode>>, mut suite: ResMut<WaterTestSuite>) {
@@ -220,7 +224,9 @@ fn handle_suite_hotkeys(keys: Res<ButtonInput<KeyCode>>, mut suite: ResMut<Water
 fn start_requested_suite(
     mut commands: Commands,
     mut suite: ResMut<WaterTestSuite>,
+    clock: Res<WaterTestClock>,
     dimension: Option<Single<&mut Dimension, With<Active>>>,
+    plot_chunks: Query<(Entity, &ChunkPosition), With<TestPlotChunk>>,
     mut player_q: Query<
         (
             Entity,
@@ -266,22 +272,31 @@ fn start_requested_suite(
     suite.overlay_visible = true;
     suite.viewing = None;
 
-    let had_plots = suite.entries.iter().any(|entry| entry.plot.is_some());
+    // Unregister only markers that still own their position. A stale marker
+    // must never remove a streamed or otherwise replaced chunk at the same
+    // coordinates.
+    for (entity, position) in &plot_chunks {
+        if dimension.published_chunk_entity(position.chunk_pos()) == Some(entity) {
+            dimension.unregister_published_chunk(position.chunk_pos());
+        }
+    }
     for entry in &mut suite.entries {
         if let Some(plot) = entry.plot.take() {
-            for (position, _) in &plot.chunks {
-                dimension.unregister_published_chunk(*position);
+            for (position, entity) in &plot.chunks {
+                if dimension.published_chunk_entity(*position) == Some(*entity) {
+                    dimension.unregister_published_chunk(*position);
+                }
             }
         }
         entry.status = TestStatus::Pending;
         entry.phase = 0;
         entry.detail.clear();
     }
-    if had_plots {
-        commands.despawn_all::<With<TestPlotChunk>>();
-    }
+    // The marker is test-only, so clean it unconditionally. This also removes
+    // chunks left behind if a previous run failed before recording its plot.
+    commands.despawn_all::<With<TestPlotChunk>>();
 
-    let start_tick = suite.fixed_clock;
+    let start_tick = clock.0;
     for (index, entry) in suite.entries.iter_mut().enumerate() {
         match build_plot(&mut commands, &mut dimension, index, entry.scenario) {
             Ok(plot) => {
@@ -462,29 +477,37 @@ type ChunkEdit = (
 fn advance_running_tests(
     mut commands: Commands,
     mut suite: ResMut<WaterTestSuite>,
+    clock: Res<WaterTestClock>,
     mut dimension: Option<Single<&mut Dimension, With<Active>>>,
     mut chunks: ParamSet<(Query<ChunkRead>, Query<ChunkEdit>)>,
     pending_fluid: Query<(), With<ChunkNeedsFluidStep>>,
 ) {
-    let fixed_clock = suite.fixed_clock;
-    for entry in &mut suite.entries {
-        if entry.status != TestStatus::Running {
-            continue;
-        }
-        let elapsed = fixed_clock.saturating_sub(entry.start_tick);
-        let phase = entry.phase;
-        let expected = phase_expected(entry.scenario, phase);
-
-        let decision = {
-            let Some(plot) = &entry.plot else {
-                continue;
-            };
+    if !suite
+        .entries
+        .iter()
+        .any(|entry| entry.status == TestStatus::Running)
+    {
+        return;
+    }
+    let fixed_clock = clock.0;
+    let decisions = suite
+        .entries
+        .iter()
+        .enumerate()
+        .filter_map(|(index, entry)| {
+            if entry.status != TestStatus::Running {
+                return None;
+            }
+            let elapsed = fixed_clock.saturating_sub(entry.start_tick);
+            let phase = entry.phase;
+            let expected = phase_expected(entry.scenario, phase);
+            let plot = entry.plot.as_ref()?;
             let busy = plot
                 .chunks
                 .iter()
                 .any(|&(_, entity)| pending_fluid.get(entity).is_ok());
 
-            if !busy && elapsed >= SETTLE_GRACE_TICKS {
+            let decision = if !busy && elapsed >= SETTLE_GRACE_TICKS {
                 match compare_plot(plot, expected, entry.scenario.description, &chunks.p0()) {
                     Ok(()) => TestDecision::PhaseSettled,
                     Err(problem) => TestDecision::Failed(problem),
@@ -493,14 +516,29 @@ fn advance_running_tests(
                 TestDecision::TimedOut(describe_plot(plot, &chunks.p0()))
             } else {
                 TestDecision::Waiting
-            }
-        };
+            };
+            Some((index, decision))
+        })
+        .collect::<Vec<_>>();
 
+    if decisions
+        .iter()
+        .all(|(_, decision)| matches!(decision, TestDecision::Waiting))
+    {
+        return;
+    }
+
+    for (index, decision) in decisions {
+        let entry = &mut suite.entries[index];
         match decision {
             TestDecision::Waiting => {}
             TestDecision::PhaseSettled => {
                 entry.detail.clear();
-                let next_edit = entry.scenario.phases.get(phase).map(|phase| phase.edit);
+                let next_edit = entry
+                    .scenario
+                    .phases
+                    .get(entry.phase)
+                    .map(|phase| phase.edit);
                 let Some(edit) = next_edit else {
                     entry.status = TestStatus::Passed;
                     continue;
@@ -511,7 +549,7 @@ fn advance_running_tests(
                     (entry.plot.as_ref(), dimension.as_deref_mut())
                 {
                     apply_plot_edit(&mut commands, dimension, plot, edit, &mut chunks.p1());
-                    entry.phase = phase + 1;
+                    entry.phase += 1;
                     entry.start_tick = fixed_clock;
                 }
             }
@@ -679,12 +717,15 @@ fn handle_teleport_request(
     >,
     mut camera_q: Query<&mut Transform, (With<MouseCam>, Without<Player>)>,
 ) {
-    if !std::mem::take(&mut suite.request_teleport) {
+    if !suite.request_teleport {
         return;
     }
+    // Keep the request pending while no dimension is active, matching
+    // `start_requested_suite`; otherwise a menu-time F9 is silently lost.
     let Some(dimension) = dimension else {
         return;
     };
+    suite.request_teleport = false;
 
     let Some(index) = next_plotted_entry(&suite.entries, suite.viewing) else {
         suite.request_run = true;
@@ -917,6 +958,218 @@ mod tests {
             .add_systems(Update, (tick_counter, step_chunk_fluids).chain());
         app.world_mut().spawn((Dimension::default(), Active));
         app
+    }
+
+    #[derive(Resource, Default)]
+    struct ChangeLog(Vec<bool>);
+
+    fn record_suite_change(suite: Res<WaterTestSuite>, mut log: ResMut<ChangeLog>) {
+        log.0.push(suite.is_changed());
+    }
+
+    #[test]
+    fn ticking_the_suite_clock_does_not_mark_the_suite_changed() {
+        let mut app = App::new();
+        app.init_resource::<WaterTestSuite>()
+            .init_resource::<WaterTestClock>()
+            .init_resource::<ChangeLog>()
+            .add_systems(FixedUpdate, tick_suite_clock)
+            .add_systems(Update, record_suite_change);
+
+        app.world_mut().run_schedule(FixedUpdate);
+        app.world_mut().run_schedule(Update);
+        app.world_mut().run_schedule(FixedUpdate);
+        app.world_mut().run_schedule(Update);
+
+        assert_eq!(app.world().resource::<WaterTestClock>().0, 2);
+        assert_eq!(
+            app.world().resource::<ChangeLog>().0,
+            vec![true, false],
+            "only the initial suite insertion should be visible as a change"
+        );
+    }
+
+    #[test]
+    fn idle_frames_do_not_mark_the_suite_changed() {
+        let mut app = test_app();
+        app.init_resource::<ChangeLog>()
+            .add_systems(Update, record_suite_change);
+
+        app.update();
+        app.update();
+
+        assert_eq!(
+            app.world().resource::<ChangeLog>().0.last(),
+            Some(&false),
+            "an idle frame with no requests or running tests should not rebuild the overlay"
+        );
+    }
+
+    #[test]
+    fn waiting_running_tests_do_not_mark_the_suite_changed() {
+        let mut app = test_app();
+        app.world_mut().resource_mut::<WaterTestSuite>().request_run = true;
+        app.update();
+        assert!(
+            app.world()
+                .resource::<WaterTestSuite>()
+                .entries
+                .iter()
+                .any(|entry| entry.status == TestStatus::Running)
+        );
+
+        app.init_resource::<ChangeLog>()
+            .add_systems(Update, record_suite_change);
+        app.update();
+        app.update();
+
+        assert_eq!(
+            app.world().resource::<ChangeLog>().0.last(),
+            Some(&false),
+            "a running test with no decision should not rebuild the overlay"
+        );
+    }
+
+    #[test]
+    fn teleport_request_waits_for_an_active_dimension() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .init_resource::<ButtonInput<KeyCode>>()
+            .add_plugins(GameTestPlugin);
+        app.world_mut()
+            .resource_mut::<WaterTestSuite>()
+            .request_teleport = true;
+
+        app.update();
+
+        assert!(
+            app.world().resource::<WaterTestSuite>().request_teleport,
+            "a menu-time teleport request should survive until a dimension is active"
+        );
+    }
+
+    #[test]
+    fn teleport_request_clears_once_a_dimension_is_active() {
+        let mut app = test_app();
+        app.world_mut()
+            .resource_mut::<WaterTestSuite>()
+            .request_teleport = true;
+
+        app.update();
+
+        let suite = app.world().resource::<WaterTestSuite>();
+        assert!(!suite.request_teleport);
+        assert!(
+            suite.request_run,
+            "with no plots built, a teleport request should start a run"
+        );
+    }
+
+    #[test]
+    fn starting_a_run_unregisters_stale_plot_markers() {
+        let mut app = test_app();
+        let dimension_entity = app
+            .world_mut()
+            .query_filtered::<Entity, With<Active>>()
+            .single(app.world())
+            .unwrap();
+        let position = ChunkPos::ZERO;
+        let orphan = app
+            .world_mut()
+            .spawn((ChunkPosition::from(position), TestPlotChunk))
+            .id();
+        app.world_mut()
+            .get_mut::<Dimension>(dimension_entity)
+            .unwrap()
+            .register_published_chunk(position, orphan);
+        app.world_mut().resource_mut::<WaterTestSuite>().request_run = true;
+
+        app.update();
+
+        assert!(app.world().get_entity(orphan).is_err());
+        assert!(
+            !app.world()
+                .get::<Dimension>(dimension_entity)
+                .unwrap()
+                .contains_loaded_chunk(position)
+        );
+    }
+
+    #[test]
+    fn field_defer_keeps_plots_registered_until_the_run_is_committed() {
+        let mut app = test_app();
+        let dimension_entity = app
+            .world_mut()
+            .query_filtered::<Entity, With<Active>>()
+            .single(app.world())
+            .unwrap();
+        let dimension_id = app.world().get::<Dimension>(dimension_entity).unwrap().id();
+        let field = field_center();
+        app.world_mut().spawn((
+            Player::default(),
+            PlayerDimension::new(dimension_id),
+            Transform::from_translation(field),
+            Position::new(field),
+            Velocity::default(),
+        ));
+        let position = ChunkPos::ZERO;
+        let marker = app
+            .world_mut()
+            .spawn((ChunkPosition::from(position), TestPlotChunk))
+            .id();
+        app.world_mut()
+            .get_mut::<Dimension>(dimension_entity)
+            .unwrap()
+            .register_published_chunk(position, marker);
+        app.world_mut().resource_mut::<WaterTestSuite>().request_run = true;
+
+        app.update();
+
+        assert!(
+            app.world().resource::<WaterTestSuite>().request_run,
+            "the run must stay pending while the field is cleared"
+        );
+        assert_eq!(
+            app.world()
+                .get::<Dimension>(dimension_entity)
+                .unwrap()
+                .published_chunk_entity(position),
+            Some(marker),
+            "deferred cleanup must not unregister plots before the run commits"
+        );
+    }
+
+    #[test]
+    fn stale_marker_does_not_unregister_a_replaced_chunk() {
+        let mut app = test_app();
+        let dimension_entity = app
+            .world_mut()
+            .query_filtered::<Entity, With<Active>>()
+            .single(app.world())
+            .unwrap();
+        let position = ChunkPos::ZERO;
+        let marker = app
+            .world_mut()
+            .spawn((ChunkPosition::from(position), TestPlotChunk))
+            .id();
+        let replacement = app.world_mut().spawn(ChunkPosition::from(position)).id();
+        app.world_mut()
+            .get_mut::<Dimension>(dimension_entity)
+            .unwrap()
+            .register_published_chunk(position, replacement);
+        app.world_mut().resource_mut::<WaterTestSuite>().request_run = true;
+
+        app.update();
+
+        assert!(app.world().get_entity(marker).is_err());
+        assert_eq!(
+            app.world()
+                .get::<Dimension>(dimension_entity)
+                .unwrap()
+                .published_chunk_entity(position),
+            Some(replacement),
+            "cleanup must not unregister a chunk that replaced the stale marker"
+        );
     }
 
     #[test]

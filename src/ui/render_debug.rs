@@ -16,12 +16,14 @@ pub(super) struct RenderDebugOverlayControlsPlugin;
 
 impl Plugin for RenderDebugOverlayControlsPlugin {
     fn build(&self, app: &mut App) {
-        app.add_plugins(RenderDebugOverlayPlugin)
-            .insert_resource(RenderDebugOverlayKeybindings {
-                enable_keybindings: false,
-                ..default()
-            })
-            .add_systems(Update, handle_render_debug_overlay_chords);
+        if !app.is_plugin_added::<RenderDebugOverlayPlugin>() {
+            app.add_plugins(RenderDebugOverlayPlugin);
+        }
+        app.insert_resource(RenderDebugOverlayKeybindings {
+            enable_keybindings: false,
+            ..default()
+        })
+        .add_systems(Update, handle_render_debug_overlay_chords);
     }
 }
 
@@ -49,6 +51,7 @@ fn handle_render_debug_overlay_chords(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bevy::asset::AssetPlugin;
 
     fn controls_app() -> App {
         let mut app = App::new();
@@ -74,6 +77,17 @@ mod tests {
             .iter_current_update_messages()
             .copied()
             .collect()
+    }
+
+    #[test]
+    fn controls_plugin_tolerates_an_existing_overlay_plugin() {
+        let mut app = App::new();
+        app.add_plugins((
+            MinimalPlugins,
+            AssetPlugin::default(),
+            RenderDebugOverlayPlugin,
+        ));
+        app.add_plugins(RenderDebugOverlayControlsPlugin);
     }
 
     #[test]
