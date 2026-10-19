@@ -224,11 +224,14 @@ fn update_button_visuals(
     mut buttons: Query<(&Hovered, Has<Pressed>, &PauseButtonVisual, &mut ImageNode), With<Button>>,
 ) {
     for (hovered, pressed, visual, mut image) in &mut buttons {
-        image.image = if hovered.get() || pressed {
+        let target = if hovered.get() || pressed {
             visual.highlighted.clone()
         } else {
             visual.normal.clone()
         };
+        if image.image != target {
+            image.image = target;
+        }
     }
 }
 
