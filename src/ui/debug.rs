@@ -314,9 +314,7 @@ fn manage_light_labels(
     chunk_lights: Query<&ChunkLight>,
 ) {
     if !overlay.0 {
-        for (entity, _, _) in &labels {
-            commands.entity(entity).despawn();
-        }
+        commands.despawn_all::<With<LightLabelPos>>();
         return;
     }
 

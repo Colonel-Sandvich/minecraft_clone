@@ -105,6 +105,9 @@ struct TestPlot {
     chunks: Vec<(ChunkPos, Entity)>,
 }
 
+#[derive(Component)]
+struct TestPlotChunk;
+
 #[derive(Resource)]
 pub(crate) struct WaterTestSuite {
     pub(crate) entries: Vec<WaterTestEntry>,
@@ -263,13 +266,19 @@ fn start_requested_suite(
     suite.overlay_visible = true;
     suite.viewing = None;
 
+    let had_plots = suite.entries.iter().any(|entry| entry.plot.is_some());
     for entry in &mut suite.entries {
         if let Some(plot) = entry.plot.take() {
-            teardown_plot(&mut commands, &mut dimension, plot);
+            for (position, _) in &plot.chunks {
+                dimension.unregister_published_chunk(*position);
+            }
         }
         entry.status = TestStatus::Pending;
         entry.phase = 0;
         entry.detail.clear();
+    }
+    if had_plots {
+        commands.despawn_all::<With<TestPlotChunk>>();
     }
 
     let start_tick = suite.fixed_clock;
@@ -333,13 +342,6 @@ fn field_center() -> Vec3 {
         max = max.max(origin + size);
     }
     (min.as_vec3() + max.as_vec3()) * 0.5
-}
-
-fn teardown_plot(commands: &mut Commands, dimension: &mut Dimension, plot: TestPlot) {
-    for (position, entity) in plot.chunks {
-        dimension.unregister_published_chunk(position);
-        commands.entity(entity).despawn();
-    }
 }
 
 /// Steps from one plot origin to the next along an axis: the scene's cells
@@ -429,6 +431,7 @@ fn build_plot(
                 ChunkLight::default(),
                 ChunkHeightmap::default(),
                 ChunkSaveExempt,
+                TestPlotChunk,
                 Transform::from_translation(position.origin_translation()),
                 Visibility::Inherited,
             ))
