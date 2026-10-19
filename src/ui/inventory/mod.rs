@@ -2,7 +2,8 @@ use std::collections::VecDeque;
 
 use bevy::{
     prelude::*,
-    ui::{RelativeCursorPosition, UiSystems},
+    ui::{ComputedNode, RelativeCursorPosition, UiGlobalTransform, UiSystems},
+    window::PrimaryWindow,
 };
 
 use crate::{
@@ -134,6 +135,17 @@ struct CursorStackIcon;
 #[derive(Component)]
 struct CursorStackCount;
 
+type InventorySlotQuery<'w, 's> = Query<
+    'w,
+    's,
+    (
+        &'static InventorySlot,
+        &'static RelativeCursorPosition,
+        Option<&'static ComputedNode>,
+        Option<&'static UiGlobalTransform>,
+    ),
+>;
+
 const INVENTORY_PANEL_WIDTH: f32 = 602.0;
 const INVENTORY_PANEL_HEIGHT: f32 = 348.0;
 const INVENTORY_PANEL_PADDING: f32 = 28.0;
@@ -210,15 +222,24 @@ fn handle_inventory_ui_input(
     real_time: Res<Time<Real>>,
     mut ui: ResMut<InventoryUi>,
     mut inventory: Single<&mut Inventory, With<Player>>,
-    slots: Query<(&InventorySlot, &RelativeCursorPosition)>,
+    slots: InventorySlotQuery<'_, '_>,
     panel: Single<&RelativeCursorPosition, With<InventoryPanel>>,
+    windows: Query<&Window, With<PrimaryWindow>>,
+    mut last_cursor: Local<Option<Vec2>>,
 ) {
     if !ui.open {
+        *last_cursor = None;
         return;
     }
 
     // `Pressed` deliberately remains on the press origin while the mouse is
     // held. Dragging must instead follow the physical cursor.
+    let cursor = windows
+        .single()
+        .ok()
+        .and_then(Window::physical_cursor_position);
+    let previous_cursor = *last_cursor;
+    *last_cursor = cursor;
     let hovered = hovered_inventory_slot(&slots);
     let whole_stack_modifier = whole_stack_drop_modifier_pressed(&keyboard);
 
@@ -275,6 +296,7 @@ fn handle_inventory_ui_input(
         return;
     }
 
+    let mut started_drag = false;
     for button in [MouseButton::Left, MouseButton::Right] {
         if mouse.just_pressed(button) && ui.drag.is_none() {
             match hovered {
@@ -291,6 +313,7 @@ fn handle_inventory_ui_input(
                         origin: index,
                         slots: Vec::new(),
                     });
+                    started_drag = true;
                 }
                 Some(index) => {
                     click_slot(&mut inventory, index, &mut ui.cursor_stack, button);
@@ -318,14 +341,28 @@ fn handle_inventory_ui_input(
     let held = ui.cursor_stack;
     if let Some(drag) = &mut ui.drag
         && mouse.pressed(drag.button)
-        && let Some(index) = hovered
-        && index != drag.origin
-        && !drag.slots.contains(&index)
         && let Some(held) = held
-        && held.count() > drag.slots.len() as u16
-        && slot_accepts(inventory.slot(index), held.item)
     {
-        drag.slots.push(index);
+        let candidates = if started_drag {
+            hovered.into_iter().collect()
+        } else {
+            match (previous_cursor, cursor) {
+                (Some(from), Some(to)) => slots_between(&slots, from, to),
+                _ => hovered.into_iter().collect(),
+            }
+        };
+        for index in candidates {
+            if held.count() <= drag.slots.len() as u16 {
+                break;
+            }
+            if index == drag.origin
+                || drag.slots.contains(&index)
+                || !slot_accepts(inventory.slot(index), held.item)
+            {
+                continue;
+            }
+            drag.slots.push(index);
+        }
     }
 
     if let Some(drag) = ui.drag.take_if(|drag| mouse.just_released(drag.button)) {
@@ -378,12 +415,32 @@ fn handle_inventory_ui_input(
     }
 }
 
-fn hovered_inventory_slot(
-    slots: &Query<(&InventorySlot, &RelativeCursorPosition)>,
-) -> Option<usize> {
+fn hovered_inventory_slot(slots: &InventorySlotQuery<'_, '_>) -> Option<usize> {
     slots
         .iter()
-        .find_map(|(slot, cursor)| cursor.cursor_over().then_some(slot.0))
+        .find_map(|(slot, cursor, _, _)| cursor.cursor_over().then_some(slot.0))
+}
+
+/// Samples the pointer's frame-to-frame path so a fast drag cannot skip slots
+/// between the previous and current positions.
+fn slots_between(slots: &InventorySlotQuery<'_, '_>, from: Vec2, to: Vec2) -> Vec<usize> {
+    let distance = from.distance(to);
+    let steps = (distance / 4.0).ceil().max(1.0) as usize;
+    let mut result = Vec::new();
+
+    for step in 0..=steps {
+        let point = from.lerp(to, step as f32 / steps as f32);
+        for (slot, _, node, transform) in slots.iter() {
+            let (Some(node), Some(transform)) = (node, transform) else {
+                continue;
+            };
+            if node.contains_point(*transform, point) && !result.contains(&slot.0) {
+                result.push(slot.0);
+            }
+        }
+    }
+
+    result
 }
 
 fn shift_pressed(keyboard: &ButtonInput<KeyCode>) -> bool {

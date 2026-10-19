@@ -2,7 +2,15 @@ use super::spawn::spawn_inventory_ui;
 use super::visuals::{update_cursor_stack, update_drag_preview, update_slot_highlights};
 use super::*;
 use crate::{item::Item, ui::hotbar::ItemIcons};
-use bevy::{picking::hover::Hovered, state::app::StatesPlugin, ui::Pressed, window::PrimaryWindow};
+use bevy::{
+    picking::hover::Hovered,
+    state::app::StatesPlugin,
+    ui::{ComputedNode, Pressed, UiGlobalTransform},
+    window::PrimaryWindow,
+};
+
+#[derive(Resource, Default)]
+struct FoundSlots(Vec<usize>);
 
 #[test]
 fn left_click_picks_up_merges_and_swaps_stacks() {
@@ -527,6 +535,31 @@ fn drag_uses_current_cursor_slot_not_stale_pressed_origin() {
     assert_eq!(inventory.slot(0), None);
     assert_eq!(inventory.slot(1), ItemStack::try_new(Item::Dirt, 4));
     assert_eq!(app.world().resource::<InventoryUi>().cursor_stack, None);
+}
+
+#[test]
+fn drag_path_sampling_includes_slots_between_fast_pointer_positions() {
+    let mut app = App::new();
+    for (index, x) in [100.0, 160.0, 220.0].into_iter().enumerate() {
+        app.world_mut().spawn((
+            InventorySlot(index),
+            RelativeCursorPosition::default(),
+            ComputedNode {
+                size: Vec2::splat(54.0),
+                ..default()
+            },
+            UiGlobalTransform::from_translation(Vec2::new(x, 100.0)),
+        ));
+    }
+    app.init_resource::<FoundSlots>().add_systems(
+        Update,
+        |slots: InventorySlotQuery, mut found: ResMut<FoundSlots>| {
+            found.0 = slots_between(&slots, Vec2::new(100.0, 100.0), Vec2::new(220.0, 100.0));
+        },
+    );
+    app.update();
+
+    assert_eq!(app.world().resource::<FoundSlots>().0, vec![0, 1, 2]);
 }
 
 #[test]
