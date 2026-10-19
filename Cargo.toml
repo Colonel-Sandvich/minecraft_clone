@@ -37,6 +37,7 @@ bincode = { version = "2", features = ["serde"] }
 [dev-dependencies]
 criterion = "0.8.2"
 naga = { version = "30.0.0", features = ["wgsl-in"] }
+wesl = "0.6.0"
 wgpu = { version = "30.0.1", default-features = false, features = ["wgsl", "dx12", "metal", "vulkan", "naga-ir"] }
 
 [[bench]]

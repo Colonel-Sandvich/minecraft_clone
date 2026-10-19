@@ -2,6 +2,13 @@ use std::collections::BTreeSet;
 
 use minecraft_clone::world::chunk::mesh::TERRAIN_SHADER_SOURCE;
 use naga::{AddressSpace, ImageClass, ImageDimension, ScalarKind, TypeInner, front::wgsl, valid};
+use wesl::{
+    CompileOptions,
+    resolver::VirtualResolver,
+    syntax::{ModulePath, PathOrigin},
+};
+
+const TERRAIN_TABLES_SHADER_SOURCE: &str = include_str!("../assets/shaders/terrain_tables.wesl");
 
 #[derive(Debug, PartialEq, Eq)]
 struct ShaderResource<'a> {
@@ -19,16 +26,55 @@ enum ResourceKind {
     Sampler,
 }
 
+fn shader_module_path(components: &[&str]) -> ModulePath {
+    ModulePath::new(
+        PathOrigin::Absolute,
+        components
+            .iter()
+            .map(|component| (*component).to_string())
+            .collect(),
+    )
+}
+
+fn compile_terrain_shader() -> String {
+    let mut resolver = VirtualResolver::new();
+    resolver.add_module(
+        shader_module_path(&["shaders", "vertex_pulling"]),
+        TERRAIN_SHADER_SOURCE.into(),
+    );
+    resolver.add_module(
+        shader_module_path(&["shaders", "terrain_tables"]),
+        TERRAIN_TABLES_SHADER_SOURCE.into(),
+    );
+
+    // Mirrors the WESL compilation settings Bevy uses for shader assets.
+    let options = CompileOptions {
+        imports: true,
+        condcomp: true,
+        visibility: false,
+        ..Default::default()
+    };
+
+    wesl::compile(
+        &shader_module_path(&["shaders", "vertex_pulling"]),
+        &options,
+        &resolver,
+    )
+    .expect("vertex_pulling.wesl should compile from WESL to WGSL")
+    .to_string()
+}
+
 fn parse_vertex_pulling_shader() -> naga::Module {
-    wgsl::parse_str(TERRAIN_SHADER_SOURCE).expect("vertex_pulling.wgsl should parse")
+    let source = compile_terrain_shader();
+    wgsl::parse_str(&source).expect("compiled vertex_pulling.wesl should parse as WGSL")
 }
 
 #[test]
-fn vertex_pulling_wgsl_validates() {
+fn vertex_pulling_wesl_validates() {
     let module = parse_vertex_pulling_shader();
     valid::Validator::new(valid::ValidationFlags::all(), valid::Capabilities::empty())
         .validate(&module)
-        .expect("vertex_pulling.wgsl should validate");
+        .expect("vertex_pulling.wesl should validate");
 }
 
 #[test]

@@ -5171,6 +5171,7 @@ dependencies = [
  "strum 0.28.0",
  "tokio",
  "turso",
+ "wesl",
  "wgpu",
 ]
 

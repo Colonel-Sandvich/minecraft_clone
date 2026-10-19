@@ -12,7 +12,7 @@ use super::super::{
     visuals::{TerrainVisualSettings, TerrainVisualSettingsUniform},
 };
 
-const SHADER_PATH: &str = "shaders/vertex_pulling.wgsl";
+const SHADER_PATH: &str = "shaders/vertex_pulling.wesl";
 
 #[derive(Resource)]
 pub(super) struct Pipeline {

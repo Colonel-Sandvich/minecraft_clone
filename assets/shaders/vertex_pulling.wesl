@@ -1,5 +1,7 @@
 // Vertex-pulling shader — texture-array terrain, AO, smooth lighting.
 //
+// WESL module. Shared terrain table decoding lives in `terrain_tables.wesl`.
+//
 // Bind group 0 (per frame, global):
 //   binding 0: view_proj uniform (mat4x4<f32>)
 //   binding 1: terrain_texture (texture_2d_array<f32>)
@@ -13,6 +15,8 @@
 //   binding 0: faces storage (array<FaceDescriptor>)
 //   binding 1: chunk_origin uniform (vec4<f32>)
 //   binding 2: light_data storage (array<u32>) // padded 18³, 4 packed light cells per u32
+
+import super::terrain_tables::{terrain_table_index, texture_base_layer, texture_frame_count};
 
 struct FaceDescriptor {
     packed: u32,
@@ -287,12 +291,11 @@ fn fragment(@location(0) world_pos: vec3<f32>,
     let block_uv = fract(sample_face_uv);
 
     let lookup_face = select(face_dir, 0u, water_up_flow == 1u && face_dir == 3u);
-    let lookup = block_type * 6u + lookup_face;
+    let lookup = terrain_table_index(block_type, lookup_face);
     let texture_info = texture_layers[lookup];
-    let base_layer = texture_info & 0x00ffffffu;
-    let frame_count = max(texture_info >> 24u, 1u);
+    let frame_count = texture_frame_count(texture_info);
     let frame = u32(floor(terrain_visuals.fog_params.w / TEXTURE_FRAME_SECONDS)) % frame_count;
-    let layer = i32(base_layer + frame);
+    let layer = i32(texture_base_layer(texture_info) + frame);
     let tex_color = textureSampleGrad(
         terrain_texture,
         terrain_sampler,
