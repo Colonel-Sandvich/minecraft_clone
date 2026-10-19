@@ -1,6 +1,6 @@
 use bevy::prelude::*;
 
-use super::z;
+use super::{settings::rem_font, z};
 
 pub struct CrosshairPlugin;
 
@@ -36,7 +36,7 @@ fn spawn_crosshair(mut commands: Commands) {
             Crosshair,
             Text::new("+"),
             TextFont {
-                font_size: FontSize::Px(CROSSHAIR_SIZE),
+                font_size: rem_font(CROSSHAIR_SIZE),
                 ..default()
             },
             TextColor(Color::WHITE),

@@ -370,6 +370,42 @@ fn cursor_shows_the_projected_remainder_during_a_drag() {
 }
 
 #[test]
+fn cursor_preview_tracks_the_pointer_in_screen_pixels_at_any_rem_size() {
+    let mut app = App::new();
+    app.init_resource::<InventoryUi>()
+        .init_resource::<DragPreview>()
+        .init_resource::<ItemIcons>()
+        .init_resource::<bevy::text::RemSize>()
+        .add_systems(Update, update_cursor_stack);
+    let window = app
+        .world_mut()
+        .spawn((Window::default(), PrimaryWindow))
+        .id();
+    app.world_mut()
+        .get_mut::<Window>(window)
+        .unwrap()
+        .set_cursor_position(Some(Vec2::new(120.0, 80.0)));
+    let root = app
+        .world_mut()
+        .spawn((CursorStackRoot, Node::default()))
+        .id();
+    app.world_mut()
+        .spawn((CursorStackIcon, ImageNode::default()));
+    app.world_mut()
+        .spawn((CursorStackCount, Text::new(""), TextColor(Color::WHITE)));
+    app.world_mut().resource_mut::<InventoryUi>().cursor_stack = Some(ItemStack::one(Item::Dirt));
+
+    // The preview's own geometry is rem-sized, but its position must stay a
+    // direct screen-pixel offset from the pointer.
+    app.world_mut().resource_mut::<bevy::text::RemSize>().0 = 30.0;
+    app.update();
+
+    let node = app.world().get::<Node>(root).unwrap();
+    assert_eq!(node.left, Val::Px(120.0 + CURSOR_OFFSET));
+    assert_eq!(node.top, Val::Px(80.0 + CURSOR_OFFSET));
+}
+
+#[test]
 fn inventory_key_opens_and_escape_closes_without_losing_a_carried_stack() {
     let mut app = App::new();
     app.add_plugins((MinimalPlugins, StatesPlugin))

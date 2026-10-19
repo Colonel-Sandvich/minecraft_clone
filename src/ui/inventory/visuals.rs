@@ -115,6 +115,8 @@ pub(super) fn update_cursor_stack(
         root.display = Display::Flex;
     }
     if let Some(position) = window.cursor_position() {
+        // Cursor-following previews stay in screen pixels so they track the
+        // pointer exactly; only the preview's own geometry scales in rem.
         let left = Val::Px(position.x + CURSOR_OFFSET);
         let top = Val::Px(position.y + CURSOR_OFFSET);
         if root.left != left {

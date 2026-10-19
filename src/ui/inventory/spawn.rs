@@ -2,7 +2,10 @@ use bevy::{picking::hover::Hovered, ui::FocusPolicy, ui_widgets::Button};
 
 use crate::item::HOTBAR_SLOTS;
 
-use super::super::z;
+use super::super::{
+    settings::{rem, rem_font},
+    z,
+};
 use super::*;
 
 pub(super) fn spawn_inventory_ui(commands: &mut Commands) {
@@ -28,12 +31,12 @@ pub(super) fn spawn_inventory_ui(commands: &mut Commands) {
                     InventoryPanel,
                     RelativeCursorPosition::default(),
                     Node {
-                        width: Val::Px(INVENTORY_PANEL_WIDTH),
-                        height: Val::Px(INVENTORY_PANEL_HEIGHT),
+                        width: rem(INVENTORY_PANEL_WIDTH),
+                        height: rem(INVENTORY_PANEL_HEIGHT),
                         flex_direction: FlexDirection::Column,
-                        padding: UiRect::all(Val::Px(INVENTORY_PANEL_PADDING)),
-                        row_gap: Val::Px(SLOT_GAP),
-                        border: UiRect::all(Val::Px(INVENTORY_PANEL_BORDER)),
+                        padding: UiRect::all(rem(INVENTORY_PANEL_PADDING)),
+                        row_gap: rem(SLOT_GAP),
+                        border: UiRect::all(rem(INVENTORY_PANEL_BORDER)),
                         ..default()
                     },
                     BackgroundColor(Color::srgb(0.72, 0.72, 0.72)),
@@ -44,13 +47,13 @@ pub(super) fn spawn_inventory_ui(commands: &mut Commands) {
                     panel.spawn((
                         Text::new("Inventory"),
                         TextFont {
-                            font_size: FontSize::Px(24.0),
+                            font_size: rem_font(24.0),
                             ..default()
                         },
                         TextColor(Color::srgb(0.15, 0.15, 0.15)),
                         Node {
-                            height: Val::Px(INVENTORY_TITLE_HEIGHT),
-                            margin: UiRect::bottom(Val::Px(INVENTORY_TITLE_MARGIN)),
+                            height: rem(INVENTORY_TITLE_HEIGHT),
+                            margin: UiRect::bottom(rem(INVENTORY_TITLE_MARGIN)),
                             ..default()
                         },
                         Pickable::IGNORE,
@@ -65,7 +68,7 @@ pub(super) fn spawn_inventory_ui(commands: &mut Commands) {
                     }
 
                     panel.spawn(Node {
-                        height: Val::Px(INVENTORY_SECTION_GAP),
+                        height: rem(INVENTORY_SECTION_GAP),
                         ..default()
                     });
                     spawn_slot_row(panel, 0..HOTBAR_SLOTS);
@@ -76,8 +79,8 @@ pub(super) fn spawn_inventory_ui(commands: &mut Commands) {
                     CursorStackRoot,
                     Node {
                         position_type: PositionType::Absolute,
-                        width: Val::Px(SLOT_SIZE),
-                        height: Val::Px(SLOT_SIZE),
+                        width: rem(SLOT_SIZE),
+                        height: rem(SLOT_SIZE),
                         display: Display::None,
                         ..default()
                     },
@@ -90,10 +93,10 @@ pub(super) fn spawn_inventory_ui(commands: &mut Commands) {
                         ImageNode::default(),
                         Node {
                             position_type: PositionType::Absolute,
-                            left: Val::Px(CURSOR_ICON_INSET),
-                            top: Val::Px(CURSOR_ICON_INSET),
-                            width: Val::Px(ITEM_ICON_SIZE),
-                            height: Val::Px(ITEM_ICON_SIZE),
+                            left: rem(CURSOR_ICON_INSET),
+                            top: rem(CURSOR_ICON_INSET),
+                            width: rem(ITEM_ICON_SIZE),
+                            height: rem(ITEM_ICON_SIZE),
                             ..default()
                         },
                         Pickable::IGNORE,
@@ -103,8 +106,8 @@ pub(super) fn spawn_inventory_ui(commands: &mut Commands) {
                         stack_count_text(),
                         Node {
                             position_type: PositionType::Absolute,
-                            right: Val::Px(CURSOR_COUNT_RIGHT),
-                            bottom: Val::Px(CURSOR_COUNT_BOTTOM),
+                            right: rem(CURSOR_COUNT_RIGHT),
+                            bottom: rem(CURSOR_COUNT_BOTTOM),
                             ..default()
                         },
                         Pickable::IGNORE,
@@ -116,9 +119,9 @@ pub(super) fn spawn_inventory_ui(commands: &mut Commands) {
 fn spawn_slot_row(parent: &mut ChildSpawnerCommands, slots: impl IntoIterator<Item = usize>) {
     parent
         .spawn(Node {
-            height: Val::Px(SLOT_SIZE),
+            height: rem(SLOT_SIZE),
             flex_direction: FlexDirection::Row,
-            column_gap: Val::Px(SLOT_GAP),
+            column_gap: rem(SLOT_GAP),
             ..default()
         })
         .with_children(|row| {
@@ -130,12 +133,12 @@ fn spawn_slot_row(parent: &mut ChildSpawnerCommands, slots: impl IntoIterator<It
                     Hovered::default(),
                     FocusPolicy::Block,
                     Node {
-                        width: Val::Px(SLOT_SIZE),
-                        height: Val::Px(SLOT_SIZE),
+                        width: rem(SLOT_SIZE),
+                        height: rem(SLOT_SIZE),
                         position_type: PositionType::Relative,
                         align_items: AlignItems::Center,
                         justify_content: JustifyContent::Center,
-                        border: UiRect::all(Val::Px(SLOT_BORDER_WIDTH)),
+                        border: UiRect::all(rem(SLOT_BORDER_WIDTH)),
                         ..default()
                     },
                     BackgroundColor(SLOT_IDLE),
@@ -146,8 +149,8 @@ fn spawn_slot_row(parent: &mut ChildSpawnerCommands, slots: impl IntoIterator<It
                         InventorySlotIcon(index),
                         ImageNode::default(),
                         Node {
-                            width: Val::Px(ITEM_ICON_SIZE),
-                            height: Val::Px(ITEM_ICON_SIZE),
+                            width: rem(ITEM_ICON_SIZE),
+                            height: rem(ITEM_ICON_SIZE),
                             ..default()
                         },
                         Pickable::IGNORE,
@@ -157,8 +160,8 @@ fn spawn_slot_row(parent: &mut ChildSpawnerCommands, slots: impl IntoIterator<It
                         stack_count_text(),
                         Node {
                             position_type: PositionType::Absolute,
-                            right: Val::Px(SLOT_COUNT_RIGHT),
-                            bottom: Val::Px(SLOT_COUNT_BOTTOM),
+                            right: rem(SLOT_COUNT_RIGHT),
+                            bottom: rem(SLOT_COUNT_BOTTOM),
                             ..default()
                         },
                         Pickable::IGNORE,
@@ -167,8 +170,8 @@ fn spawn_slot_row(parent: &mut ChildSpawnerCommands, slots: impl IntoIterator<It
                         InventorySlotPreview(index),
                         Node {
                             position_type: PositionType::Absolute,
-                            left: Val::Px(0.0),
-                            top: Val::Px(0.0),
+                            left: rem(0.0),
+                            top: rem(0.0),
                             width: Val::Percent(100.0),
                             height: Val::Percent(100.0),
                             align_items: AlignItems::Center,
@@ -183,8 +186,8 @@ fn spawn_slot_row(parent: &mut ChildSpawnerCommands, slots: impl IntoIterator<It
                             InventoryPreviewIcon(index),
                             ImageNode::default(),
                             Node {
-                                width: Val::Px(ITEM_ICON_SIZE),
-                                height: Val::Px(ITEM_ICON_SIZE),
+                                width: rem(ITEM_ICON_SIZE),
+                                height: rem(ITEM_ICON_SIZE),
                                 ..default()
                             },
                             Pickable::IGNORE,
@@ -194,8 +197,8 @@ fn spawn_slot_row(parent: &mut ChildSpawnerCommands, slots: impl IntoIterator<It
                             stack_count_text(),
                             Node {
                                 position_type: PositionType::Absolute,
-                                right: Val::Px(SLOT_COUNT_RIGHT),
-                                bottom: Val::Px(SLOT_COUNT_BOTTOM),
+                                right: rem(SLOT_COUNT_RIGHT),
+                                bottom: rem(SLOT_COUNT_BOTTOM),
                                 ..default()
                             },
                             Pickable::IGNORE,

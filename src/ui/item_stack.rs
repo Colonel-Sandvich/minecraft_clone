@@ -2,7 +2,7 @@ use bevy::prelude::*;
 
 use crate::item::ItemStack;
 
-use super::hotbar::ItemIcons;
+use super::{hotbar::ItemIcons, settings::rem_font};
 
 pub(super) fn stack_icon(icons: &ItemIcons, stack: Option<ItemStack>) -> Handle<Image> {
     stack
@@ -26,7 +26,7 @@ pub(super) fn stack_count_text() -> (Text, TextFont, TextColor, TextShadow) {
     (
         Text::new(""),
         TextFont {
-            font_size: FontSize::Px(20.0),
+            font_size: rem_font(20.0),
             ..default()
         },
         TextColor(Color::WHITE),

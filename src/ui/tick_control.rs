@@ -11,7 +11,10 @@ use crate::{
     world::dimension::fluid::FluidTickCounter,
 };
 
-use super::z;
+use super::{
+    settings::{rem, rem_font},
+    z,
+};
 
 pub(super) struct TickControlOverlayPlugin;
 
@@ -33,9 +36,9 @@ fn spawn_tick_control_overlay(mut commands: Commands) {
         .spawn((
             Node {
                 position_type: PositionType::Absolute,
-                top: Val::Px(6.0),
-                left: Val::Px(0.0),
-                right: Val::Px(0.0),
+                top: rem(6.0),
+                left: rem(0.0),
+                right: rem(0.0),
                 justify_content: JustifyContent::Center,
                 display: Display::None,
                 ..default()
@@ -48,7 +51,7 @@ fn spawn_tick_control_overlay(mut commands: Commands) {
             overlay
                 .spawn((
                     Node {
-                        padding: UiRect::all(Val::Px(8.0)),
+                        padding: UiRect::all(rem(8.0)),
                         ..default()
                     },
                     BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.6)),
@@ -58,7 +61,7 @@ fn spawn_tick_control_overlay(mut commands: Commands) {
                     panel.spawn((
                         Text::new(""),
                         TextFont {
-                            font_size: FontSize::Px(13.0),
+                            font_size: rem_font(13.0),
                             ..default()
                         },
                         TextColor(Color::srgb(0.95, 0.95, 1.0)),

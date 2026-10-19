@@ -17,7 +17,10 @@ use crate::{
     world::dimension::{Active, Dimension, ViewDistance},
 };
 
-use super::z;
+use super::{
+    settings::{rem, rem_font},
+    z,
+};
 
 pub struct DebugPlugin;
 
@@ -59,14 +62,14 @@ fn spawn_debug_overlay(mut commands: Commands) {
     commands.spawn((
         Text::new(""),
         TextFont {
-            font_size: FontSize::Px(14.0),
+            font_size: rem_font(14.0),
             ..default()
         },
         TextColor(Color::WHITE),
         Node {
             position_type: PositionType::Absolute,
-            top: Val::Px(3.0),
-            left: Val::Px(3.0),
+            top: rem(3.0),
+            left: rem(3.0),
             ..default()
         },
         DebugOverlay,
@@ -365,12 +368,14 @@ fn manage_light_labels(
             p.spawn((
                 Text::new(label),
                 TextFont {
-                    font_size: FontSize::Px(10.0),
+                    font_size: rem_font(10.0),
                     ..default()
                 },
                 TextColor(Color::srgb(1.0, 0.95, 0.75)),
                 Node {
                     position_type: PositionType::Absolute,
+                    // These are overwritten every frame with a world-space
+                    // projection in physical/logical screen pixels below.
                     left: Val::Px(0.0),
                     top: Val::Px(0.0),
                     ..default()
@@ -395,6 +400,8 @@ fn update_light_label_positions(
             Err(_) => Vec2::new(-9999.0, -9999.0),
         };
 
+        // Projected screen positions must not scale with the UI; they are
+        // physical window coordinates centered under the world block.
         let left = Val::Px(screen.x - 10.0);
         let top = Val::Px(screen.y - 10.0);
         if node.left != left {

@@ -27,7 +27,7 @@ use crate::{
     player::{Player, PlayerPlugin, cam::MouseSettings},
     textures::BlockTexturePlugin,
     tick_control::TickControlPlugin,
-    ui::UIPlugin,
+    ui::{UIPlugin, UiSettings},
     world::{
         WorldConfig, WorldMetadata, WorldPlugin,
         chunk::{
@@ -61,6 +61,7 @@ impl Plugin for AppPlugin {
         .register_type::<ViewDistance>()
         .register_type::<MouseSettings>()
         .register_type::<GameAudioSettings>()
+        .register_type::<UiSettings>()
         .add_plugins(SettingsPlugin::new("io.github.matt.minecraft_clone"))
         .add_plugins(EguiPlugin::default())
         .insert_resource(ClearColor(Srgba::hex("74b3ff").unwrap().into()))

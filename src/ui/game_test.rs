@@ -12,7 +12,10 @@ use crate::{
     world::chunk::WATER_SCENARIOS,
 };
 
-use super::z;
+use super::{
+    settings::{rem, rem_font},
+    z,
+};
 
 pub(super) struct GameTestOverlayPlugin;
 
@@ -44,13 +47,13 @@ fn spawn_game_test_overlay(mut commands: Commands) {
         .spawn((
             Node {
                 position_type: PositionType::Absolute,
-                top: Val::Px(6.0),
-                right: Val::Px(6.0),
+                top: rem(6.0),
+                right: rem(6.0),
                 flex_direction: FlexDirection::Column,
-                row_gap: Val::Px(2.0),
-                padding: UiRect::all(Val::Px(8.0)),
+                row_gap: rem(2.0),
+                padding: UiRect::all(rem(8.0)),
                 display: Display::None,
-                max_width: Val::Px(360.0),
+                max_width: rem(360.0),
                 ..default()
             },
             BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.6)),
@@ -62,7 +65,7 @@ fn spawn_game_test_overlay(mut commands: Commands) {
             overlay.spawn((
                 Text::new(""),
                 TextFont {
-                    font_size: FontSize::Px(14.0),
+                    font_size: rem_font(14.0),
                     ..default()
                 },
                 TextColor(Color::WHITE),
@@ -77,7 +80,7 @@ fn spawn_game_test_overlay(mut commands: Commands) {
                         scenario.name
                     )),
                     TextFont {
-                        font_size: FontSize::Px(13.0),
+                        font_size: rem_font(13.0),
                         ..default()
                     },
                     TextColor(status_color(TestStatus::Pending)),
@@ -88,7 +91,7 @@ fn spawn_game_test_overlay(mut commands: Commands) {
             overlay.spawn((
                 Text::new(""),
                 TextFont {
-                    font_size: FontSize::Px(12.0),
+                    font_size: rem_font(12.0),
                     ..default()
                 },
                 TextColor(Color::srgb(1.0, 0.75, 0.75)),

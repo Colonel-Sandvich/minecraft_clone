@@ -14,6 +14,7 @@ use crate::{
 
 use super::{
     item_stack::{stack_count_label, stack_count_text, stack_icon},
+    settings::rem,
     z,
 };
 
@@ -138,8 +139,8 @@ fn spawn_hotbar_ui(commands: &mut Commands, bg_handle: &Handle<Image>, sel_handl
             parent
                 .spawn((
                     Node {
-                        width: Val::Px(HOTBAR_WIDTH),
-                        height: Val::Px(HOTBAR_HEIGHT),
+                        width: rem(HOTBAR_WIDTH),
+                        height: rem(HOTBAR_HEIGHT),
                         position_type: PositionType::Relative,
                         ..default()
                     },
@@ -151,10 +152,10 @@ fn spawn_hotbar_ui(commands: &mut Commands, bg_handle: &Handle<Image>, sel_handl
                         ImageNode::new(bg_handle.clone()),
                         Node {
                             position_type: PositionType::Absolute,
-                            left: Val::Px(0.0),
-                            top: Val::Px(0.0),
-                            width: Val::Px(HOTBAR_WIDTH),
-                            height: Val::Px(HOTBAR_HEIGHT),
+                            left: rem(0.0),
+                            top: rem(0.0),
+                            width: rem(HOTBAR_WIDTH),
+                            height: rem(HOTBAR_HEIGHT),
                             ..default()
                         },
                         Pickable::IGNORE,
@@ -164,15 +165,15 @@ fn spawn_hotbar_ui(commands: &mut Commands, bg_handle: &Handle<Image>, sel_handl
                     hotbar
                         .spawn((
                             Node {
-                                width: Val::Px(HOTBAR_WIDTH),
-                                height: Val::Px(HOTBAR_HEIGHT),
+                                width: rem(HOTBAR_WIDTH),
+                                height: rem(HOTBAR_HEIGHT),
                                 display: Display::Flex,
                                 flex_direction: FlexDirection::Row,
                                 padding: UiRect::new(
-                                    Val::Px(HOTBAR_PADDING),
-                                    Val::Px(HOTBAR_PADDING),
-                                    Val::Px(0.0),
-                                    Val::Px(0.0),
+                                    rem(HOTBAR_PADDING),
+                                    rem(HOTBAR_PADDING),
+                                    rem(0.0),
+                                    rem(0.0),
                                 ),
                                 ..default()
                             },
@@ -182,8 +183,8 @@ fn spawn_hotbar_ui(commands: &mut Commands, bg_handle: &Handle<Image>, sel_handl
                             for i in 0..HOTBAR_SLOTS {
                                 row.spawn((
                                     Node {
-                                        width: Val::Px(HOTBAR_SLOT_WIDTH),
-                                        height: Val::Px(HOTBAR_HEIGHT),
+                                        width: rem(HOTBAR_SLOT_WIDTH),
+                                        height: rem(HOTBAR_HEIGHT),
                                         display: Display::Flex,
                                         position_type: PositionType::Relative,
                                         align_items: AlignItems::Center,
@@ -196,8 +197,8 @@ fn spawn_hotbar_ui(commands: &mut Commands, bg_handle: &Handle<Image>, sel_handl
                                     slot.spawn((
                                         ImageNode::default(),
                                         Node {
-                                            width: Val::Px(HOTBAR_ICON_SIZE),
-                                            height: Val::Px(HOTBAR_ICON_SIZE),
+                                            width: rem(HOTBAR_ICON_SIZE),
+                                            height: rem(HOTBAR_ICON_SIZE),
                                             ..default()
                                         },
                                         HotbarIcon(i),
@@ -207,8 +208,8 @@ fn spawn_hotbar_ui(commands: &mut Commands, bg_handle: &Handle<Image>, sel_handl
                                         stack_count_text(),
                                         Node {
                                             position_type: PositionType::Absolute,
-                                            right: Val::Px(HOTBAR_COUNT_RIGHT),
-                                            bottom: Val::Px(HOTBAR_COUNT_BOTTOM),
+                                            right: rem(HOTBAR_COUNT_RIGHT),
+                                            bottom: rem(HOTBAR_COUNT_BOTTOM),
                                             ..default()
                                         },
                                         HotbarCount(i),
@@ -223,10 +224,10 @@ fn spawn_hotbar_ui(commands: &mut Commands, bg_handle: &Handle<Image>, sel_handl
                         ImageNode::new(sel_handle.clone()),
                         Node {
                             position_type: PositionType::Absolute,
-                            left: Val::Px(-HOTBAR_SELECTION_INSET),
-                            top: Val::Px(-HOTBAR_SELECTION_INSET),
-                            width: Val::Px(HOTBAR_SELECTION_WIDTH),
-                            height: Val::Px(HOTBAR_SELECTION_HEIGHT),
+                            left: rem(-HOTBAR_SELECTION_INSET),
+                            top: rem(-HOTBAR_SELECTION_INSET),
+                            width: rem(HOTBAR_SELECTION_WIDTH),
+                            height: rem(HOTBAR_SELECTION_HEIGHT),
                             ..default()
                         },
                         HotbarSelection,
@@ -460,7 +461,7 @@ fn update_hotbar_ui(
     *initialized = true;
 
     if let Ok(mut node) = selection.single_mut() {
-        let left = Val::Px(hotbar.selected as f32 * HOTBAR_SLOT_WIDTH - HOTBAR_SELECTION_INSET);
+        let left = rem(hotbar.selected as f32 * HOTBAR_SLOT_WIDTH - HOTBAR_SELECTION_INSET);
         if node.left != left {
             node.left = left;
         }
