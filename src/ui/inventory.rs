@@ -1,11 +1,9 @@
-// TODO(Bevy 0.21): migrate `Interaction` to `Hovered`/`Pressed` before it is removed.
-#![allow(deprecated)]
-
 use std::collections::VecDeque;
 
 use bevy::{
+    picking::hover::Hovered,
     prelude::*,
-    ui::{FocusPolicy, RelativeCursorPosition, UiSystems},
+    ui::{FocusPolicy, Pressed, RelativeCursorPosition, UiSystems},
     ui_widgets::Button,
     window::PrimaryWindow,
 };
@@ -263,7 +261,7 @@ fn spawn_slot_row(parent: &mut ChildSpawnerCommands, slots: impl IntoIterator<It
                     InventorySlot(index),
                     RelativeCursorPosition::default(),
                     Button,
-                    Interaction::default(),
+                    Hovered::default(),
                     FocusPolicy::Block,
                     Node {
                         width: Val::Px(SLOT_SIZE),
@@ -398,8 +396,8 @@ fn handle_inventory_ui_input(
         return;
     }
 
-    // `Interaction::Pressed` deliberately remains on the press origin while
-    // the mouse is held. Dragging must instead follow the physical cursor.
+    // `Pressed` deliberately remains on the press origin while the mouse is
+    // held. Dragging must instead follow the physical cursor.
     let hovered = hovered_inventory_slot(&slots);
     let whole_stack_modifier = whole_stack_drop_modifier_pressed(&keyboard);
 
@@ -836,13 +834,15 @@ fn update_cursor_stack(
 }
 
 fn update_slot_highlights(
-    mut slots: Query<(&Interaction, &mut BackgroundColor), With<InventorySlot>>,
+    mut slots: Query<(&Hovered, Has<Pressed>, &mut BackgroundColor), With<InventorySlot>>,
 ) {
-    for (interaction, mut color) in &mut slots {
-        color.0 = match interaction {
-            Interaction::Pressed => Color::srgb(0.62, 0.62, 0.62),
-            Interaction::Hovered => Color::srgb(0.48, 0.48, 0.48),
-            Interaction::None => Color::srgb(0.32, 0.32, 0.32),
+    for (hovered, pressed, mut color) in &mut slots {
+        color.0 = if pressed {
+            Color::srgb(0.62, 0.62, 0.62)
+        } else if hovered.get() {
+            Color::srgb(0.48, 0.48, 0.48)
+        } else {
+            Color::srgb(0.32, 0.32, 0.32)
         };
     }
 }
@@ -1050,6 +1050,44 @@ mod tests {
     }
 
     #[test]
+    fn slot_highlights_use_hovered_and_pressed_state() {
+        let mut app = App::new();
+        app.add_systems(Update, update_slot_highlights);
+        let normal = app
+            .world_mut()
+            .spawn((
+                InventorySlot(0),
+                Hovered::default(),
+                BackgroundColor(Color::BLACK),
+            ))
+            .id();
+        let hovered = app
+            .world_mut()
+            .spawn((
+                InventorySlot(1),
+                Hovered(true),
+                BackgroundColor(Color::BLACK),
+            ))
+            .id();
+        let pressed = app
+            .world_mut()
+            .spawn((
+                InventorySlot(2),
+                Hovered(true),
+                Pressed,
+                BackgroundColor(Color::BLACK),
+            ))
+            .id();
+
+        app.update();
+
+        let background = |entity| app.world().get::<BackgroundColor>(entity).map(|bg| bg.0);
+        assert_eq!(background(normal), Some(Color::srgb(0.32, 0.32, 0.32)));
+        assert_eq!(background(hovered), Some(Color::srgb(0.48, 0.48, 0.48)));
+        assert_eq!(background(pressed), Some(Color::srgb(0.62, 0.62, 0.62)));
+    }
+
+    #[test]
     fn inventory_key_opens_and_escape_closes_without_losing_a_carried_stack() {
         let mut app = App::new();
         app.add_plugins((MinimalPlugins, StatesPlugin))
@@ -1153,7 +1191,8 @@ mod tests {
             .world_mut()
             .spawn((
                 InventorySlot(0),
-                Interaction::Pressed,
+                Hovered::default(),
+                Pressed,
                 RelativeCursorPosition {
                     cursor_over: false,
                     normalized: None,
@@ -1164,7 +1203,7 @@ mod tests {
             .world_mut()
             .spawn((
                 InventorySlot(1),
-                Interaction::Hovered,
+                Hovered(true),
                 RelativeCursorPosition {
                     cursor_over: true,
                     normalized: Some(Vec2::splat(0.5)),
@@ -1196,16 +1235,10 @@ mod tests {
                 .slots,
             vec![0, 1]
         );
-        // Bevy keeps Pressed on the origin during a drag; cursor geometry is
+        // `Pressed` stays on the press origin during a drag; cursor geometry is
         // the authoritative current target.
-        assert_eq!(
-            app.world().get::<Interaction>(origin),
-            Some(&Interaction::Pressed)
-        );
-        assert_eq!(
-            app.world().get::<Interaction>(current),
-            Some(&Interaction::Hovered)
-        );
+        assert!(app.world().get::<Pressed>(origin).is_some());
+        assert_eq!(app.world().get::<Hovered>(current), Some(&Hovered(true)));
 
         app.world_mut()
             .resource_mut::<ButtonInput<MouseButton>>()
@@ -1288,6 +1321,7 @@ mod tests {
         let mut app = inventory_input_app();
         app.world_mut().spawn((
             InventorySlot(0),
+            Hovered::default(),
             RelativeCursorPosition {
                 cursor_over: true,
                 normalized: Some(Vec2::splat(0.5)),
@@ -1326,6 +1360,7 @@ mod tests {
         let mut app = inventory_input_app();
         app.world_mut().spawn((
             InventorySlot(0),
+            Hovered::default(),
             RelativeCursorPosition {
                 cursor_over: true,
                 normalized: Some(Vec2::splat(0.5)),

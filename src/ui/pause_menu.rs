@@ -1,11 +1,9 @@
-// TODO(Bevy 0.21): migrate `Interaction` to `Hovered`/`Pressed` before it is removed.
-#![allow(deprecated)]
-
 use bevy::{
     image::{ImageLoaderSettings, ImageSampler},
+    picking::hover::Hovered,
     prelude::*,
-    ui::{FocusPolicy, widget::NodeImageMode},
-    ui_widgets::Button,
+    ui::{Pressed, widget::NodeImageMode},
+    ui_widgets::{Activate, ActivateOnPress, Button},
 };
 
 use crate::game_state::GameState;
@@ -15,10 +13,10 @@ pub struct PauseMenuPlugin;
 impl Plugin for PauseMenuPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(OnEnter(GameState::Paused), spawn_pause_menu)
+            .add_observer(handle_pause_menu_action)
             .add_systems(
                 Update,
-                (handle_pause_menu_action, update_button_visuals)
-                    .run_if(in_state(GameState::Paused)),
+                update_button_visuals.run_if(in_state(GameState::Paused)),
             );
     }
 }
@@ -82,7 +80,6 @@ fn spawn_pause_menu(mut commands: Commands, asset_server: Res<AssetServer>) {
                 ..default()
             },
             BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.62)),
-            FocusPolicy::Block,
             GlobalZIndex(1_000),
         ))
         .with_children(|overlay| {
@@ -175,8 +172,8 @@ fn spawn_menu_button(
     if let Some(action) = action {
         button.insert((
             Button,
-            Interaction::default(),
-            FocusPolicy::Block,
+            Hovered::default(),
+            ActivateOnPress,
             action,
             PauseButtonVisual {
                 normal: textures.button.clone(),
@@ -204,44 +201,33 @@ fn spawn_menu_button(
     ));
 }
 
-type PauseMenuActionButtons<'w, 's> = Query<
-    'w,
-    's,
-    (&'static Interaction, &'static PauseMenuAction),
-    (Changed<Interaction>, With<Button>),
->;
-
 fn handle_pause_menu_action(
-    buttons: PauseMenuActionButtons,
+    activate: On<Activate>,
+    actions: Query<&PauseMenuAction>,
+    game_state: Res<State<GameState>>,
     mut next_game_state: ResMut<NextState<GameState>>,
 ) {
-    for (interaction, action) in &buttons {
-        if *interaction != Interaction::Pressed {
-            continue;
-        }
+    if *game_state.get() != GameState::Paused {
+        return;
+    }
 
-        match action {
-            PauseMenuAction::Resume => next_game_state.set(GameState::Playing),
-        }
+    let Ok(action) = actions.get(activate.entity) else {
+        return;
+    };
+
+    match action {
+        PauseMenuAction::Resume => next_game_state.set(GameState::Playing),
     }
 }
 
-type PauseMenuVisualButtons<'w, 's> = Query<
-    'w,
-    's,
-    (
-        &'static Interaction,
-        &'static PauseButtonVisual,
-        &'static mut ImageNode,
-    ),
-    (Changed<Interaction>, With<Button>),
->;
-
-fn update_button_visuals(mut buttons: PauseMenuVisualButtons) {
-    for (interaction, visual, mut image) in &mut buttons {
-        image.image = match interaction {
-            Interaction::None => visual.normal.clone(),
-            Interaction::Hovered | Interaction::Pressed => visual.highlighted.clone(),
+fn update_button_visuals(
+    mut buttons: Query<(&Hovered, Has<Pressed>, &PauseButtonVisual, &mut ImageNode), With<Button>>,
+) {
+    for (hovered, pressed, visual, mut image) in &mut buttons {
+        image.image = if hovered.get() || pressed {
+            visual.highlighted.clone()
+        } else {
+            visual.normal.clone()
         };
     }
 }
