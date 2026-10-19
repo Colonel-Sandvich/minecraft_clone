@@ -8,6 +8,8 @@ import bevy_pbr::render::{
 };
 import bevy_core_pipeline::tonemapping::tone_mapping;
 
+import super::terrain_tables::{terrain_table_index, texture_base_layer};
+
 @group(constants::MATERIAL_BIND_GROUP) @binding(0)
 var terrain_texture: texture_2d_array<f32>;
 
@@ -37,8 +39,8 @@ fn fragment(
     var face = 3u;
     @if(VERTEX_COLORS)
     face = u32(round(mesh.color.r));
-    let lookup = render_id * 6u + face;
-    let texture_layer = i32(texture_layers[lookup] & 0x00ffffffu);
+    let lookup = terrain_table_index(render_id, face);
+    let texture_layer = i32(texture_base_layer(texture_layers[lookup]));
 
     var pbr_input: pbr_types::PbrInput = pbr_types::pbr_input_new();
     pbr_input.material.base_color = textureSample(
