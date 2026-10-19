@@ -44,9 +44,6 @@ impl Plugin for DebugPlugin {
 #[derive(Component)]
 struct DebugOverlay;
 
-#[derive(Component)]
-struct LightOverlayLabel;
-
 #[derive(Resource, Default)]
 struct DebugVisible(bool);
 
@@ -377,7 +374,6 @@ fn manage_light_labels(
                     ..default()
                 },
                 LightLabelPos(world),
-                LightOverlayLabel,
                 Pickable::IGNORE,
             ));
         });

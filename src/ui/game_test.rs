@@ -16,8 +16,7 @@ pub(super) struct GameTestOverlayPlugin;
 
 impl Plugin for GameTestOverlayPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<WaterTestSuite>()
-            .add_systems(Startup, spawn_game_test_overlay)
+        app.add_systems(Startup, spawn_game_test_overlay)
             .add_systems(Update, update_game_test_overlay);
     }
 }

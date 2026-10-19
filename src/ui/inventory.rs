@@ -20,7 +20,8 @@ use crate::{
 
 use super::{
     crosshair::CrosshairRoot,
-    hotbar::{HotbarHudRoot, ItemIcons, hotbar_count_label},
+    hotbar::{HotbarHudRoot, ItemIcons},
+    item_stack::{stack_count_label, stack_count_text, stack_icon},
 };
 
 pub(super) struct InventoryUiPlugin;
@@ -354,21 +355,6 @@ fn spawn_slot_row(parent: &mut ChildSpawnerCommands, slots: impl IntoIterator<It
                 });
             }
         });
-}
-
-fn stack_count_text() -> (Text, TextFont, TextColor, TextShadow) {
-    (
-        Text::new(""),
-        TextFont {
-            font_size: FontSize::Px(20.0),
-            ..default()
-        },
-        TextColor(Color::WHITE),
-        TextShadow {
-            offset: Vec2::splat(2.0),
-            color: Color::BLACK,
-        },
-    )
 }
 
 fn toggle_inventory_ui(
@@ -859,17 +845,13 @@ fn update_inventory_slots(
     mut slot_counts: Query<(&InventorySlotCount, &mut Text)>,
 ) {
     for (slot, mut image) in &mut slot_icons {
-        let target = inventory
-            .slot(slot.0)
-            .and_then(|stack| icons.icons.get(&stack.item))
-            .cloned()
-            .unwrap_or_default();
+        let target = stack_icon(&icons, inventory.slot(slot.0));
         if image.image != target {
             image.image = target;
         }
     }
     for (slot, mut text) in &mut slot_counts {
-        let target = hotbar_count_label(inventory.slot(slot.0));
+        let target = stack_count_label(inventory.slot(slot.0));
         if text.0 != target {
             text.0 = target;
         }
@@ -890,7 +872,7 @@ fn update_cursor_stack(
         match projection.cursor {
             Some(stack) => (
                 Some(stack.item),
-                hotbar_count_label(Some(stack)),
+                stack_count_label(Some(stack)),
                 Color::WHITE,
             ),
             // Vanilla keeps a yellow "0" on the cursor when a quick-craft
@@ -910,7 +892,7 @@ fn update_cursor_stack(
         };
         (
             Some(stack.item),
-            hotbar_count_label(Some(stack)),
+            stack_count_label(Some(stack)),
             Color::WHITE,
         )
     };
@@ -1022,10 +1004,7 @@ fn update_drag_preview(
         }
     }
     for (slot, mut image) in &mut preview_icons {
-        let target = planned_stack(planned, slot.0)
-            .and_then(|stack| icons.icons.get(&stack.item))
-            .cloned()
-            .unwrap_or_default();
+        let target = stack_icon(&icons, planned_stack(planned, slot.0));
         if image.image != target {
             image.image = target;
         }
@@ -1035,7 +1014,7 @@ fn update_drag_preview(
     }
     for (slot, mut text, mut color) in &mut preview_counts {
         let target = planned_stack(planned, slot.0)
-            .map_or(String::new(), |stack| hotbar_count_label(Some(stack)));
+            .map_or(String::new(), |stack| stack_count_label(Some(stack)));
         if text.0 != target {
             text.0 = target;
         }

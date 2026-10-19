@@ -12,6 +12,8 @@ use crate::{
     player::Player,
 };
 
+use super::item_stack::{stack_count_label, stack_count_text, stack_icon};
+
 const HOTBAR_SLOT_WIDTH: f32 = 60.0;
 const HOTBAR_SELECTION_INSET: f32 = 3.0;
 
@@ -51,9 +53,6 @@ pub(super) struct ItemIcons {
 
 #[derive(Component)]
 pub(super) struct HotbarHudRoot;
-
-#[derive(Component)]
-struct HotbarSlot;
 
 #[derive(Component)]
 struct HotbarIcon(usize);
@@ -174,7 +173,6 @@ fn spawn_hotbar_ui(commands: &mut Commands, bg_handle: &Handle<Image>, sel_handl
                                         justify_content: JustifyContent::Center,
                                         ..default()
                                     },
-                                    HotbarSlot,
                                     Pickable::IGNORE,
                                 ))
                                 .with_children(|slot| {
@@ -189,16 +187,7 @@ fn spawn_hotbar_ui(commands: &mut Commands, bg_handle: &Handle<Image>, sel_handl
                                         Pickable::IGNORE,
                                     ));
                                     slot.spawn((
-                                        Text::new(""),
-                                        TextFont {
-                                            font_size: FontSize::Px(20.0),
-                                            ..default()
-                                        },
-                                        TextColor(Color::WHITE),
-                                        TextShadow {
-                                            offset: Vec2::splat(2.0),
-                                            color: Color::BLACK,
-                                        },
+                                        stack_count_text(),
                                         Node {
                                             position_type: PositionType::Absolute,
                                             right: Val::Px(4.0),
@@ -450,44 +439,16 @@ fn update_hotbar_ui(
     }
 
     for (slot, mut image) in &mut icons {
-        let target = inventory
-            .slot(slot.0)
-            .and_then(|stack| item_icons.icons.get(&stack.item))
-            .cloned()
-            .unwrap_or_default();
+        let target = stack_icon(&item_icons, inventory.slot(slot.0));
         if image.image != target {
             image.image = target;
         }
     }
 
     for (slot, mut text) in &mut counts {
-        let target = hotbar_count_label(inventory.slot(slot.0));
+        let target = stack_count_label(inventory.slot(slot.0));
         if text.0 != target {
             text.0 = target;
         }
-    }
-}
-
-pub(super) fn hotbar_count_label(stack: Option<crate::item::ItemStack>) -> String {
-    stack.map_or_else(String::new, |stack| {
-        let count = stack.count();
-        if count > 1 {
-            count.to_string()
-        } else {
-            String::new()
-        }
-    })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::item::ItemStack;
-
-    #[test]
-    fn count_label_is_hidden_for_empty_and_single_item_slots() {
-        assert_eq!(hotbar_count_label(None), "");
-        assert_eq!(hotbar_count_label(Some(ItemStack::one(Item::Dirt))), "");
-        assert_eq!(hotbar_count_label(ItemStack::try_new(Item::Dirt, 64)), "64");
     }
 }

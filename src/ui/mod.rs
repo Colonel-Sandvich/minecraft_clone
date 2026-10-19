@@ -3,6 +3,7 @@ mod debug;
 mod game_test;
 mod hotbar;
 mod inventory;
+mod item_stack;
 mod pause_menu;
 mod tick_control;
 
