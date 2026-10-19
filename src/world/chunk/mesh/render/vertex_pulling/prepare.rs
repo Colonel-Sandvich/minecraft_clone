@@ -15,6 +15,8 @@ use bevy::{
     },
 };
 
+#[cfg(feature = "mesh-shaders")]
+use super::pipeline::mesh_workgroup_count;
 use super::{
     super::{
         material::TerrainMaterialState,
@@ -32,6 +34,8 @@ pub(super) struct PreparedChunkMesh {
     pub(super) face_count: u32,
     pub(super) material_layer: crate::block::BlockMaterialLayer,
     pub(super) chunk_origin: Vec3,
+    #[cfg(feature = "mesh-shaders")]
+    pub(super) mesh_workgroups: u32,
     face_buffer: Buffer,
     light_buffer: Buffer,
 }
@@ -39,6 +43,8 @@ pub(super) struct PreparedChunkMesh {
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct ChunkOriginUniform {
+    /// `xyz` is the chunk origin; `w` is the layer face count for the mesh
+    /// shader (every chunk has fewer than 2^24 faces, so f32 is exact).
     origin: [f32; 4],
 }
 
@@ -424,6 +430,8 @@ fn create_prepared_mesh(
         face_count: mesh.face_count(),
         material_layer: mesh.material_layer(),
         chunk_origin: mesh.origin(),
+        #[cfg(feature = "mesh-shaders")]
+        mesh_workgroups: mesh_workgroup_count(mesh.face_count()),
         face_buffer,
         light_buffer,
     }
@@ -440,7 +448,7 @@ fn create_face_buffer(render_device: &RenderDevice, faces: &[PackedFace]) -> Buf
 fn create_origin_buffer(render_device: &RenderDevice, mesh: &ChunkMeshLayer) -> Buffer {
     let origin = mesh.origin();
     let origin = ChunkOriginUniform {
-        origin: [origin.x, origin.y, origin.z, 0.0],
+        origin: [origin.x, origin.y, origin.z, mesh.face_count() as f32],
     };
     render_device.create_buffer_with_data(&BufferInitDescriptor {
         label: Some("vp_origin"),

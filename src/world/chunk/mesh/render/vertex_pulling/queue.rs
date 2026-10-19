@@ -56,7 +56,53 @@ impl<P: PhaseItem> RenderCommand<P> for DrawVertexPulled {
     }
 }
 
+#[cfg(feature = "mesh-shaders")]
+pub(super) struct DrawMeshTasks;
+
+#[cfg(feature = "mesh-shaders")]
+impl<P: PhaseItem> RenderCommand<P> for DrawMeshTasks {
+    type Param = SRes<Globals>;
+    type ViewQuery = ();
+    type ItemQuery = Read<PreparedChunkMesh>;
+
+    fn render<'w>(
+        _item: &P,
+        _view: (),
+        mesh: Option<&'w PreparedChunkMesh>,
+        globals: SystemParamItem<'w, '_, Self::Param>,
+        pass: &mut TrackedRenderPass<'w>,
+    ) -> RenderCommandResult {
+        let Some(mesh) = mesh else {
+            return RenderCommandResult::Skip;
+        };
+        if mesh.mesh_workgroups == 0 {
+            return RenderCommandResult::Skip;
+        }
+        let globals = globals.into_inner();
+        pass.set_bind_group(0, &globals.bind_group, &[]);
+        pass.set_bind_group(1, &mesh.bind_group, &[]);
+        pass.draw_mesh_tasks(mesh.mesh_workgroups, 1, 1);
+        RenderCommandResult::Success
+    }
+}
+
 pub(super) type DrawChunkMeshCommands = (SetItemPipeline, DrawVertexPulled);
+
+#[cfg(feature = "mesh-shaders")]
+pub(super) type DrawChunkMeshTaskCommands = (SetItemPipeline, DrawMeshTasks);
+
+fn chunk_draw_function_id<P: PhaseItem>(
+    pipeline: &Pipeline,
+    draw_functions: &DrawFunctions<P>,
+) -> bevy::render::render_phase::DrawFunctionId {
+    #[cfg(feature = "mesh-shaders")]
+    if pipeline.uses_mesh_shaders() {
+        return draw_functions.read().id::<DrawChunkMeshTaskCommands>();
+    }
+    #[cfg(not(feature = "mesh-shaders"))]
+    let _ = pipeline;
+    draw_functions.read().id::<DrawChunkMeshCommands>()
+}
 
 pub(super) fn queue_chunk_meshes(
     pipeline: Option<Res<Pipeline>>,
@@ -74,19 +120,17 @@ pub(super) fn queue_chunk_meshes(
         return;
     }
 
-    let opaque_draw_function = opaque_draw_functions.read().id::<DrawChunkMeshCommands>();
-    let transparent_draw_function = transparent_draw_functions
-        .read()
-        .id::<DrawChunkMeshCommands>();
+    let opaque_draw_function = chunk_draw_function_id(pipeline, &opaque_draw_functions);
+    let transparent_draw_function = chunk_draw_function_id(pipeline, &transparent_draw_functions);
     let opaque_batch_key = Opaque3dBatchSetKey {
-        pipeline: pipeline.opaque_id,
+        pipeline: pipeline.opaque_pipeline_id(),
         draw_function: opaque_draw_function,
         material_bind_group_index: None,
         slabs: MeshSlabs::default(),
         lightmap_slab: None,
     };
     let cutout_batch_key = Opaque3dBatchSetKey {
-        pipeline: pipeline.cutout_id,
+        pipeline: pipeline.cutout_pipeline_id(),
         ..opaque_batch_key.clone()
     };
     let bin_key = Opaque3dBinKey {
@@ -135,7 +179,7 @@ pub(super) fn queue_chunk_meshes(
                             depth_bias: 0.0,
                         },
                         entity: (entity, main_entity),
-                        pipeline: pipeline.translucent_id,
+                        pipeline: pipeline.translucent_pipeline_id(),
                         draw_function: transparent_draw_function,
                         distance: rangefinder.distance(&mesh_center),
                         batch_range: 0..1,

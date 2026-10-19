@@ -31,5 +31,10 @@ pub(super) fn install(render_app: &mut bevy::app::SubApp) {
 pub(super) fn finish(render_app: &mut bevy::app::SubApp) {
     render_app.add_render_command::<Opaque3d, queue::DrawChunkMeshCommands>();
     render_app.add_render_command::<Transparent3d, queue::DrawChunkMeshCommands>();
+    #[cfg(feature = "mesh-shaders")]
+    {
+        render_app.add_render_command::<Opaque3d, queue::DrawChunkMeshTaskCommands>();
+        render_app.add_render_command::<Transparent3d, queue::DrawChunkMeshTaskCommands>();
+    }
     pipeline::initialize(render_app);
 }

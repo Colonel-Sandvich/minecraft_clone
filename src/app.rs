@@ -413,6 +413,15 @@ fn wgpu_settings() -> WgpuSettings {
     {
         settings.instance_flags.insert(InstanceFlags::debugging());
     }
+    #[cfg(feature = "mesh-shaders")]
+    {
+        // Bevy's `Functionality` priority requests every feature exposed by the
+        // selected adapter, including `EXPERIMENTAL_MESH_SHADER`. Keeping the
+        // request adapter-derived (instead of inserting the bit into
+        // `settings.features`) is what lets unsupported adapters fall back to
+        // vertex pulling instead of panicking during device creation.
+        settings.priority = bevy::render::settings::WgpuSettingsPriority::Functionality;
+    }
     settings
 }
 
