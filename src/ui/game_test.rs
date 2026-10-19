@@ -12,6 +12,8 @@ use crate::{
     world::chunk::WATER_SCENARIOS,
 };
 
+use super::z;
+
 pub(super) struct GameTestOverlayPlugin;
 
 impl Plugin for GameTestOverlayPlugin {
@@ -54,6 +56,7 @@ fn spawn_game_test_overlay(mut commands: Commands) {
             BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.6)),
             GameTestOverlayRoot,
             Pickable::IGNORE,
+            GlobalZIndex(z::HUD),
         ))
         .with_children(|overlay| {
             overlay.spawn((

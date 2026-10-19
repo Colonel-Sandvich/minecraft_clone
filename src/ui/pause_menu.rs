@@ -9,6 +9,8 @@ use bevy::{
 
 use crate::game_state::GameState;
 
+use super::z;
+
 pub struct PauseMenuPlugin;
 
 impl Plugin for PauseMenuPlugin {
@@ -81,7 +83,7 @@ fn spawn_pause_menu(mut commands: Commands, asset_server: Res<AssetServer>) {
                 ..default()
             },
             BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.62)),
-            GlobalZIndex(1_000),
+            GlobalZIndex(z::PAUSE_MENU),
         ))
         .with_children(|overlay| {
             overlay

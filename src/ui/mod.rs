@@ -8,6 +8,13 @@ mod pause_menu;
 mod tick_control;
 
 use bevy::prelude::*;
+
+pub(super) mod z {
+    pub const HUD: i32 = 0;
+    pub const PAUSE_MENU: i32 = 1_000;
+    pub const INVENTORY: i32 = 2_000;
+    pub const INVENTORY_CURSOR: i32 = 2_100;
+}
 #[cfg(debug_assertions)]
 use bevy_dev_tools::diagnostics_overlay::{DiagnosticsOverlay, DiagnosticsOverlayPlugin};
 use crosshair::CrosshairPlugin;
@@ -40,5 +47,9 @@ impl Plugin for UIPlugin {
 
 #[cfg(debug_assertions)]
 fn spawn_diagnostics_overlay(mut commands: Commands) {
-    commands.spawn((DiagnosticsOverlay::fps(), Pickable::IGNORE));
+    commands.spawn((
+        DiagnosticsOverlay::fps(),
+        Pickable::IGNORE,
+        GlobalZIndex(z::HUD),
+    ));
 }

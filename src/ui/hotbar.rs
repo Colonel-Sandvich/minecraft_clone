@@ -12,10 +12,21 @@ use crate::{
     player::Player,
 };
 
-use super::item_stack::{stack_count_label, stack_count_text, stack_icon};
+use super::{
+    item_stack::{stack_count_label, stack_count_text, stack_icon},
+    z,
+};
 
+const HOTBAR_WIDTH: f32 = 546.0;
+const HOTBAR_HEIGHT: f32 = 66.0;
 const HOTBAR_SLOT_WIDTH: f32 = 60.0;
+const HOTBAR_ICON_SIZE: f32 = 48.0;
+const HOTBAR_SELECTION_WIDTH: f32 = 72.0;
+const HOTBAR_SELECTION_HEIGHT: f32 = 69.0;
 const HOTBAR_SELECTION_INSET: f32 = 3.0;
+const HOTBAR_PADDING: f32 = 3.0;
+const HOTBAR_COUNT_RIGHT: f32 = 4.0;
+const HOTBAR_COUNT_BOTTOM: f32 = 5.0;
 
 pub struct HotbarPlugin;
 
@@ -73,11 +84,16 @@ fn setup_gui_textures(
     }
     *spawned = true;
 
-    let hotbar_bg = load_scale("textures/gui/sprites/hud/hotbar.png", 546, 66, &mut images);
+    let hotbar_bg = load_scale(
+        "textures/gui/sprites/hud/hotbar.png",
+        HOTBAR_WIDTH as u32,
+        HOTBAR_HEIGHT as u32,
+        &mut images,
+    );
     let selection = load_scale(
         "textures/gui/sprites/hud/hotbar_selection.png",
-        72,
-        69,
+        HOTBAR_SELECTION_WIDTH as u32,
+        HOTBAR_SELECTION_HEIGHT as u32,
         &mut images,
     );
 
@@ -107,6 +123,7 @@ fn spawn_hotbar_ui(commands: &mut Commands, bg_handle: &Handle<Image>, sel_handl
         .spawn((
             HotbarHudRoot,
             Pickable::IGNORE,
+            GlobalZIndex(z::HUD),
             Node {
                 width: Val::Vw(100.0),
                 height: Val::Vh(100.0),
@@ -121,8 +138,8 @@ fn spawn_hotbar_ui(commands: &mut Commands, bg_handle: &Handle<Image>, sel_handl
             parent
                 .spawn((
                     Node {
-                        width: Val::Px(546.0),
-                        height: Val::Px(66.0),
+                        width: Val::Px(HOTBAR_WIDTH),
+                        height: Val::Px(HOTBAR_HEIGHT),
                         position_type: PositionType::Relative,
                         ..default()
                     },
@@ -136,8 +153,8 @@ fn spawn_hotbar_ui(commands: &mut Commands, bg_handle: &Handle<Image>, sel_handl
                             position_type: PositionType::Absolute,
                             left: Val::Px(0.0),
                             top: Val::Px(0.0),
-                            width: Val::Px(546.0),
-                            height: Val::Px(66.0),
+                            width: Val::Px(HOTBAR_WIDTH),
+                            height: Val::Px(HOTBAR_HEIGHT),
                             ..default()
                         },
                         Pickable::IGNORE,
@@ -147,13 +164,13 @@ fn spawn_hotbar_ui(commands: &mut Commands, bg_handle: &Handle<Image>, sel_handl
                     hotbar
                         .spawn((
                             Node {
-                                width: Val::Px(546.0),
-                                height: Val::Px(66.0),
+                                width: Val::Px(HOTBAR_WIDTH),
+                                height: Val::Px(HOTBAR_HEIGHT),
                                 display: Display::Flex,
                                 flex_direction: FlexDirection::Row,
                                 padding: UiRect::new(
-                                    Val::Px(3.0),
-                                    Val::Px(3.0),
+                                    Val::Px(HOTBAR_PADDING),
+                                    Val::Px(HOTBAR_PADDING),
                                     Val::Px(0.0),
                                     Val::Px(0.0),
                                 ),
@@ -166,7 +183,7 @@ fn spawn_hotbar_ui(commands: &mut Commands, bg_handle: &Handle<Image>, sel_handl
                                 row.spawn((
                                     Node {
                                         width: Val::Px(HOTBAR_SLOT_WIDTH),
-                                        height: Val::Px(66.0),
+                                        height: Val::Px(HOTBAR_HEIGHT),
                                         display: Display::Flex,
                                         position_type: PositionType::Relative,
                                         align_items: AlignItems::Center,
@@ -179,8 +196,8 @@ fn spawn_hotbar_ui(commands: &mut Commands, bg_handle: &Handle<Image>, sel_handl
                                     slot.spawn((
                                         ImageNode::default(),
                                         Node {
-                                            width: Val::Px(48.0),
-                                            height: Val::Px(48.0),
+                                            width: Val::Px(HOTBAR_ICON_SIZE),
+                                            height: Val::Px(HOTBAR_ICON_SIZE),
                                             ..default()
                                         },
                                         HotbarIcon(i),
@@ -190,8 +207,8 @@ fn spawn_hotbar_ui(commands: &mut Commands, bg_handle: &Handle<Image>, sel_handl
                                         stack_count_text(),
                                         Node {
                                             position_type: PositionType::Absolute,
-                                            right: Val::Px(4.0),
-                                            bottom: Val::Px(5.0),
+                                            right: Val::Px(HOTBAR_COUNT_RIGHT),
+                                            bottom: Val::Px(HOTBAR_COUNT_BOTTOM),
                                             ..default()
                                         },
                                         HotbarCount(i),
@@ -208,8 +225,8 @@ fn spawn_hotbar_ui(commands: &mut Commands, bg_handle: &Handle<Image>, sel_handl
                             position_type: PositionType::Absolute,
                             left: Val::Px(-HOTBAR_SELECTION_INSET),
                             top: Val::Px(-HOTBAR_SELECTION_INSET),
-                            width: Val::Px(72.0),
-                            height: Val::Px(69.0),
+                            width: Val::Px(HOTBAR_SELECTION_WIDTH),
+                            height: Val::Px(HOTBAR_SELECTION_HEIGHT),
                             ..default()
                         },
                         HotbarSelection,

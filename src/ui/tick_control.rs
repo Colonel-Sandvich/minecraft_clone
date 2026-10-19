@@ -11,6 +11,8 @@ use crate::{
     world::dimension::fluid::FluidTickCounter,
 };
 
+use super::z;
+
 pub(super) struct TickControlOverlayPlugin;
 
 impl Plugin for TickControlOverlayPlugin {
@@ -40,6 +42,7 @@ fn spawn_tick_control_overlay(mut commands: Commands) {
             },
             TickControlOverlayRoot,
             Pickable::IGNORE,
+            GlobalZIndex(z::HUD),
         ))
         .with_children(|overlay| {
             overlay

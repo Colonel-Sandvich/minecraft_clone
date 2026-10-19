@@ -22,6 +22,7 @@ use super::{
     crosshair::CrosshairRoot,
     hotbar::{HotbarHudRoot, ItemIcons},
     item_stack::{stack_count_label, stack_count_text, stack_icon},
+    z,
 };
 
 pub(super) struct InventoryUiPlugin;
@@ -141,9 +142,23 @@ struct CursorStackIcon;
 #[derive(Component)]
 struct CursorStackCount;
 
+const INVENTORY_PANEL_WIDTH: f32 = 602.0;
+const INVENTORY_PANEL_HEIGHT: f32 = 348.0;
+const INVENTORY_PANEL_PADDING: f32 = 28.0;
+const INVENTORY_PANEL_BORDER: f32 = 4.0;
+const INVENTORY_TITLE_HEIGHT: f32 = 30.0;
+const INVENTORY_TITLE_MARGIN: f32 = 4.0;
+const INVENTORY_SECTION_GAP: f32 = 18.0;
 const SLOT_SIZE: f32 = 54.0;
 const ITEM_ICON_SIZE: f32 = 44.0;
 const SLOT_GAP: f32 = 4.0;
+const SLOT_BORDER_WIDTH: f32 = 2.0;
+const SLOT_COUNT_RIGHT: f32 = 2.0;
+const SLOT_COUNT_BOTTOM: f32 = 1.0;
+const CURSOR_OFFSET: f32 = 8.0;
+const CURSOR_ICON_INSET: f32 = 5.0;
+const CURSOR_COUNT_RIGHT: f32 = 1.0;
+const CURSOR_COUNT_BOTTOM: f32 = 1.0;
 const SLOT_IDLE: Color = Color::srgb(0.32, 0.32, 0.32);
 const SLOT_HOVER: Color = Color::srgb(0.48, 0.48, 0.48);
 const SLOT_PRESSED: Color = Color::srgb(0.62, 0.62, 0.62);
@@ -171,7 +186,7 @@ fn spawn_inventory_ui(commands: &mut Commands) {
                 ..default()
             },
             BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.58)),
-            GlobalZIndex(2_000),
+            GlobalZIndex(z::INVENTORY),
             FocusPolicy::Block,
         ))
         .with_children(|overlay| {
@@ -180,12 +195,12 @@ fn spawn_inventory_ui(commands: &mut Commands) {
                     InventoryPanel,
                     RelativeCursorPosition::default(),
                     Node {
-                        width: Val::Px(602.0),
-                        height: Val::Px(348.0),
+                        width: Val::Px(INVENTORY_PANEL_WIDTH),
+                        height: Val::Px(INVENTORY_PANEL_HEIGHT),
                         flex_direction: FlexDirection::Column,
-                        padding: UiRect::all(Val::Px(28.0)),
+                        padding: UiRect::all(Val::Px(INVENTORY_PANEL_PADDING)),
                         row_gap: Val::Px(SLOT_GAP),
-                        border: UiRect::all(Val::Px(4.0)),
+                        border: UiRect::all(Val::Px(INVENTORY_PANEL_BORDER)),
                         ..default()
                     },
                     BackgroundColor(Color::srgb(0.72, 0.72, 0.72)),
@@ -201,8 +216,8 @@ fn spawn_inventory_ui(commands: &mut Commands) {
                         },
                         TextColor(Color::srgb(0.15, 0.15, 0.15)),
                         Node {
-                            height: Val::Px(30.0),
-                            margin: UiRect::bottom(Val::Px(4.0)),
+                            height: Val::Px(INVENTORY_TITLE_HEIGHT),
+                            margin: UiRect::bottom(Val::Px(INVENTORY_TITLE_MARGIN)),
                             ..default()
                         },
                         Pickable::IGNORE,
@@ -217,7 +232,7 @@ fn spawn_inventory_ui(commands: &mut Commands) {
                     }
 
                     panel.spawn(Node {
-                        height: Val::Px(18.0),
+                        height: Val::Px(INVENTORY_SECTION_GAP),
                         ..default()
                     });
                     spawn_slot_row(panel, 0..HOTBAR_SLOTS);
@@ -233,7 +248,7 @@ fn spawn_inventory_ui(commands: &mut Commands) {
                         display: Display::None,
                         ..default()
                     },
-                    GlobalZIndex(2_100),
+                    GlobalZIndex(z::INVENTORY_CURSOR),
                     Pickable::IGNORE,
                 ))
                 .with_children(|cursor| {
@@ -242,8 +257,8 @@ fn spawn_inventory_ui(commands: &mut Commands) {
                         ImageNode::default(),
                         Node {
                             position_type: PositionType::Absolute,
-                            left: Val::Px(5.0),
-                            top: Val::Px(5.0),
+                            left: Val::Px(CURSOR_ICON_INSET),
+                            top: Val::Px(CURSOR_ICON_INSET),
                             width: Val::Px(ITEM_ICON_SIZE),
                             height: Val::Px(ITEM_ICON_SIZE),
                             ..default()
@@ -255,8 +270,8 @@ fn spawn_inventory_ui(commands: &mut Commands) {
                         stack_count_text(),
                         Node {
                             position_type: PositionType::Absolute,
-                            right: Val::Px(1.0),
-                            bottom: Val::Px(1.0),
+                            right: Val::Px(CURSOR_COUNT_RIGHT),
+                            bottom: Val::Px(CURSOR_COUNT_BOTTOM),
                             ..default()
                         },
                         Pickable::IGNORE,
@@ -287,7 +302,7 @@ fn spawn_slot_row(parent: &mut ChildSpawnerCommands, slots: impl IntoIterator<It
                         position_type: PositionType::Relative,
                         align_items: AlignItems::Center,
                         justify_content: JustifyContent::Center,
-                        border: UiRect::all(Val::Px(2.0)),
+                        border: UiRect::all(Val::Px(SLOT_BORDER_WIDTH)),
                         ..default()
                     },
                     BackgroundColor(SLOT_IDLE),
@@ -309,8 +324,8 @@ fn spawn_slot_row(parent: &mut ChildSpawnerCommands, slots: impl IntoIterator<It
                         stack_count_text(),
                         Node {
                             position_type: PositionType::Absolute,
-                            right: Val::Px(2.0),
-                            bottom: Val::Px(1.0),
+                            right: Val::Px(SLOT_COUNT_RIGHT),
+                            bottom: Val::Px(SLOT_COUNT_BOTTOM),
                             ..default()
                         },
                         Pickable::IGNORE,
@@ -346,8 +361,8 @@ fn spawn_slot_row(parent: &mut ChildSpawnerCommands, slots: impl IntoIterator<It
                             stack_count_text(),
                             Node {
                                 position_type: PositionType::Absolute,
-                                right: Val::Px(2.0),
-                                bottom: Val::Px(1.0),
+                                right: Val::Px(SLOT_COUNT_RIGHT),
+                                bottom: Val::Px(SLOT_COUNT_BOTTOM),
                                 ..default()
                             },
                             Pickable::IGNORE,
@@ -938,8 +953,8 @@ fn update_cursor_stack(
         root.display = Display::Flex;
     }
     if let Some(position) = window.cursor_position() {
-        let left = Val::Px(position.x + 8.0);
-        let top = Val::Px(position.y + 8.0);
+        let left = Val::Px(position.x + CURSOR_OFFSET);
+        let top = Val::Px(position.y + CURSOR_OFFSET);
         if root.left != left {
             root.left = left;
         }

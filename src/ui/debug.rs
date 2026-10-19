@@ -17,6 +17,8 @@ use crate::{
     world::dimension::{Active, Dimension, ViewDistance},
 };
 
+use super::z;
+
 pub struct DebugPlugin;
 
 impl Plugin for DebugPlugin {
@@ -69,6 +71,7 @@ fn spawn_debug_overlay(mut commands: Commands) {
         },
         DebugOverlay,
         Pickable::IGNORE,
+        GlobalZIndex(z::HUD),
     ));
 }
 
@@ -82,6 +85,7 @@ fn spawn_label_parent(mut commands: Commands) {
         },
         LightLabelParent,
         Pickable::IGNORE,
+        GlobalZIndex(z::HUD),
     ));
 }
 

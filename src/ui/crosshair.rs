@@ -1,5 +1,7 @@
 use bevy::prelude::*;
 
+use super::z;
+
 pub struct CrosshairPlugin;
 
 impl Plugin for CrosshairPlugin {
@@ -21,6 +23,7 @@ fn spawn_crosshair(mut commands: Commands) {
     commands.spawn((
         CrosshairRoot,
         Pickable::IGNORE,
+        GlobalZIndex(z::HUD),
         Node {
             display: Display::Flex,
             align_items: AlignItems::Center,
