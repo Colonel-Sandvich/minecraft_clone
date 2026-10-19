@@ -99,6 +99,11 @@ impl Plugin for AppPlugin {
         if memory_profiler_enabled() {
             app.add_plugins(MemoryTrackingPlugin);
         }
+        #[cfg(feature = "schedule-shuffle")]
+        if let Some(seed) = schedule_shuffle_seed() {
+            set_schedule_shuffle_seed(app, Update, seed);
+            set_schedule_shuffle_seed(app, FixedUpdate, seed);
+        }
         if std::env::var_os("MINECRAFT_CLONE_STREAM_TIMINGS").is_some() {
             app.init_resource::<StreamingStartupTrace>()
                 .add_systems(First, begin_streaming_startup_frame)
@@ -115,6 +120,34 @@ impl Plugin for AppPlugin {
         //     limiter: Limiter::from_framerate(60.0),
         // })
     }
+}
+
+#[cfg(feature = "schedule-shuffle")]
+fn schedule_shuffle_seed() -> Option<u64> {
+    let raw = std::env::var("MINECRAFT_CLONE_SHUFFLE_SEED").ok()?;
+    match raw.parse::<u64>() {
+        Ok(seed) => Some(seed),
+        Err(error) => {
+            warn!("ignoring invalid MINECRAFT_CLONE_SHUFFLE_SEED={raw:?}: {error}");
+            None
+        }
+    }
+}
+
+#[cfg(feature = "schedule-shuffle")]
+fn set_schedule_shuffle_seed<L: bevy::ecs::schedule::ScheduleLabel>(
+    app: &mut App,
+    label: L,
+    seed: u64,
+) {
+    let schedule_name = std::any::type_name::<L>();
+    let Some(schedule) = app.get_schedule_mut(label) else {
+        return;
+    };
+    let mut settings = schedule.get_build_settings();
+    settings.shuffle_seed = Some(seed);
+    schedule.set_build_settings(settings);
+    info!("shuffling {schedule_name} with seed {seed}");
 }
 
 #[derive(Resource, Default)]

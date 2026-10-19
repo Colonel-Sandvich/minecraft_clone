@@ -6,6 +6,9 @@ edition = "2024"
 [features]
 default = []
 turso-store = ["dep:tokio", "dep:turso", "dep:branches"]
+# Bevy gates `ScheduleBuildSettings::shuffle_seed` behind its `debug` feature.
+# This opt-in feature exposes the env-driven schedule shuffle test switch.
+schedule-shuffle = ["bevy/debug"]
 
 [dependencies]
 bevy = { version = "0.20.0", features = ["wayland", "dynamic_linking"] }
