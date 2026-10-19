@@ -14,6 +14,7 @@ use crate::{
 
 use super::{
     item_stack::{stack_count_label, stack_count_text, stack_icon},
+    render_debug::chord_modifier_held,
     settings::rem,
     z,
 };
@@ -416,7 +417,14 @@ fn handle_hotbar_input(
         return;
     }
 
+    // Digit1/Digit2 are also render-debug overlay chords while T is held.
+    // Leave only those slots alone during the chord; Digit3..9 still select
+    // their normal hotbar slots.
+    let overlay_chord_held = chord_modifier_held(&keyboard);
     for i in 0..HOTBAR_SLOTS {
+        if overlay_chord_held && i < 2 {
+            continue;
+        }
         let key = match i {
             0 => KeyCode::Digit1,
             1 => KeyCode::Digit2,
@@ -440,6 +448,49 @@ fn handle_hotbar_input(
         } else if event.y < 0.0 {
             hotbar.selected = (hotbar.selected + 1) % HOTBAR_SLOTS;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn hotbar_input_app() -> App {
+        let mut app = App::new();
+        app.init_resource::<Hotbar>()
+            .insert_resource(ButtonInput::<KeyCode>::default())
+            .insert_resource(InputMode::Gameplay)
+            .add_message::<MouseWheel>()
+            .add_systems(Update, handle_hotbar_input);
+        app.world_mut().resource_mut::<Hotbar>().selected = 4;
+        app
+    }
+
+    fn press(app: &mut App, key: KeyCode) {
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(key);
+    }
+
+    fn run_frame(app: &mut App) {
+        app.world_mut().run_schedule(Update);
+    }
+
+    #[test]
+    fn t_suppresses_only_the_overlay_digit_chords() {
+        let mut app = hotbar_input_app();
+
+        press(&mut app, KeyCode::KeyT);
+        press(&mut app, KeyCode::Digit1);
+        run_frame(&mut app);
+        assert_eq!(app.world().resource::<Hotbar>().selected, 4);
+
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .clear();
+        press(&mut app, KeyCode::Digit3);
+        run_frame(&mut app);
+        assert_eq!(app.world().resource::<Hotbar>().selected, 2);
     }
 }
 
