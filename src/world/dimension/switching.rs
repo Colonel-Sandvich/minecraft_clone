@@ -262,7 +262,7 @@ mod tests {
         player::interaction::{BlockInteractionKind, BlockTarget},
         world::{
             WorldMetadata,
-            chunk::{ChunkBlockPos, ChunkPerfCounters, LocalBlockPos},
+            chunk::{ChunkBlockPos, ChunkCell, ChunkPerfCounters, LocalBlockPos},
             dimension::{
                 ChunkTaskPool, ColumnActivationBudget, ColumnLightBudget, ColumnLoadBudget,
                 ColumnStagingBudget, ViewDistance,
@@ -345,8 +345,12 @@ mod tests {
 
     fn streamed_switch_app() -> App {
         let metadata = WorldMetadata::with_seed(7).with_height_chunks(1).unwrap();
+        streamed_switch_app_with_repository(ChunkRepository::new(InMemoryChunkStore::new(metadata)))
+    }
+
+    fn streamed_switch_app_with_repository(repository: ChunkRepository) -> App {
+        let metadata = repository.metadata().clone();
         let catalog = DimensionCatalog::for_world(&metadata);
-        let repository = ChunkRepository::new(InMemoryChunkStore::new(metadata.clone()));
         let mut app = App::new();
         app.add_plugins(MinimalPlugins)
             .insert_resource(metadata)
@@ -720,5 +724,70 @@ mod tests {
 
         assert!(app.world().get::<AwaitingDimensionReady>(player).is_some());
         assert!(app.world().get::<CharacterController>(player).is_none());
+    }
+
+    #[test]
+    fn saved_pending_fluid_ticks_are_restored_by_a_fresh_app() {
+        let metadata = WorldMetadata::with_seed(7).with_height_chunks(1).unwrap();
+        let repository = ChunkRepository::new(InMemoryChunkStore::new(metadata));
+        let center = ChunkColumn::new(0, 0);
+        let tick_local = LocalBlockPos::new(5, 1, 5);
+        let tick = center.chunk(0).block(tick_local).world().as_ivec3();
+
+        {
+            let mut app = streamed_switch_app_with_repository(repository.clone());
+            let overworld = app.world().resource::<TestRoots>().overworld;
+            update_until(&mut app, |world| {
+                world
+                    .get::<Dimension>(overworld)
+                    .unwrap()
+                    .contains_published_chunk(center.chunk(0))
+            });
+
+            let chunk_entity = app
+                .world()
+                .get::<Dimension>(overworld)
+                .unwrap()
+                .published_chunk_entity(center.chunk(0))
+                .unwrap();
+            app.world_mut()
+                .get_mut::<Chunk>(chunk_entity)
+                .unwrap()
+                .set_cell_xyz(
+                    tick_local.x(),
+                    tick_local.y(),
+                    tick_local.z(),
+                    ChunkCell::water_source(),
+                );
+            app.world_mut()
+                .entity_mut(chunk_entity)
+                .insert(ChunkNeedsSave);
+            app.world_mut()
+                .get_mut::<Dimension>(overworld)
+                .unwrap()
+                .restore_scheduled_fluids(&[tick]);
+
+            app.world_mut().resource_mut::<ChunkSaveBudget>().0 = 2;
+            update_until(&mut app, |world| {
+                !world
+                    .resource::<ChunkSaveTasks>()
+                    .has_uncommitted_dimension(crate::world::DimensionId::OVERWORLD)
+            });
+        }
+
+        let mut app = streamed_switch_app_with_repository(repository);
+        let overworld = app.world().resource::<TestRoots>().overworld;
+        update_until(&mut app, |world| {
+            world
+                .get::<Dimension>(overworld)
+                .unwrap()
+                .contains_published_chunk(center.chunk(0))
+        });
+
+        let dimension = app.world().get::<Dimension>(overworld).unwrap();
+        assert!(
+            dimension.scheduled_fluids().contains(tick),
+            "a saved pending tick must be re-scheduled after a fresh app loads the world"
+        );
     }
 }
