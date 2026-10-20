@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+
+staged_files="$(git diff --cached --name-only --diff-filter=ACMR)"
+if ! printf '%s\n' "$staged_files" | grep -Eq '(\.rs$|(^|/)Cargo\.toml$|(^|/)Cargo\.lock$|rust-toolchain\.toml$|\.cargo/config|^\.githooks/)'; then
+    exit 0
+fi
+
+new_suppressions="$(
+    git diff --cached --unified=0 -- '*.rs' \
+        | grep -E '^\+[^+]' \
+        | grep -E '#\[(allow|expect)\([^]]*clippy::' \
+        || true
+)"
+if [ -n "$new_suppressions" ] && [ "${CLIPPY_ALLOW_APPROVED:-0}" != "1" ]; then
+    cat >&2 <<'EOF'
+pre-commit: new clippy allow/expect suppression detected.
+
+Do not silence a clippy warning unless the repository owner has explicitly
+approved that suppression. Fix the lint, or re-run only after approval:
+
+    CLIPPY_ALLOW_APPROVED=1 git commit ...
+
+Added suppressions:
+EOF
+    printf '%s\n' "$new_suppressions" >&2
+    exit 1
+fi
+
+echo "pre-commit: cargo fmt --all -- --check"
+cargo fmt --all -- --check
+
+echo "pre-commit: cargo clippy --all-targets --all-features -- -D warnings"
+cargo clippy --all-targets --all-features -- -D warnings
