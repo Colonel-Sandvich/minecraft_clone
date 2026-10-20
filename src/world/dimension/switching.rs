@@ -10,15 +10,14 @@ use crate::{
         interaction::{BlockInteractionRequest, BlockInteractionSystems, CurrentBlockTarget},
     },
     world::chunk::{
-        Chunk, ChunkColliderRuntime, ChunkColumn, ChunkContentCounts, ChunkHeightmap,
-        ChunkNeedsSave, ChunkPos, ChunkPosition, ChunkSaveExempt, ChunkSavedFluidTicks,
+        ChunkColliderRuntime, ChunkColumn, ChunkContentCounts, ChunkPos, ChunkPosition,
         collider::column_colliders_ready,
     },
 };
 
 use super::{
     Active, ChunkSaveTasks, DesiredColumnView, Dimension, DimensionCatalog, DimensionStreamingSet,
-    persistence::{SaveSnapshotContext, capture_dimension_save_snapshots},
+    persistence::{ChunkSaveQuery, SaveSnapshotContext, capture_dimension_save_snapshots},
 };
 
 pub(super) fn install(app: &mut App) {
@@ -59,14 +58,7 @@ fn begin_dimension_switch(
     catalog: Res<DimensionCatalog>,
     mut save_tasks: ResMut<ChunkSaveTasks>,
     mut dimensions: Query<(Entity, &mut Dimension, &mut DesiredColumnView, Has<Active>)>,
-    chunks: Query<(
-        &ChunkPosition,
-        &Chunk,
-        &ChunkHeightmap,
-        Option<&ChunkNeedsSave>,
-        Option<&ChunkSaveExempt>,
-        Option<&ChunkSavedFluidTicks>,
-    )>,
+    chunks: Query<ChunkSaveQuery>,
     player: Option<
         Single<
             (
@@ -262,7 +254,9 @@ mod tests {
         player::interaction::{BlockInteractionKind, BlockTarget},
         world::{
             WorldMetadata,
-            chunk::{ChunkBlockPos, ChunkCell, ChunkPerfCounters, LocalBlockPos},
+            chunk::{
+                Chunk, ChunkBlockPos, ChunkCell, ChunkNeedsSave, ChunkPerfCounters, LocalBlockPos,
+            },
             dimension::{
                 ChunkTaskPool, ColumnActivationBudget, ColumnLightBudget, ColumnLoadBudget,
                 ColumnStagingBudget, ViewDistance,
@@ -442,10 +436,11 @@ mod tests {
     }
 
     fn trigger_dimension_switch(app: &mut App) {
-        let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
-        keys.reset(KeyCode::F6);
-        keys.press(KeyCode::F6);
-        drop(keys);
+        {
+            let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+            keys.reset(KeyCode::F6);
+            keys.press(KeyCode::F6);
+        }
         app.update();
     }
 

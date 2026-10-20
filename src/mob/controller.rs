@@ -6,6 +6,27 @@ use crate::{
 use avian3d::prelude::*;
 use bevy::prelude::*;
 
+type PlayerMovementQuery<'w, 's> = Single<
+    'w,
+    's,
+    (
+        &'static MovementAcceleration,
+        &'static AirMovementAcceleration,
+        &'static JumpImpulse,
+        &'static mut Velocity,
+        Has<Grounded>,
+        Has<Flying>,
+    ),
+    With<Player>,
+>;
+
+type FlyingMovementQuery<'w, 's> = Query<
+    'w,
+    's,
+    (&'static MovementAcceleration, &'static mut Velocity),
+    (With<Flying>, With<Player>),
+>;
+
 #[derive(Component)]
 #[require(
     RigidBody = RigidBody::Kinematic,
@@ -45,17 +66,7 @@ pub struct Flying;
 pub fn apply_player_movement_input(
     keys: Res<ButtonInput<KeyCode>>,
     key_bindings: Res<KeyBindings>,
-    player_q: Single<
-        (
-            &MovementAcceleration,
-            &AirMovementAcceleration,
-            &JumpImpulse,
-            &mut Velocity,
-            Has<Grounded>,
-            Has<Flying>,
-        ),
-        With<Player>,
-    >,
+    player_q: PlayerMovementQuery,
     camera: Single<&Transform, With<MouseCam>>,
     time: Res<Time<Fixed>>,
 ) {
@@ -151,7 +162,7 @@ pub fn apply_jump_impulse(
 pub fn apply_flight_vertical_input(
     keys: Res<ButtonInput<KeyCode>>,
     key_bindings: Res<KeyBindings>,
-    mut player_q: Query<(&MovementAcceleration, &mut Velocity), (With<Flying>, With<Player>)>,
+    mut player_q: FlyingMovementQuery,
     time: Res<Time<Fixed>>,
 ) {
     let movement_intent = key_bindings.movement_intent(&keys);

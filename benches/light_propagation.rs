@@ -21,6 +21,10 @@ use minecraft_clone::{
 const SINGLE_TARGET_POSITION: ChunkPos = ChunkPos::new(-3, 0, 5);
 const STAGED_PATCH_CENTER: ChunkColumn = ChunkColumn::new(-4, 7);
 
+type PreparedLights = Vec<(ChunkPos, Arc<[u32]>)>;
+type StagedPatchSolution = (PreparedLights, Vec<RebuiltChunkLight>);
+type StagedPatchSnapshot = Vec<(ChunkPos, Chunk, Option<(ChunkLight, ChunkHeightmap)>)>;
+
 fn local(x: u32, y: u32, z: u32) -> LocalBlockPos {
     LocalBlockPos::new(x, y, z)
 }
@@ -476,7 +480,7 @@ fn staged_patch_scenarios() -> Vec<StagedPatchScenario> {
 fn solve_staged_patch(
     scenario: &StagedPatchScenario,
     patch: &StagedPatchShape,
-) -> (Vec<(ChunkPos, Arc<[u32]>)>, Vec<RebuiltChunkLight>) {
+) -> StagedPatchSolution {
     let mut region = ChunkLightRegion::new(scenario.height_chunks);
     for &column in &patch.calculation_columns {
         for y in 0..scenario.height_chunks as i32 {
@@ -532,7 +536,7 @@ fn bench_staged_light_patches(c: &mut Criterion) {
 fn snapshot_staged_patch(
     scenario: &StagedPatchScenario,
     patch: &StagedPatchShape,
-) -> Vec<(ChunkPos, Chunk, Option<(ChunkLight, ChunkHeightmap)>)> {
+) -> StagedPatchSnapshot {
     patch
         .calculation_columns
         .iter()

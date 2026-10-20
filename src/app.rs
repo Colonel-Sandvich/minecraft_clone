@@ -7,6 +7,7 @@ use avian3d::{PhysicsPlugins, prelude::PhysicsDebugPlugin};
 use bevy::render::settings::InstanceFlags;
 use bevy::{
     diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin},
+    ecs::system::SystemParam,
     input::common_conditions::input_toggle_active,
     prelude::*,
     render::{
@@ -424,16 +425,29 @@ fn wgpu_settings() -> WgpuSettings {
     settings
 }
 
+#[derive(SystemParam)]
+struct FramePerfQueries<'w, 's> {
+    chunks: Query<'w, 's, (), With<Chunk>>,
+    dimension: Option<Single<'w, 's, &'static Dimension, With<Active>>>,
+    dirty_light_rebuild_chunks:
+        Query<'w, 's, &'static ChunkPosition, (With<Chunk>, With<ChunkNeedsLightRebuild>)>,
+    chunk_mesh_layers: Query<'w, 's, &'static ChunkMeshLayer>,
+    chunk_perf: Option<ResMut<'w, ChunkPerfCounters>>,
+}
+
 fn log_frame_perf(
     time: Res<Time>,
     diagnostics: Res<DiagnosticsStore>,
-    chunks: Query<(), With<Chunk>>,
-    dimension: Option<Single<&Dimension, With<Active>>>,
-    dirty_light_rebuild_chunks: Query<&ChunkPosition, (With<Chunk>, With<ChunkNeedsLightRebuild>)>,
-    chunk_mesh_layers: Query<&ChunkMeshLayer>,
-    mut chunk_perf: Option<ResMut<ChunkPerfCounters>>,
+    queries: FramePerfQueries,
     mut timer: Local<Option<Timer>>,
 ) {
+    let FramePerfQueries {
+        chunks,
+        dimension,
+        dirty_light_rebuild_chunks,
+        chunk_mesh_layers,
+        mut chunk_perf,
+    } = queries;
     let timer = timer.get_or_insert_with(|| Timer::from_seconds(5.0, TimerMode::Repeating));
     if !timer.tick(time.delta()).just_finished() {
         return;

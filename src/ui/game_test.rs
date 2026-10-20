@@ -42,6 +42,31 @@ struct GameTestOverlayDetail;
 /// swallow the whole screen; the full text remains available on the entry.
 const MAX_OVERLAY_DETAIL_LINES: usize = 10;
 
+type GameTestRows<'w, 's> = Query<
+    'w,
+    's,
+    (
+        &'static GameTestOverlayRow,
+        &'static mut Text,
+        &'static mut TextColor,
+    ),
+    (
+        Without<GameTestOverlayHeader>,
+        Without<GameTestOverlayDetail>,
+    ),
+>;
+
+type GameTestDetail<'w, 's> = Query<
+    'w,
+    's,
+    &'static mut Text,
+    (
+        With<GameTestOverlayDetail>,
+        Without<GameTestOverlayHeader>,
+        Without<GameTestOverlayRow>,
+    ),
+>;
+
 fn spawn_game_test_overlay(mut commands: Commands) {
     commands
         .spawn((
@@ -106,21 +131,8 @@ fn update_game_test_overlay(
     tick_control: Option<Res<TickControl>>,
     mut root_q: Query<&mut Node, With<GameTestOverlayRoot>>,
     mut header_q: Query<&mut Text, (With<GameTestOverlayHeader>, Without<GameTestOverlayRow>)>,
-    mut rows_q: Query<
-        (&GameTestOverlayRow, &mut Text, &mut TextColor),
-        (
-            Without<GameTestOverlayHeader>,
-            Without<GameTestOverlayDetail>,
-        ),
-    >,
-    mut detail_q: Query<
-        &mut Text,
-        (
-            With<GameTestOverlayDetail>,
-            Without<GameTestOverlayHeader>,
-            Without<GameTestOverlayRow>,
-        ),
-    >,
+    mut rows_q: GameTestRows,
+    mut detail_q: GameTestDetail,
 ) {
     let display = if suite.overlay_visible {
         Display::Flex

@@ -1,4 +1,4 @@
-use bevy::{picking::hover::Hovered, ui::Pressed, window::PrimaryWindow};
+use bevy::{ecs::system::SystemParam, picking::hover::Hovered, ui::Pressed, window::PrimaryWindow};
 
 use crate::{
     item::{Inventory, ItemStack},
@@ -14,6 +14,19 @@ use super::*;
 
 type GameplayHudVisibility<'w, 's> =
     Query<'w, 's, &'static mut Visibility, Or<(With<HotbarHudRoot>, With<CrosshairRoot>)>>;
+
+type InventorySlotHighlights<'w, 's> = Query<
+    'w,
+    's,
+    (
+        &'static InventorySlot,
+        &'static Hovered,
+        Has<Pressed>,
+        &'static mut BackgroundColor,
+        &'static mut BorderColor,
+    ),
+    With<InventorySlot>,
+>;
 
 pub(super) fn update_gameplay_hud_visibility(
     ui: Res<InventoryUi>,
@@ -72,8 +85,7 @@ pub(super) fn update_cursor_stack(
     window: Single<&Window, With<PrimaryWindow>>,
     mut root: Single<&mut Node, With<CursorStackRoot>>,
     mut image: Single<&mut ImageNode, With<CursorStackIcon>>,
-    mut count: Single<&mut Text, With<CursorStackCount>>,
-    mut count_color: Single<&mut TextColor, With<CursorStackCount>>,
+    mut count: Single<(&mut Text, &mut TextColor), With<CursorStackCount>>,
 ) {
     let (item, label, color) = if let Some(projection) = &preview.0 {
         match projection.cursor {
@@ -130,26 +142,17 @@ pub(super) fn update_cursor_stack(
     if image.image != target_image {
         image.image = target_image;
     }
-    if count.0 != label {
-        count.0 = label;
+    if count.0.0 != label {
+        count.0.0 = label;
     }
-    if count_color.0 != color {
-        count_color.0 = color;
+    if count.1.0 != color {
+        count.1.0 = color;
     }
 }
 
 pub(super) fn update_slot_highlights(
     preview: Res<DragPreview>,
-    mut slots: Query<
-        (
-            &InventorySlot,
-            &Hovered,
-            Has<Pressed>,
-            &mut BackgroundColor,
-            &mut BorderColor,
-        ),
-        With<InventorySlot>,
-    >,
+    mut slots: InventorySlotHighlights,
 ) {
     for (slot, hovered, pressed, mut background, mut border) in &mut slots {
         let pending = preview
@@ -176,15 +179,38 @@ pub(super) fn update_slot_highlights(
     }
 }
 
+#[derive(SystemParam)]
+pub(super) struct DragPreviewQueries<'w, 's> {
+    previews: Query<
+        'w,
+        's,
+        (&'static InventorySlotPreview, &'static mut Visibility),
+        Without<InventorySlotCount>,
+    >,
+    preview_icons: Query<'w, 's, (&'static InventoryPreviewIcon, &'static mut ImageNode)>,
+    preview_counts: Query<
+        'w,
+        's,
+        (
+            &'static InventoryPreviewCount,
+            &'static mut Text,
+            &'static mut TextColor,
+        ),
+    >,
+    real_counts: Query<
+        'w,
+        's,
+        (&'static InventorySlotCount, &'static mut Visibility),
+        Without<InventoryPreviewCount>,
+    >,
+}
+
 pub(super) fn update_drag_preview(
     ui: Res<InventoryUi>,
     inventory: Single<Ref<Inventory>, With<Player>>,
     icons: Res<ItemIcons>,
     mut preview: ResMut<DragPreview>,
-    mut previews: Query<(&InventorySlotPreview, &mut Visibility), Without<InventorySlotCount>>,
-    mut preview_icons: Query<(&InventoryPreviewIcon, &mut ImageNode)>,
-    mut preview_counts: Query<(&InventoryPreviewCount, &mut Text, &mut TextColor)>,
-    mut real_counts: Query<(&InventorySlotCount, &mut Visibility), Without<InventoryPreviewCount>>,
+    mut queries: DragPreviewQueries,
 ) {
     // A one-slot drag releases as a plain click, which the ghost cannot
     // predict, so only multi-slot painting previews a distribution.
@@ -211,7 +237,7 @@ pub(super) fn update_drag_preview(
         .as_ref()
         .map(|projection| projection.slots.as_slice());
 
-    for (slot, mut visibility) in &mut previews {
+    for (slot, mut visibility) in &mut queries.previews {
         let target = if planned_stack(planned, slot.0).is_some() {
             Visibility::Visible
         } else {
@@ -221,7 +247,7 @@ pub(super) fn update_drag_preview(
             *visibility = target;
         }
     }
-    for (slot, mut image) in &mut preview_icons {
+    for (slot, mut image) in &mut queries.preview_icons {
         let target = stack_icon(&icons, planned_stack(planned, slot.0));
         if image.image != target {
             image.image = target;
@@ -230,7 +256,7 @@ pub(super) fn update_drag_preview(
             image.color = Color::WHITE;
         }
     }
-    for (slot, mut text, mut color) in &mut preview_counts {
+    for (slot, mut text, mut color) in &mut queries.preview_counts {
         let target = planned_stack(planned, slot.0)
             .map_or(String::new(), |stack| stack_count_label(Some(stack)));
         if text.0 != target {
@@ -240,7 +266,7 @@ pub(super) fn update_drag_preview(
             color.0 = PENDING_COUNT;
         }
     }
-    for (slot, mut visibility) in &mut real_counts {
+    for (slot, mut visibility) in &mut queries.real_counts {
         let target = if planned_stack(planned, slot.0).is_some() {
             Visibility::Hidden
         } else {

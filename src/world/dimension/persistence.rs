@@ -1,6 +1,7 @@
 use std::{mem::size_of, sync::Arc};
 
 use bevy::{
+    ecs::query::QueryData,
     platform::collections::HashMap,
     prelude::*,
     tasks::{Task, futures::check_ready},
@@ -16,6 +17,19 @@ use crate::world::{
     definition::ChunkAddress,
     storage::{ChunkRepository, ChunkStoreError, ChunkStoreResult},
 };
+
+#[derive(QueryData)]
+pub(crate) struct ChunkSaveQuery {
+    pub(crate) position: &'static ChunkPosition,
+    pub(crate) chunk: &'static Chunk,
+    pub(crate) heightmap: &'static ChunkHeightmap,
+    pub(crate) needs_save: Option<&'static ChunkNeedsSave>,
+    pub(crate) save_exempt: Option<&'static ChunkSaveExempt>,
+    pub(crate) saved_ticks: Option<&'static ChunkSavedFluidTicks>,
+}
+
+type ActiveSaveDimension<'w, 's> =
+    Single<'w, 's, (&'static Dimension, &'static DesiredColumnView, Entity), With<Active>>;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum SaveSnapshotContext<'a> {
@@ -380,15 +394,8 @@ pub(crate) fn finish_chunk_save_tasks(
 }
 
 pub(crate) fn start_chunk_save_tasks(
-    active_dimension: Option<Single<(&Dimension, &DesiredColumnView, Entity), With<Active>>>,
-    chunks: Query<(
-        &ChunkPosition,
-        &Chunk,
-        &ChunkHeightmap,
-        Option<&ChunkNeedsSave>,
-        Option<&ChunkSaveExempt>,
-        Option<&ChunkSavedFluidTicks>,
-    )>,
+    active_dimension: Option<ActiveSaveDimension>,
+    chunks: Query<ChunkSaveQuery>,
     repository: Res<ChunkRepository>,
     save_budget: Res<ChunkSaveBudget>,
     mut save_tasks: ResMut<ChunkSaveTasks>,
@@ -461,26 +468,18 @@ pub(crate) fn capture_dimension_save_snapshots(
     dimension: &Dimension,
     context: SaveSnapshotContext<'_>,
     owner: Entity,
-    chunks: &Query<(
-        &ChunkPosition,
-        &Chunk,
-        &ChunkHeightmap,
-        Option<&ChunkNeedsSave>,
-        Option<&ChunkSaveExempt>,
-        Option<&ChunkSavedFluidTicks>,
-    )>,
+    chunks: &Query<ChunkSaveQuery>,
 ) -> usize {
     dimension.assert_stream_owner(owner);
     let scheduled_by_chunk = dimension.scheduled_fluid_indices_by_chunk();
     let mut captured = 0;
     for (registered_position, entity) in dimension.iter_loaded_chunks() {
-        let (position, chunk, heightmap, needs_save, save_exempt, saved_ticks) =
-            chunks.get(entity).unwrap_or_else(|error| {
-                panic!(
-                    "loaded chunk {registered_position:?} ({entity:?}) must retain its save components: {error}"
-                )
-            });
-        if save_exempt.is_some() {
+        let chunk = chunks.get(entity).unwrap_or_else(|error| {
+            panic!(
+                "loaded chunk {registered_position:?} ({entity:?}) must retain its save components: {error}"
+            )
+        });
+        if chunk.save_exempt.is_some() {
             continue;
         }
         // Pending fluid ticks must reach the save even when the block content
@@ -491,15 +490,15 @@ pub(crate) fn capture_dimension_save_snapshots(
             .get(&registered_position)
             .cloned()
             .unwrap_or_default();
-        let ticks_unchanged = match saved_ticks {
+        let ticks_unchanged = match chunk.saved_ticks {
             Some(saved) => saved.0 == scheduled,
             None => scheduled.is_empty(),
         };
-        if needs_save.is_none() && ticks_unchanged {
+        if chunk.needs_save.is_none() && ticks_unchanged {
             continue;
         }
         assert_eq!(
-            position.chunk_pos(),
+            chunk.position.chunk_pos(),
             registered_position,
             "dimension registry and ChunkPosition must agree before saving"
         );
@@ -508,10 +507,10 @@ pub(crate) fn capture_dimension_save_snapshots(
             LiveChunkSaveSource {
                 owner,
                 entity,
-                revision: chunk.content_revision(),
+                revision: chunk.chunk.content_revision(),
             },
-            chunk,
-            *heightmap,
+            chunk.chunk,
+            *chunk.heightmap,
             scheduled,
             context.eviction_priority(registered_position.column()),
         );

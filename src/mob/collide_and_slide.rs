@@ -1,5 +1,5 @@
 use avian3d::prelude::*;
-use bevy::prelude::*;
+use bevy::{ecs::system::SystemParam, prelude::*};
 
 use super::controller::{CharacterController, Grounded, Velocity};
 use crate::world::WORLD_LAYER;
@@ -25,27 +25,58 @@ impl Default for CollideAndSlideConfig {
     }
 }
 
-pub fn move_character_controllers(
-    mut commands: Commands,
-    mut params: ParamSet<(
-        Query<
-            (
-                Entity,
-                &Velocity,
-                Option<&Collider>,
-                &Position,
-                &Rotation,
-                &CollideAndSlideConfig,
-                Has<Grounded>,
-            ),
-            With<CharacterController>,
-        >,
-        SpatialQuery,
-        Query<(&mut Velocity, &mut Position), With<CharacterController>>,
-    )>,
-    children_q: Query<&Children>,
-    time: Res<Time<Fixed>>,
-) {
+type CharacterInputQuery<'w, 's> = Query<
+    'w,
+    's,
+    (
+        Entity,
+        &'static Velocity,
+        Option<&'static Collider>,
+        &'static Position,
+        &'static Rotation,
+        &'static CollideAndSlideConfig,
+        Has<Grounded>,
+    ),
+    With<CharacterController>,
+>;
+
+type CharacterOutputQuery<'w, 's> =
+    Query<'w, 's, (&'static mut Velocity, &'static mut Position), With<CharacterController>>;
+
+type CharacterParams<'w, 's> = ParamSet<
+    'w,
+    's,
+    (
+        CharacterInputQuery<'w, 's>,
+        SpatialQuery<'w, 's>,
+        CharacterOutputQuery<'w, 's>,
+    ),
+>;
+
+struct CollisionContext<'a, 'w, 's> {
+    spatial_query: &'a SpatialQuery<'w, 's>,
+    collider: &'a Collider,
+    rotation: Quat,
+    filter: &'a SpatialQueryFilter,
+    config: &'a CollideAndSlideConfig,
+    time: &'a Time<Fixed>,
+}
+
+#[derive(SystemParam)]
+pub struct CharacterMoveParams<'w, 's> {
+    commands: Commands<'w, 's>,
+    params: CharacterParams<'w, 's>,
+    children_q: Query<'w, 's, &'static Children>,
+    time: Res<'w, Time<Fixed>>,
+}
+
+pub fn move_character_controllers(system_params: CharacterMoveParams) {
+    let CharacterMoveParams {
+        mut commands,
+        mut params,
+        children_q,
+        time,
+    } = system_params;
     // SpatialQuery reads Position internally, so stage results before mutating Position.
     let inputs = params
         .p0()
@@ -93,17 +124,17 @@ pub fn move_character_controllers(
                 .flat_map(|children| children.iter())
                 .chain(std::iter::once(entity));
             let (new_position, is_grounded) = if let Some(collider) = collider {
-                collide_and_slide(
-                    &spatial_query,
-                    &collider,
-                    position,
+                let filter = SpatialQueryFilter::from_mask(WORLD_LAYER)
+                    .with_excluded_entities(excluded_entities);
+                let context = CollisionContext {
+                    spatial_query: &spatial_query,
+                    collider: &collider,
                     rotation,
-                    &mut velocity,
-                    &SpatialQueryFilter::from_mask(WORLD_LAYER)
-                        .with_excluded_entities(excluded_entities),
-                    &collide_and_slide_config,
-                    &time,
-                )
+                    filter: &filter,
+                    config: &collide_and_slide_config,
+                    time: &time,
+                };
+                collide_and_slide(&context, position, &mut velocity)
             } else {
                 (position + velocity * time.delta_secs(), false)
             };
@@ -132,16 +163,11 @@ pub fn move_character_controllers(
 }
 
 fn collide_and_slide(
-    spatial_query: &SpatialQuery,
-    collider: &Collider,
+    context: &CollisionContext<'_, '_, '_>,
     position: Vec3,
-    rotation: Quat,
     velocity: &mut Vec3,
-    filter: &SpatialQueryFilter,
-    config: &CollideAndSlideConfig,
-    time: &Res<Time<Fixed>>,
 ) -> (Vec3, bool) {
-    let mut vdt = *velocity * time.delta_secs();
+    let mut vdt = *velocity * context.time.delta_secs();
     let intended_xz = vdt.with_y(0.0);
     let original_position = position;
     let original_velocity = *velocity;
@@ -151,21 +177,13 @@ fn collide_and_slide(
     let mut normal_velocity = *velocity;
     let mut position = position;
 
-    for _ in 0..config.max_bounces {
+    for _ in 0..context.config.max_bounces {
         if vdt.abs_diff_eq(Vec3::ZERO, 0.0001) {
             break;
         }
 
         let y_target_distance = Vec3::Y * vdt.y;
-        let (distance, hit_data, direction) = shapecast(
-            spatial_query,
-            collider,
-            rotation,
-            filter,
-            config,
-            position,
-            y_target_distance,
-        );
+        let (distance, hit_data, direction) = shapecast(context, position, y_target_distance);
 
         let y_impact = hit_data.is_some();
         if y_impact {
@@ -180,15 +198,7 @@ fn collide_and_slide(
         }
 
         let xz_target_distance = vdt.with_y(0.0);
-        let (distance, hit_data, direction) = shapecast(
-            spatial_query,
-            collider,
-            rotation,
-            filter,
-            config,
-            position,
-            xz_target_distance,
-        );
+        let (distance, hit_data, direction) = shapecast(context, position, xz_target_distance);
 
         position += direction * distance;
         vdt -= direction * distance;
@@ -204,13 +214,9 @@ fn collide_and_slide(
 
     if grounded
         && had_horizontal_collision
-        && config.autostep > 0.0
+        && context.config.autostep > 0.0
         && let Some((autostep_position, autostep_velocity)) = try_autostep(
-            spatial_query,
-            collider,
-            rotation,
-            filter,
-            config,
+            context,
             original_position,
             original_velocity,
             intended_xz,
@@ -226,11 +232,7 @@ fn collide_and_slide(
 }
 
 fn try_autostep(
-    spatial_query: &SpatialQuery,
-    collider: &Collider,
-    rotation: Quat,
-    filter: &SpatialQueryFilter,
-    config: &CollideAndSlideConfig,
+    context: &CollisionContext<'_, '_, '_>,
     original_position: Vec3,
     original_velocity: Vec3,
     intended_xz: Vec3,
@@ -242,53 +244,44 @@ fn try_autostep(
 
     let mut position = original_position;
     let mut velocity = original_velocity;
-    let mut autostep_config = config.clone();
+    let mut autostep_config = context.config.clone();
     autostep_config.ignore_origin_penetration = false;
+    let autostep_context = CollisionContext {
+        spatial_query: context.spatial_query,
+        collider: context.collider,
+        rotation: context.rotation,
+        filter: context.filter,
+        config: &autostep_config,
+        time: context.time,
+    };
 
     let (up_distance, _, _) = shapecast(
-        spatial_query,
-        collider,
-        rotation,
-        filter,
-        &autostep_config,
+        &autostep_context,
         position,
-        Vec3::Y * config.autostep,
+        Vec3::Y * context.config.autostep,
     );
     if up_distance <= 0.0001 {
         return None;
     }
     position += Vec3::Y * up_distance;
 
-    let (xz_distance, xz_hit, xz_direction) = shapecast(
-        spatial_query,
-        collider,
-        rotation,
-        filter,
-        &autostep_config,
-        position,
-        intended_xz,
-    );
+    let (xz_distance, xz_hit, xz_direction) = shapecast(&autostep_context, position, intended_xz);
     position += xz_direction * xz_distance;
     velocity.y = 0.0;
     if let Some(hit) = xz_hit {
         velocity = velocity.reject_from_normalized(hit.normal1);
     }
 
-    let (down_distance, down_hit, _) = shapecast(
-        spatial_query,
-        collider,
-        rotation,
-        filter,
-        &autostep_config,
-        position,
-        Vec3::NEG_Y * up_distance,
-    );
+    let (down_distance, down_hit, _) =
+        shapecast(&autostep_context, position, Vec3::NEG_Y * up_distance);
     down_hit?;
     position += Vec3::NEG_Y * down_distance;
     velocity.y = 0.0;
 
     let stepped_height = position.y - original_position.y;
-    if stepped_height <= config.skin || stepped_height > config.autostep + config.skin {
+    if stepped_height <= context.config.skin
+        || stepped_height > context.config.autostep + context.config.skin
+    {
         return None;
     }
 
@@ -303,11 +296,7 @@ fn try_autostep(
 }
 
 fn shapecast(
-    spatial_query: &SpatialQuery,
-    collider: &Collider,
-    rotation: Quat,
-    filter: &SpatialQueryFilter,
-    config: &CollideAndSlideConfig,
+    context: &CollisionContext<'_, '_, '_>,
     position: Vec3,
     target_distance: Vec3,
 ) -> (f32, Option<ShapeHitData>, Vec3) {
@@ -315,19 +304,19 @@ fn shapecast(
         return (0.0, None, Vec3::ZERO);
     };
 
-    let (distance, hit_data) = if let Some(hit_data) = spatial_query.cast_shape(
-        collider,
+    let (distance, hit_data) = if let Some(hit_data) = context.spatial_query.cast_shape(
+        context.collider,
         position,
-        rotation,
+        context.rotation,
         direction,
         &ShapeCastConfig {
             max_distance: target_distance.length(),
-            ignore_origin_penetration: config.ignore_origin_penetration,
+            ignore_origin_penetration: context.config.ignore_origin_penetration,
             ..default()
         },
-        filter,
+        context.filter,
     ) {
-        let distance = (hit_data.distance - config.skin).max(0.0);
+        let distance = (hit_data.distance - context.config.skin).max(0.0);
         (distance, Some(hit_data))
     } else {
         (target_distance.length(), None)

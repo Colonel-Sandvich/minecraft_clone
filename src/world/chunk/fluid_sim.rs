@@ -579,11 +579,7 @@ fn highest_horizontal_fluid_level(
 
 /// Vanilla converts a flowing cell into a source when the block below is solid
 /// or is itself a source of the same fluid.
-fn source_conversion_support(
-    snapshot: &FluidSnapshot,
-    pos: IVec3,
-    profile: FluidProfile,
-) -> bool {
+fn source_conversion_support(snapshot: &FluidSnapshot, pos: IVec3, profile: FluidProfile) -> bool {
     let Some(cell) = snapshot.cell(pos + IVec3::NEG_Y) else {
         return false;
     };

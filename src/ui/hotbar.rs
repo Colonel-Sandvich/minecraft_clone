@@ -300,7 +300,7 @@ fn load_block_texture(path: &str) -> Option<RgbaImage> {
 }
 
 fn first_animation_frame(image: RgbaImage) -> RgbaImage {
-    if image.height() > image.width() && image.height() % image.width() == 0 {
+    if image.height() > image.width() && image.height().is_multiple_of(image.width()) {
         image::imageops::crop_imm(&image, 0, 0, image.width(), image.width()).to_image()
     } else {
         image

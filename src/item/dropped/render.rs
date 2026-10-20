@@ -152,7 +152,9 @@ mod tests {
         };
 
         for (colors, direction) in face_ids
-            .chunks_exact(CUBOID_VERTICES_PER_FACE)
+            .as_chunks::<CUBOID_VERTICES_PER_FACE>()
+            .0
+            .iter()
             .zip(BEVY_CUBOID_FACE_ORDER)
         {
             assert!(

@@ -1,7 +1,7 @@
 use std::{collections::HashSet, fmt::Write, mem::size_of};
 
 use avian3d::prelude::Collider;
-use bevy::prelude::*;
+use bevy::{ecs::system::SystemParam, prelude::*};
 
 use crate::{
     world::chunk::mesh::{ChunkMeshFaces, ChunkMeshLayer, ChunkMeshLight, PackedFace},
@@ -192,19 +192,35 @@ impl GameMemorySnapshot {
     }
 }
 
+#[derive(SystemParam)]
+struct MemorySnapshotQueries<'w, 's> {
+    chunk_q: Query<'w, 's, (&'static ChunkContentCounts, Option<&'static Children>), With<Chunk>>,
+    collider_q: Query<'w, 's, &'static Collider>,
+    mesh_q: Query<'w, 's, &'static ChunkMeshLayer>,
+    mesh_faces_q: Query<'w, 's, &'static ChunkMeshFaces>,
+    mesh_light_q: Query<'w, 's, &'static ChunkMeshLight>,
+    dimensions_q: Query<'w, 's, &'static Dimension>,
+    active_dimension:
+        Option<Single<'w, 's, (&'static Dimension, &'static DesiredColumnView), With<Active>>>,
+    save_tasks: Option<Res<'w, ChunkSaveTasks>>,
+}
+
 fn update_memory_snapshot(
     time: Res<Time>,
     mut timer: ResMut<MemoryTrackingTimer>,
     mut snapshot: ResMut<GameMemorySnapshot>,
-    chunk_q: Query<(&ChunkContentCounts, Option<&Children>), With<Chunk>>,
-    collider_q: Query<&Collider>,
-    mesh_q: Query<&ChunkMeshLayer>,
-    mesh_faces_q: Query<&ChunkMeshFaces>,
-    mesh_light_q: Query<&ChunkMeshLight>,
-    dimensions_q: Query<&Dimension>,
-    active_dimension: Option<Single<(&Dimension, &DesiredColumnView), With<Active>>>,
-    save_tasks: Option<Res<ChunkSaveTasks>>,
+    queries: MemorySnapshotQueries,
 ) {
+    let MemorySnapshotQueries {
+        chunk_q,
+        collider_q,
+        mesh_q,
+        mesh_faces_q,
+        mesh_light_q,
+        dimensions_q,
+        active_dimension,
+        save_tasks,
+    } = queries;
     if timer.initialized && !timer.timer.tick(time.delta()).just_finished() {
         return;
     }

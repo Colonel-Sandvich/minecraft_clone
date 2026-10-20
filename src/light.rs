@@ -19,6 +19,13 @@ const DAY_AMBIENT_BRIGHTNESS: f32 = 500.0;
 const NIGHT_AMBIENT_BRIGHTNESS: f32 = 20.0;
 const NIGHT_DIRECTIONAL_ILLUMINANCE: f32 = 400.0;
 
+type CelestialDirectionalLights<'w, 's> = Query<
+    'w,
+    's,
+    (&'static mut DirectionalLight, &'static mut Transform),
+    (With<CelestialDirectionalLight>, Without<CelestialBody>),
+>;
+
 impl Plugin for LightPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<DayNightCycle>()
@@ -193,10 +200,7 @@ fn update_day_night_cycle(
     mut cycle: ResMut<DayNightCycle>,
     cameras: Query<&GlobalTransform, With<Camera3d>>,
     mut celestial_bodies: Query<(&CelestialBody, &mut Transform)>,
-    mut directional_lights: Query<
-        (&mut DirectionalLight, &mut Transform),
-        (With<CelestialDirectionalLight>, Without<CelestialBody>),
-    >,
+    mut directional_lights: CelestialDirectionalLights,
     mut ambient: ResMut<GlobalAmbientLight>,
 ) {
     cycle.advance(time.delta_secs());

@@ -272,14 +272,7 @@ impl Drop for GatedSaveControl {
 fn capture_all_dimension_save_snapshots(
     mut save_tasks: ResMut<ChunkSaveTasks>,
     dimensions: Query<(&Dimension, &DesiredColumnView, Entity)>,
-    chunks: Query<(
-        &ChunkPosition,
-        &Chunk,
-        &ChunkHeightmap,
-        Option<&ChunkNeedsSave>,
-        Option<&ChunkSaveExempt>,
-        Option<&ChunkSavedFluidTicks>,
-    )>,
+    chunks: Query<ChunkSaveQuery>,
 ) {
     for (dimension, desired_view, owner) in &dimensions {
         capture_dimension_save_snapshots(

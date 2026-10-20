@@ -93,9 +93,8 @@ fn extract_changed<T: Component + Clone>(
                 .iter()
                 .zip(values)
                 .zip(ticks.is_changed_iter())
-                .filter_map(|((entity, value), changed)| {
-                    changed.then(|| (entity.id(), value.clone()))
-                })
+                .filter(|(_, changed)| *changed)
+                .map(|((entity, value), _)| (entity.id(), value.clone()))
                 .collect::<Vec<_>>();
             commands.try_insert_batch(batch);
         }

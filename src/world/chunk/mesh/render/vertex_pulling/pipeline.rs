@@ -626,9 +626,11 @@ mod tests {
     fn mesh_workgroup_outputs_fit_recommended_limits() {
         // wgpu's recommended minimum mesh-shader limits are 256 vertices and
         // 256 primitives per workgroup.
-        assert!(MESH_FACES_PER_WORKGROUP * 6 <= 256);
-        assert!(MESH_FACES_PER_WORKGROUP * 2 <= 256);
-        assert!(MESH_FACES_PER_WORKGROUP <= 128);
+        const {
+            assert!(MESH_FACES_PER_WORKGROUP * 6 <= 256);
+            assert!(MESH_FACES_PER_WORKGROUP * 2 <= 256);
+            assert!(MESH_FACES_PER_WORKGROUP <= 128);
+        }
     }
 
     #[cfg(feature = "mesh-shaders")]

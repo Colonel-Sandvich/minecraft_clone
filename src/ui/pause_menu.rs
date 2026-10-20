@@ -1,4 +1,5 @@
 use bevy::{
+    ecs::system::SystemParam,
     image::{ImageLoaderSettings, ImageSampler},
     input_focus::{
         AutoFocus, FocusCause, InputFocus, IsFocused, IsFocusedHelper,
@@ -321,39 +322,56 @@ fn spawn_menu_button(
     ));
 }
 
+#[derive(SystemParam)]
+struct PauseMenuActionQueries<'w, 's> {
+    actions: Query<'w, 's, &'static PauseMenuAction>,
+    pages: Query<'w, 's, (&'static PauseMenuPage, &'static mut Node)>,
+    tab_indices: Query<'w, 's, (&'static PauseMenuButtonPage, &'static mut TabIndex)>,
+    focus_targets: Query<'w, 's, (Entity, &'static PauseMenuAction)>,
+    input_focus: Option<ResMut<'w, InputFocus>>,
+}
+
 fn handle_pause_menu_action(
     activate: On<Activate>,
-    actions: Query<&PauseMenuAction>,
+    mut queries: PauseMenuActionQueries,
     game_state: Res<State<GameState>>,
     mut next_game_state: ResMut<NextState<GameState>>,
     mut settings: ResMut<UiSettings>,
     mut commands: Commands,
-    mut pages: Query<(&PauseMenuPage, &mut Node)>,
-    mut tab_indices: Query<(&PauseMenuButtonPage, &mut TabIndex)>,
-    focus_targets: Query<(Entity, &PauseMenuAction)>,
-    mut input_focus: Option<ResMut<InputFocus>>,
 ) {
     if *game_state.get() != GameState::Paused {
         return;
     }
 
-    let Ok(action) = actions.get(activate.entity) else {
+    let Ok(action) = queries.actions.get(activate.entity).copied() else {
         return;
     };
 
-    match *action {
+    match action {
         PauseMenuAction::Resume => next_game_state.set(GameState::Playing),
         PauseMenuAction::OpenOptions => {
-            show_page(&mut pages, &mut tab_indices, PauseMenuPage::Options);
+            show_page(
+                &mut queries.pages,
+                &mut queries.tab_indices,
+                PauseMenuPage::Options,
+            );
             focus_action(
                 PauseMenuAction::CycleUiScale,
-                &focus_targets,
-                &mut input_focus,
+                &queries.focus_targets,
+                &mut queries.input_focus,
             );
         }
         PauseMenuAction::CloseOptions => {
-            show_page(&mut pages, &mut tab_indices, PauseMenuPage::Main);
-            focus_action(PauseMenuAction::Resume, &focus_targets, &mut input_focus);
+            show_page(
+                &mut queries.pages,
+                &mut queries.tab_indices,
+                PauseMenuPage::Main,
+            );
+            focus_action(
+                PauseMenuAction::Resume,
+                &queries.focus_targets,
+                &mut queries.input_focus,
+            );
         }
         PauseMenuAction::CycleUiScale => {
             let next = settings.next_scale();
@@ -418,19 +436,20 @@ fn update_ui_scale_text(
     }
 }
 
-fn update_button_visuals(
-    focus: IsFocusedHelper,
-    mut buttons: Query<
-        (
-            Entity,
-            &Hovered,
-            Has<Pressed>,
-            &PauseButtonVisual,
-            &mut ImageNode,
-        ),
-        With<Button>,
-    >,
-) {
+type PauseButtons<'w, 's> = Query<
+    'w,
+    's,
+    (
+        Entity,
+        &'static Hovered,
+        Has<Pressed>,
+        &'static PauseButtonVisual,
+        &'static mut ImageNode,
+    ),
+    With<Button>,
+>;
+
+fn update_button_visuals(focus: IsFocusedHelper, mut buttons: PauseButtons) {
     for (entity, hovered, pressed, visual, mut image) in &mut buttons {
         let highlighted = hovered.get() || pressed || focus.is_focus_visible(entity);
         let target = if highlighted {

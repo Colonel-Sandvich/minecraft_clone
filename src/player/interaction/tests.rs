@@ -82,7 +82,10 @@ fn water_item_places_a_source_and_blocks_place_themselves() {
         placement_cell_for_item(Item::Stone),
         Some(ChunkCell::block(Item::Stone))
     );
-    assert_eq!(placement_cell_for_item(Item::OakLeaves), Some(Item::OakLeaves.into()));
+    assert_eq!(
+        placement_cell_for_item(Item::OakLeaves),
+        Some(Item::OakLeaves.into())
+    );
 }
 
 fn app_with_request_emitter() -> App {

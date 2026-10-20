@@ -24,6 +24,9 @@ use minecraft_clone::{
 #[derive(Component)]
 struct ChunkNeedsMeshRebuild;
 
+type DirtyMeshQuery =
+    QueryState<(&'static ChunkPosition, Entity), (With<Chunk>, With<ChunkNeedsMeshRebuild>)>;
+
 // ---------------------------------------------------------------------------
 // Bench scenario
 // ---------------------------------------------------------------------------
@@ -164,23 +167,18 @@ fn realistic_terrain_chunk() -> Chunk {
                     Item::Grass.into()
                 } else if (7..=11).contains(&y) && (6..=9).contains(&x) && (6..=9).contains(&z) {
                     Item::OakLog.into()
-                } else if y == 12
+                } else if (y == 12
                     && (5..=10).contains(&x)
                     && (5..=10).contains(&z)
-                    && !((7..=8).contains(&x) && (7..=8).contains(&z))
+                    && !((7..=8).contains(&x) && (7..=8).contains(&z)))
+                    || (y == 11 && (5..=10).contains(&x) && (5..=10).contains(&z))
+                    || (y == 10
+                        && (5..=10).contains(&x)
+                        && (5..=10).contains(&z)
+                        && (x == 5 || x == 10 || z == 5 || z == 10))
                 {
                     Item::OakLeaves.into()
-                } else if y == 11 && (5..=10).contains(&x) && (5..=10).contains(&z) {
-                    Item::OakLeaves.into()
-                } else if y == 10
-                    && (5..=10).contains(&x)
-                    && (5..=10).contains(&z)
-                    && (x == 5 || x == 10 || z == 5 || z == 10)
-                {
-                    Item::OakLeaves.into()
-                } else if y == 3 && (x + z) % 13 == 0 {
-                    Item::Glass.into()
-                } else if y == 8 && (x * 7 + z * 11) % 23 == 0 {
+                } else if (y == 3 && (x + z) % 13 == 0) || (y == 8 && (x * 7 + z * 11) % 23 == 0) {
                     Item::Glass.into()
                 } else {
                     ChunkCell::EMPTY
@@ -559,7 +557,7 @@ fn dirty_mesh_world(chunks: &[(IVec3, Chunk)]) -> World {
 
 fn build_dirty_meshes_serial_contiguous(
     world: &World,
-    query: &mut QueryState<(&ChunkPosition, Entity), (With<Chunk>, With<ChunkNeedsMeshRebuild>)>,
+    query: &mut DirtyMeshQuery,
     chunks_by_pos: &HashMap<IVec3, &Chunk>,
 ) -> usize {
     let mut face_count = 0usize;
@@ -577,7 +575,7 @@ fn build_dirty_meshes_serial_contiguous(
 
 fn build_dirty_meshes_parallel(
     world: &World,
-    query: &mut QueryState<(&ChunkPosition, Entity), (With<Chunk>, With<ChunkNeedsMeshRebuild>)>,
+    query: &mut DirtyMeshQuery,
     chunks_by_pos: &HashMap<IVec3, &Chunk>,
 ) -> usize {
     let mut totals = Parallel::<usize>::default();

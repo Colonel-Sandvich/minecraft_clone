@@ -354,11 +354,11 @@ fn generate_terrain_chunk(metadata: &WorldMetadata, chunk_pos: IVec3) -> Chunk {
     let mut surface_heights = [[0; CHUNK_SIZE]; CHUNK_SIZE];
     let origin = ChunkPos::from_ivec3(chunk_pos).origin().as_ivec3();
 
-    for x in 0..CHUNK_SIZE {
-        for z in 0..CHUNK_SIZE {
+    for (x, column) in surface_heights.iter_mut().enumerate() {
+        for (z, height) in column.iter_mut().enumerate() {
             let world_x = origin.x + x as i32;
             let world_z = origin.z + z as i32;
-            surface_heights[x][z] = terrain_height(metadata, world_x, world_z);
+            *height = terrain_height(metadata, world_x, world_z);
         }
     }
 

@@ -92,6 +92,13 @@ fn spawn_label_parent(mut commands: Commands) {
     ));
 }
 
+type DebugCamera<'w, 's> = Single<
+    'w,
+    's,
+    (&'static Transform, &'static GlobalTransform),
+    (With<MouseCam>, Without<Player>),
+>;
+
 pub(super) fn toggle_debug(
     keys: Res<ButtonInput<KeyCode>>,
     mut visible: ResMut<DebugVisible>,
@@ -107,7 +114,7 @@ fn update_debug_text(
     visible: Res<DebugVisible>,
     diagnostics: Res<DiagnosticsStore>,
     player_q: Single<&Transform, With<Player>>,
-    cam_q: Single<(&Transform, &GlobalTransform), (With<MouseCam>, Without<Player>)>,
+    cam_q: DebugCamera,
     view_distance: Res<ViewDistance>,
     memory: Option<Res<GameMemorySnapshot>>,
     active_dimension: Option<Single<&Dimension, With<Active>>>,

@@ -2,7 +2,7 @@ use std::{hint::black_box, sync::Arc, time::Duration};
 
 use avian3d::prelude::{Collider, RigidBody};
 use bevy::{
-    ecs::change_detection::ContiguousRef,
+    ecs::{change_detection::ContiguousRef, system::SystemParam},
     platform::collections::{HashMap, HashSet},
     prelude::*,
 };
@@ -34,6 +34,35 @@ struct ChunkNeedsRenderLightUpload;
 
 #[derive(Component)]
 struct ChunkNeedsColliderRebuild;
+
+type DirtyChunksQuery<'w, 's> =
+    Query<'w, 's, (&'static ChunkPosition, Entity), (With<Chunk>, With<ChunkNeedsMeshRebuild>)>;
+
+type FluidChunkQuery<'w, 's> = Query<
+    'w,
+    's,
+    (
+        Entity,
+        &'static ChunkPosition,
+        &'static mut Chunk,
+        &'static mut ChunkContentCounts,
+    ),
+>;
+
+type ActiveFluidChunkQuery<'w, 's> = Query<
+    'w,
+    's,
+    (
+        Entity,
+        &'static ChunkPosition,
+        &'static mut Chunk,
+        &'static mut ChunkContentCounts,
+    ),
+    With<ChunkNeedsFluidStep>,
+>;
+
+type FluidChunkParams<'w, 's> =
+    ParamSet<'w, 's, (ActiveFluidChunkQuery<'w, 's>, FluidChunkQuery<'w, 's>)>;
 
 const MESH_REBUILD_SIDE: i32 = 16;
 const MESH_REBUILD_HEIGHT: i32 = 4;
@@ -140,7 +169,7 @@ fn build_mesh_rebuild_world(dirty_chunks: usize) -> World {
 fn mesh_rebuild_iter_system(
     all_chunks_q: Query<(&ChunkPosition, &Chunk)>,
     light_q: Query<(&ChunkPosition, &ChunkLight)>,
-    dirty_chunks_q: Query<(&ChunkPosition, Entity), (With<Chunk>, With<ChunkNeedsMeshRebuild>)>,
+    dirty_chunks_q: DirtyChunksQuery,
     mut stats: ResMut<MeshRebuildBenchStats>,
 ) {
     if dirty_chunks_q.is_empty() {
@@ -176,7 +205,7 @@ fn mesh_rebuild_iter_system(
 fn mesh_rebuild_contiguous_system(
     all_chunks_q: Query<(&ChunkPosition, &Chunk)>,
     light_q: Query<(&ChunkPosition, &ChunkLight)>,
-    dirty_chunks_q: Query<(&ChunkPosition, Entity), (With<Chunk>, With<ChunkNeedsMeshRebuild>)>,
+    dirty_chunks_q: DirtyChunksQuery,
     mut stats: ResMut<MeshRebuildBenchStats>,
 ) {
     if dirty_chunks_q.is_empty() {
@@ -652,49 +681,49 @@ fn collect_boundary_flows(
                     continue;
                 }
 
-                if x == 0 {
-                    if let Some(next_fluid) = profile.decayed_flow(fluid) {
-                        boundary_flows.push(BoundaryFlow {
-                            target_pos: chunk_pos + IVec3::NEG_X,
-                            x: CHUNK_SIZE - 1,
-                            y,
-                            z,
-                            fluid: next_fluid,
-                        });
-                    }
+                if x == 0
+                    && let Some(next_fluid) = profile.decayed_flow(fluid)
+                {
+                    boundary_flows.push(BoundaryFlow {
+                        target_pos: chunk_pos + IVec3::NEG_X,
+                        x: CHUNK_SIZE - 1,
+                        y,
+                        z,
+                        fluid: next_fluid,
+                    });
                 }
-                if x == CHUNK_SIZE - 1 {
-                    if let Some(next_fluid) = profile.decayed_flow(fluid) {
-                        boundary_flows.push(BoundaryFlow {
-                            target_pos: chunk_pos + IVec3::X,
-                            x: 0,
-                            y,
-                            z,
-                            fluid: next_fluid,
-                        });
-                    }
+                if x == CHUNK_SIZE - 1
+                    && let Some(next_fluid) = profile.decayed_flow(fluid)
+                {
+                    boundary_flows.push(BoundaryFlow {
+                        target_pos: chunk_pos + IVec3::X,
+                        x: 0,
+                        y,
+                        z,
+                        fluid: next_fluid,
+                    });
                 }
-                if z == 0 {
-                    if let Some(next_fluid) = profile.decayed_flow(fluid) {
-                        boundary_flows.push(BoundaryFlow {
-                            target_pos: chunk_pos + IVec3::NEG_Z,
-                            x,
-                            y,
-                            z: CHUNK_SIZE - 1,
-                            fluid: next_fluid,
-                        });
-                    }
+                if z == 0
+                    && let Some(next_fluid) = profile.decayed_flow(fluid)
+                {
+                    boundary_flows.push(BoundaryFlow {
+                        target_pos: chunk_pos + IVec3::NEG_Z,
+                        x,
+                        y,
+                        z: CHUNK_SIZE - 1,
+                        fluid: next_fluid,
+                    });
                 }
-                if z == CHUNK_SIZE - 1 {
-                    if let Some(next_fluid) = profile.decayed_flow(fluid) {
-                        boundary_flows.push(BoundaryFlow {
-                            target_pos: chunk_pos + IVec3::Z,
-                            x,
-                            y,
-                            z: 0,
-                            fluid: next_fluid,
-                        });
-                    }
+                if z == CHUNK_SIZE - 1
+                    && let Some(next_fluid) = profile.decayed_flow(fluid)
+                {
+                    boundary_flows.push(BoundaryFlow {
+                        target_pos: chunk_pos + IVec3::Z,
+                        x,
+                        y,
+                        z: 0,
+                        fluid: next_fluid,
+                    });
                 }
                 if y == 0 {
                     boundary_flows.push(BoundaryFlow {
@@ -921,13 +950,7 @@ fn rebuild_chunk_light_rest(
 fn step_active_fluids(
     commands: &mut Commands,
     budget: usize,
-    param_set: &mut ParamSet<(
-        Query<
-            (Entity, &ChunkPosition, &mut Chunk, &mut ChunkContentCounts),
-            With<ChunkNeedsFluidStep>,
-        >,
-        Query<(Entity, &ChunkPosition, &mut Chunk, &mut ChunkContentCounts)>,
-    )>,
+    param_set: &mut FluidChunkParams<'_, '_>,
 ) -> (usize, Vec<BoundaryFlow>) {
     let mut boundary_flows = Vec::new();
     let mut stepped = 0;
@@ -982,18 +1005,21 @@ fn apply_boundary_flow(
     }
 }
 
-fn fluid_boundary_scan_system(
-    mut commands: Commands,
-    budget: Res<BenchFluidStepBudget>,
-    mut stats: ResMut<FluidBenchStats>,
-    mut param_set: ParamSet<(
-        Query<
-            (Entity, &ChunkPosition, &mut Chunk, &mut ChunkContentCounts),
-            With<ChunkNeedsFluidStep>,
-        >,
-        Query<(Entity, &ChunkPosition, &mut Chunk, &mut ChunkContentCounts)>,
-    )>,
-) {
+#[derive(SystemParam)]
+struct FluidBoundaryWorld<'w, 's> {
+    commands: Commands<'w, 's>,
+    budget: Res<'w, BenchFluidStepBudget>,
+    stats: ResMut<'w, FluidBenchStats>,
+    param_set: FluidChunkParams<'w, 's>,
+}
+
+fn fluid_boundary_scan_system(world: FluidBoundaryWorld) {
+    let FluidBoundaryWorld {
+        mut commands,
+        budget,
+        mut stats,
+        mut param_set,
+    } = world;
     let (stepped, boundary_flows) = step_active_fluids(&mut commands, budget.0, &mut param_set);
     let boundary_flow_count = boundary_flows.len();
 
@@ -1010,18 +1036,13 @@ fn fluid_boundary_scan_system(
     stats.boundary_flows = boundary_flow_count;
 }
 
-fn fluid_boundary_lookup_system(
-    mut commands: Commands,
-    budget: Res<BenchFluidStepBudget>,
-    mut stats: ResMut<FluidBenchStats>,
-    mut param_set: ParamSet<(
-        Query<
-            (Entity, &ChunkPosition, &mut Chunk, &mut ChunkContentCounts),
-            With<ChunkNeedsFluidStep>,
-        >,
-        Query<(Entity, &ChunkPosition, &mut Chunk, &mut ChunkContentCounts)>,
-    )>,
-) {
+fn fluid_boundary_lookup_system(world: FluidBoundaryWorld) {
+    let FluidBoundaryWorld {
+        mut commands,
+        budget,
+        mut stats,
+        mut param_set,
+    } = world;
     let (stepped, boundary_flows) = step_active_fluids(&mut commands, budget.0, &mut param_set);
     let boundary_flow_count = boundary_flows.len();
     let chunks_by_pos = {

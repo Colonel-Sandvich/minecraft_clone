@@ -353,7 +353,7 @@ struct SourceTextureLayer {
 fn alpha_mode(data: &[u8]) -> TextureAlphaMode {
     let mut has_transparent = false;
     let mut has_partial = false;
-    for alpha in data.chunks_exact(4).map(|pixel| pixel[3]) {
+    for alpha in data.as_chunks::<4>().0.iter().map(|pixel| pixel[3]) {
         has_transparent |= alpha < 255;
         has_partial |= alpha != 0 && alpha != 255;
     }
@@ -412,7 +412,12 @@ fn alpha_coverage(data: &[u8]) -> f32 {
     if pixel_count == 0 {
         return 0.0;
     }
-    let opaque_count = data.chunks_exact(4).filter(|pixel| pixel[3] >= 128).count();
+    let opaque_count = data
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .filter(|pixel| pixel[3] >= 128)
+        .count();
     opaque_count as f32 / pixel_count as f32
 }
 
@@ -430,11 +435,13 @@ fn preserve_binary_alpha_coverage(image: &mut RgbaImage, coverage: f32) {
 
     let mut pixels_by_alpha = image
         .as_raw()
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .enumerate()
         .map(|(index, pixel)| (index, pixel[3]))
         .collect::<Vec<_>>();
-    pixels_by_alpha.sort_by(|a, b| b.1.cmp(&a.1));
+    pixels_by_alpha.sort_by_key(|a| std::cmp::Reverse(a.1));
 
     let mut keep = vec![false; pixel_count];
     for (index, alpha) in pixels_by_alpha.into_iter().take(opaque_count) {

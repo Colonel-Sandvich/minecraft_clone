@@ -166,14 +166,8 @@ pub(crate) const WATER_SCENARIOS: &[WaterScenario] = &[
     },
     WaterScenario {
         name: "infinite_source_gap_over_stone",
-        input: &[
-            &["########"; 3],
-            &["########", "#S.S....", "########"],
-        ],
-        expected: &[
-            &["########"; 3],
-            &["########", "#SSS7654", "########"],
-        ],
+        input: &[&["########"; 3], &["########", "#S.S....", "########"]],
+        expected: &[&["########"; 3], &["########", "#SSS7654", "########"]],
         description: "Two sources with one air gap over solid ground: the gap becomes \
                       a source (infinite water) and the pool keeps spreading outward.",
         ..Default::default()
@@ -276,14 +270,8 @@ pub(crate) const WATER_SCENARIOS: &[WaterScenario] = &[
     },
     WaterScenario {
         name: "gap_over_source_becomes_source",
-        input: &[
-            &["#####", "##S##", "#####"],
-            &["#####", "#S.S#", "#####"],
-        ],
-        expected: &[
-            &["#####", "##S##", "#####"],
-            &["#####", "#SSS#", "#####"],
-        ],
+        input: &[&["#####", "##S##", "#####"], &["#####", "#S.S#", "#####"]],
+        expected: &[&["#####", "##S##", "#####"], &["#####", "#SSS#", "#####"]],
         description: "Vanilla's conversion support also accepts a water source below, \
                       not just a solid block, so a gap above a source converts too.",
         ..Default::default()
@@ -882,7 +870,10 @@ mod tests {
                     if !cell.is_fluid() {
                         continue;
                     }
-                    let world = ChunkPos::from_ivec3(chunk_pos).block(local).world().as_ivec3();
+                    let world = ChunkPos::from_ivec3(chunk_pos)
+                        .block(local)
+                        .world()
+                        .as_ivec3();
                     let local = world - self.origin;
                     let inside = local.cmpge(IVec3::ZERO).all() && local.cmplt(self.size).all();
                     if !inside && leaks.len() < 8 {
