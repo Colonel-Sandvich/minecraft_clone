@@ -995,19 +995,24 @@ mod tests {
         app.init_resource::<ChangeLog>()
             .add_systems(Update, record_suite_change);
 
+        // Warm up the observer's last-run tick, then check both measured frames.
+        app.update();
+        app.world_mut().resource_mut::<ChangeLog>().0.clear();
         app.update();
         app.update();
 
         assert_eq!(
-            app.world().resource::<ChangeLog>().0.last(),
-            Some(&false),
-            "an idle frame with no requests or running tests should not rebuild the overlay"
+            app.world().resource::<ChangeLog>().0,
+            vec![false, false],
+            "idle frames with no requests or running tests should not rebuild the overlay"
         );
     }
 
     #[test]
     fn waiting_running_tests_do_not_mark_the_suite_changed() {
         let mut app = test_app();
+        app.init_resource::<ChangeLog>()
+            .add_systems(Update, record_suite_change);
         app.world_mut().resource_mut::<WaterTestSuite>().request_run = true;
         app.update();
         assert!(
@@ -1018,15 +1023,17 @@ mod tests {
                 .any(|entry| entry.status == TestStatus::Running)
         );
 
-        app.init_resource::<ChangeLog>()
-            .add_systems(Update, record_suite_change);
+        // Starting the run changes the suite; let that frame pass before
+        // measuring the waiting frames.
+        app.update();
+        app.world_mut().resource_mut::<ChangeLog>().0.clear();
         app.update();
         app.update();
 
         assert_eq!(
-            app.world().resource::<ChangeLog>().0.last(),
-            Some(&false),
-            "a running test with no decision should not rebuild the overlay"
+            app.world().resource::<ChangeLog>().0,
+            vec![false, false],
+            "running tests with no decision should not rebuild the overlay"
         );
     }
 
