@@ -85,8 +85,9 @@ pub(super) fn update_cursor_stack(
     window: Single<&Window, With<PrimaryWindow>>,
     mut root: Single<&mut Node, With<CursorStackRoot>>,
     mut image: Single<&mut ImageNode, With<CursorStackIcon>>,
-    mut count: Single<(&mut Text, &mut TextColor), With<CursorStackCount>>,
+    count: Single<(&mut Text, &mut TextColor), With<CursorStackCount>>,
 ) {
+    let (mut text, mut text_color) = count.into_inner();
     let (item, label, color) = if let Some(projection) = &preview.0 {
         match projection.cursor {
             Some(stack) => (
@@ -142,11 +143,11 @@ pub(super) fn update_cursor_stack(
     if image.image != target_image {
         image.image = target_image;
     }
-    if count.0.0 != label {
-        count.0.0 = label;
+    if text.0 != label {
+        text.0 = label;
     }
-    if count.1.0 != color {
-        count.1.0 = color;
+    if text_color.0 != color {
+        text_color.0 = color;
     }
 }
 
