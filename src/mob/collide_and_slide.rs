@@ -63,14 +63,14 @@ struct CollisionContext<'a, 'w, 's> {
 }
 
 #[derive(SystemParam)]
-pub struct CharacterMoveParams<'w, 's> {
+pub(crate) struct CharacterMoveParams<'w, 's> {
     commands: Commands<'w, 's>,
     params: CharacterParams<'w, 's>,
     children_q: Query<'w, 's, &'static Children>,
     time: Res<'w, Time<Fixed>>,
 }
 
-pub fn move_character_controllers(system_params: CharacterMoveParams) {
+pub(crate) fn move_character_controllers(system_params: CharacterMoveParams) {
     let CharacterMoveParams {
         mut commands,
         mut params,

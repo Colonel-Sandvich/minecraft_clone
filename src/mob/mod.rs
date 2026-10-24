@@ -1,4 +1,4 @@
-pub mod collide_and_slide;
+mod collide_and_slide;
 pub mod controller;
 
 use crate::{
