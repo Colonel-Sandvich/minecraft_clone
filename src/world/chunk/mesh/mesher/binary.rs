@@ -93,6 +93,8 @@ impl Iterator for OnesIter<'_> {
             if self.word_idx >= 6 {
                 return None;
             }
+            // SAFETY: `words` is `[u64; 6]`, and the check above returned when
+            // `word_idx >= 6`.
             self.word = unsafe { *self.words.get_unchecked(self.word_idx) };
         }
     }
@@ -150,6 +152,8 @@ impl BinaryFaceMasks {
 
                 for (z, z_row) in z_rows.iter_mut().enumerate() {
                     let idx = base + z * pad;
+                    // SAFETY: x, y, z are all < PADDED_CHUNK_SIZE, so the x-major
+                    // padded index is < PADDED_CHUNK_VOLUME.
                     let flags = block_mesh_flags(unsafe { *cells.get_unchecked(idx) });
                     if flags & (BLOCK_FLAG_RENDERED | BLOCK_FLAG_FULL_CUBE)
                         == BLOCK_FLAG_RENDERED | BLOCK_FLAG_FULL_CUBE

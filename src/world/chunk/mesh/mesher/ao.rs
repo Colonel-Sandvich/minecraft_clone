@@ -106,6 +106,8 @@ fn block_occludes_ambient_light_bit(
 ) -> u32 {
     let index = (padded_index as isize + offset) as usize;
     debug_assert!(index < PADDED_CHUNK_VOLUME);
+    // SAFETY: `padded_index` is an interior cell and AO offsets stay within the
+    // one-cell padded border; the debug assertion above checks the result.
     unsafe {
         ((block_mesh_flags(*blocks.blocks.get_unchecked(index)) & BLOCK_FLAG_FULL_CUBE) >> 1) as u32
     }

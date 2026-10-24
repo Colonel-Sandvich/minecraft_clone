@@ -40,6 +40,8 @@ fn push_faces<const NON_FULL_CUBE_ONLY: bool>(blocks: &ChunkMeshBlocks, faces: &
             let mut padded_index = padded_chunk_index(1, y + 1, z + 1);
 
             for x in 0..crate::world::chunk::CHUNK_SIZE {
+                // SAFETY: `padded_index` starts at (1, y + 1, z + 1) and advances
+                // x from 1 to CHUNK_SIZE, so it is an interior cell.
                 let render_id = unsafe { *blocks.blocks.get_unchecked(padded_index) };
                 let flags = block_mesh_flags(render_id);
 
@@ -53,6 +55,7 @@ fn push_faces<const NON_FULL_CUBE_ONLY: bool>(blocks: &ChunkMeshBlocks, faces: &
 
                 for (side_index, offset) in DIRECTION_INDEX_OFFSETS.iter().copied().enumerate() {
                     let neighbor_index = (padded_index as isize + offset) as usize;
+                    // SAFETY: one face step from an interior cell stays within the padded border.
                     let neighbor = unsafe { *blocks.blocks.get_unchecked(neighbor_index) };
                     let neighbor_flags = block_mesh_flags(neighbor);
                     let visible = if flags & BLOCK_FLAG_TRANSLUCENT != 0 {

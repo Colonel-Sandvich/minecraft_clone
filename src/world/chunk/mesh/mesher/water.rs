@@ -21,6 +21,7 @@ impl WaterFaceData {
         let mut packed_by_side = [corner_packed; DIRECTION_COUNT];
 
         let below_index = (padded_index as isize + DIRECTION_INDEX_OFFSETS[2]) as usize;
+        // SAFETY: `padded_index` is an interior cell, so one step Down stays in the padded buffer.
         let below = unsafe { *blocks.blocks.get_unchecked(below_index) };
         if below == WATER_RENDER_ID {
             let below_level = blocks.get_fluid_level(below_index);
@@ -129,9 +130,12 @@ fn water_corner_height(
 
 fn water_height_at(blocks: &ChunkMeshBlocks, padded_index: isize) -> Option<i32> {
     let index = padded_index as usize;
+    // SAFETY: callers pass a padded index with y <= PADDED_CHUNK_SIZE - 2 and
+    // x/z inside the one-cell border, so `index` is in bounds.
     let cell = unsafe { *blocks.blocks.get_unchecked(index) };
     if cell == WATER_RENDER_ID {
         let above_index = (padded_index + DIRECTION_INDEX_OFFSETS[3]) as usize;
+        // SAFETY: the same y bound keeps the Up neighbor inside the padded buffer.
         let above = unsafe { *blocks.blocks.get_unchecked(above_index) };
         if above == WATER_RENDER_ID {
             return Some(9);
@@ -196,6 +200,7 @@ pub(crate) fn water_flow_code(
         (PADDED_CHUNK_SIZE as isize, 0, 1),
     ] {
         let neighbor_index = (padded_index as isize + offset) as usize;
+        // SAFETY: `padded_index` is an interior cell; ±1/±PADDED_CHUNK_SIZE stays in the border.
         let neighbor = unsafe { *blocks.blocks.get_unchecked(neighbor_index) };
         let neighbor_level = if neighbor == WATER_RENDER_ID {
             blocks.get_fluid_level(neighbor_index)

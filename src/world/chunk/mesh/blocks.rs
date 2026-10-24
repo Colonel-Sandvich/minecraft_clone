@@ -149,6 +149,8 @@ impl ChunkMeshBlocks {
 
     #[inline(always)]
     pub(crate) fn get_fluid_level(&self, padded_index: usize) -> u8 {
+        // SAFETY: callers pass an index derived from the padded 18³ buffer; the
+        // one-cell border keeps every neighbor offset in bounds.
         unsafe { *self.fluid_levels.get_unchecked(padded_index) }
     }
 
