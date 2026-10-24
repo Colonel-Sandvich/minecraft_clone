@@ -349,12 +349,7 @@ pub(crate) fn finish_chunk_save_tasks(
     mut commands: Commands,
     mut save_tasks: ResMut<ChunkSaveTasks>,
     dimensions: Query<&Dimension>,
-    chunks: Query<(
-        &ChunkPosition,
-        &Chunk,
-        &ChunkHeightmap,
-        Option<&ChunkNeedsSave>,
-    )>,
+    chunks: Query<ChunkSaveQuery>,
 ) {
     let mut completed = Vec::new();
     for (&address, in_flight) in save_tasks.in_flight.iter_mut() {
@@ -524,12 +519,7 @@ fn clear_live_source_if_current(
     address: ChunkAddress,
     snapshot: &OwnedChunkSaveSnapshot,
     dimensions: &Query<&Dimension>,
-    chunks: &Query<(
-        &ChunkPosition,
-        &Chunk,
-        &ChunkHeightmap,
-        Option<&ChunkNeedsSave>,
-    )>,
+    chunks: &Query<ChunkSaveQuery>,
 ) {
     let Some(source) = snapshot.source else {
         return;
@@ -547,12 +537,13 @@ fn clear_live_source_if_current(
     commands
         .entity(source.entity)
         .insert(ChunkSavedFluidTicks(snapshot.payload.scheduled.clone()));
-    let Ok((position, chunk, heightmap, Some(_))) = chunks.get(source.entity) else {
+    let Ok(chunk) = chunks.get(source.entity) else {
         return;
     };
-    if position.chunk_pos() == address.position()
-        && chunk.content_revision() == source.revision
-        && *heightmap == snapshot.payload.heightmap
+    if chunk.needs_save.is_some()
+        && chunk.position.chunk_pos() == address.position()
+        && chunk.chunk.content_revision() == source.revision
+        && *chunk.heightmap == snapshot.payload.heightmap
     {
         commands.entity(source.entity).remove::<ChunkNeedsSave>();
     }
